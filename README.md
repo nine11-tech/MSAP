@@ -15,7 +15,7 @@ MSAP ne fournit pas un verdict garanti malware/benin. Les indicateurs ATT&CK Mob
 
 ## Problem Statement
 
-Les equipes academiques et institutionnelles ont besoin d'un environnement local pour analyser des APK sans exposer les fichiers a des services distants. Les outils existants peuvent etre puissants, mais ils sont parfois trop larges, dependants de plateformes externes ou insuffisamment adaptes a une demarche PFA structuree autour de preuves, scoring, conformite et triage.
+Les equipes academiques et institutionnelles ont besoin d'un environnement local pour analyser des APK sans exposer les fichiers a des services distants. Les outils existants peuvent etre puissants, mais ils sont parfois trop larges, dependants de plateformes externes ou insuffisamment adaptes a une demarche structuree autour de preuves, scoring, conformite et triage.
 
 MSAP repond a ce besoin en proposant une architecture locale, modulaire et documentee pour conduire une analyse statique Android reproductible.
 
@@ -67,7 +67,7 @@ MSAP est positionne comme une plateforme de security engineering, pas comme un s
 
 ### OWASP MASVS
 
-Le moteur MASVS structure les constats de securite applicative: stockage, reseau, crypto, plateforme, confidentialite, authentification et resilience.
+Le moteur MASVS structure les constats de securite applicative: stockage, reseau, crypto, plateforme, code, confidentialite, authentification et resilience.
 
 ### MITRE ATT&CK Mobile
 
@@ -130,9 +130,9 @@ docs/
 - Reporting: PDF et JSON.
 - Deploiement: Docker Compose local.
 
-## Contraintes Local-First et ARM64
+## Contraintes Local-First 
 
-MSAP doit rester deployable sur un poste institutionnel, y compris en environnement Ubuntu WSL et machines ARM64 lorsque possible. Les dependances doivent etre choisies avec prudence, sans imposer MobSF, emulateur Android ou service externe. Les outils non disponibles en ARM64 doivent avoir une alternative documentee ou rester optionnels.
+MSAP doit rester deployable sur un poste institutionnel, y compris en environnement WSL et machines ARM64 lorsque possible. Les dependances doivent etre choisies avec prudence, sans imposer MobSF, emulateur Android ou service externe. 
 
 ## Roadmap Summary
 
