@@ -1,0 +1,168 @@
+rules:
+  - id: MSAP-AND-001
+    title: Android debuggable enabled
+    description: The application is configured with android:debuggable set to true.
+    masvs_category: MASVS-RESILIENCE
+    severity: High
+    source: AndroidManifest.xml
+    detection_type: manifest_attribute
+    pattern_or_condition: "application/@android:debuggable == true"
+    impact: Debuggable production builds can expose runtime inspection, debugging interfaces and sensitive execution details.
+    recommendation: Disable android:debuggable for production builds and enforce release build configuration checks.
+    evidence_example: "<application android:debuggable=\"true\" ...>"
+
+  - id: MSAP-AND-002
+    title: Android backup enabled
+    description: The application allows Android backup through android:allowBackup.
+    masvs_category: MASVS-STORAGE
+    severity: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_attribute
+    pattern_or_condition: "application/@android:allowBackup == true"
+    impact: Application data may be included in device backups and exposed if sensitive data is not protected.
+    recommendation: Disable android:allowBackup or document and secure all backup-eligible data.
+    evidence_example: "<application android:allowBackup=\"true\" ...>"
+
+  - id: MSAP-AND-003
+    title: Cleartext traffic allowed
+    description: The application permits unencrypted network traffic.
+    masvs_category: MASVS-NETWORK
+    severity: High
+    source: AndroidManifest.xml, network_security_config
+    detection_type: configuration_condition
+    pattern_or_condition: "usesCleartextTraffic == true or cleartextTrafficPermitted == true"
+    impact: Network communications may be exposed to interception or modification.
+    recommendation: Disable cleartext traffic and enforce HTTPS for all production endpoints.
+    evidence_example: "android:usesCleartextTraffic=\"true\""
+
+  - id: MSAP-AND-004
+    title: Exported activity without protection
+    description: An exported activity is declared without an apparent permission guard.
+    masvs_category: MASVS-PLATFORM
+    severity: High
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "activity/@android:exported == true and missing android:permission"
+    impact: External applications may invoke sensitive screens or workflows.
+    recommendation: Set exported to false unless required, and protect exported activities with appropriate permissions.
+    evidence_example: "<activity android:name=\".AdminActivity\" android:exported=\"true\" />"
+
+  - id: MSAP-AND-005
+    title: Exported service without protection
+    description: An exported service is declared without an apparent permission guard.
+    masvs_category: MASVS-PLATFORM
+    severity: High
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "service/@android:exported == true and missing android:permission"
+    impact: External applications may bind to or start sensitive services.
+    recommendation: Set exported to false unless required, and protect exported services with appropriate permissions.
+    evidence_example: "<service android:name=\".SyncService\" android:exported=\"true\" />"
+
+  - id: MSAP-AND-006
+    title: Exported receiver without protection
+    description: An exported broadcast receiver is declared without an apparent permission guard.
+    masvs_category: MASVS-PLATFORM
+    severity: High
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "receiver/@android:exported == true and missing android:permission"
+    impact: External applications may send crafted broadcasts to the application.
+    recommendation: Set exported to false unless required, and protect receivers with permissions or explicit intent handling.
+    evidence_example: "<receiver android:name=\".BootReceiver\" android:exported=\"true\" />"
+
+  - id: MSAP-AND-007
+    title: Hardcoded API key
+    description: A value resembling an API key is present in code or resources.
+    masvs_category: MASVS-AUTH
+    severity: High
+    source: Decompiled code, resources
+    detection_type: regex_secret_detection
+    pattern_or_condition: "(?i)(api[_-]?key|x-api-key)[\"'\\s:=]+[A-Za-z0-9_\\-]{16,}"
+    impact: Exposed API keys may allow unauthorized use of backend services.
+    recommendation: Remove API keys from the mobile client and use server-side secret management or scoped short-lived credentials.
+    evidence_example: "API_KEY = \"AIza...\""
+
+  - id: MSAP-AND-008
+    title: Hardcoded token
+    description: A value resembling an authentication token is present in code or resources.
+    masvs_category: MASVS-AUTH
+    severity: High
+    source: Decompiled code, resources
+    detection_type: regex_secret_detection
+    pattern_or_condition: "(?i)(token|bearer|jwt)[\"'\\s:=]+[A-Za-z0-9_\\-.=]{20,}"
+    impact: Exposed tokens may enable unauthorized access until revoked or expired.
+    recommendation: Avoid hardcoded tokens and issue short-lived tokens through authenticated runtime flows.
+    evidence_example: "Authorization: Bearer eyJhbGciOi..."
+
+  - id: MSAP-AND-009
+    title: Insecure HTTP URL
+    description: An insecure HTTP endpoint is referenced in code or resources.
+    masvs_category: MASVS-NETWORK
+    severity: Medium
+    source: Decompiled code, resources
+    detection_type: string_pattern
+    pattern_or_condition: "http://"
+    impact: Cleartext endpoints may expose traffic or indicate insecure backend integration.
+    recommendation: Replace HTTP endpoints with HTTPS and validate TLS configuration.
+    evidence_example: "http://api.example.com/login"
+
+  - id: MSAP-AND-010
+    title: Weak cryptographic algorithm
+    description: The application references weak cryptographic primitives or modes.
+    masvs_category: MASVS-CRYPTO
+    severity: High
+    source: Decompiled code
+    detection_type: string_pattern
+    pattern_or_condition: "MD5|SHA1|DES|RC4|AES/ECB"
+    impact: Weak cryptography can reduce confidentiality, integrity or resistance to attacks.
+    recommendation: Use approved modern algorithms, authenticated encryption modes and platform cryptographic APIs correctly.
+    evidence_example: "MessageDigest.getInstance(\"MD5\")"
+
+  - id: MSAP-AND-011
+    title: Sensitive data in logs
+    description: Logging statements may include sensitive values such as tokens, passwords or personal data.
+    masvs_category: MASVS-PRIVACY
+    severity: Medium
+    source: Decompiled code
+    detection_type: heuristic_code_pattern
+    pattern_or_condition: "Log.(d|e|i|v|w) combined with sensitive keywords"
+    impact: Sensitive data may be exposed through local logs or debugging tools.
+    recommendation: Remove sensitive logs and enforce a secure logging policy for production builds.
+    evidence_example: "Log.d(\"auth\", \"token=\" + token)"
+
+  - id: MSAP-AND-012
+    title: WebView JavaScript enabled
+    description: A WebView enables JavaScript execution.
+    masvs_category: MASVS-PLATFORM
+    severity: Medium
+    source: Decompiled code
+    detection_type: code_pattern
+    pattern_or_condition: "setJavaScriptEnabled(true)"
+    impact: WebView JavaScript can increase attack surface if untrusted content is loaded.
+    recommendation: Enable JavaScript only when necessary and harden WebView settings, URL loading and bridge exposure.
+    evidence_example: "webView.getSettings().setJavaScriptEnabled(true)"
+
+  - id: MSAP-AND-013
+    title: Missing certificate pinning indicator
+    description: No known indicator of certificate pinning is found during static analysis.
+    masvs_category: MASVS-NETWORK
+    severity: Low
+    source: Decompiled code, network_security_config
+    detection_type: absence_indicator
+    pattern_or_condition: "No TrustManager, CertificatePinner, pin-set or known pinning library indicator found"
+    impact: The application may rely only on the platform trust store, which may be insufficient for high-risk threat models.
+    recommendation: Assess the threat model and implement certificate pinning where justified.
+    evidence_example: "No pin-set in network_security_config.xml"
+
+  - id: MSAP-AND-014
+    title: Weak network security configuration
+    description: The network security configuration contains permissive or weak settings.
+    masvs_category: MASVS-NETWORK
+    severity: High
+    source: network_security_config
+    detection_type: xml_configuration_rule
+    pattern_or_condition: "Permissive domain-config, debug-overrides, user trust anchors or cleartext exceptions in production"
+    impact: Weak network settings can reduce transport security and expose application traffic.
+    recommendation: Restrict trust anchors, remove debug overrides from release builds and avoid broad cleartext exceptions.
+    evidence_example: "<certificates src=\"user\" />"
