@@ -2,8 +2,10 @@ rules:
   - id: MSAP-AND-001
     title: Android debuggable enabled
     description: The application is configured with android:debuggable set to true.
+    standard: OWASP MASVS
     masvs_category: MASVS-RESILIENCE
     severity: High
+    confidence: High
     source: AndroidManifest.xml
     detection_type: manifest_attribute
     pattern_or_condition: "application/@android:debuggable == true"
@@ -14,8 +16,10 @@ rules:
   - id: MSAP-AND-002
     title: Android backup enabled
     description: The application allows Android backup through android:allowBackup.
+    standard: OWASP MASVS
     masvs_category: MASVS-STORAGE
     severity: Medium
+    confidence: High
     source: AndroidManifest.xml
     detection_type: manifest_attribute
     pattern_or_condition: "application/@android:allowBackup == true"
@@ -26,8 +30,10 @@ rules:
   - id: MSAP-AND-003
     title: Cleartext traffic allowed
     description: The application permits unencrypted network traffic.
+    standard: OWASP MASVS
     masvs_category: MASVS-NETWORK
     severity: High
+    confidence: High
     source: AndroidManifest.xml, network_security_config
     detection_type: configuration_condition
     pattern_or_condition: "usesCleartextTraffic == true or cleartextTrafficPermitted == true"
@@ -38,8 +44,10 @@ rules:
   - id: MSAP-AND-004
     title: Exported activity without protection
     description: An exported activity is declared without an apparent permission guard.
+    standard: OWASP MASVS
     masvs_category: MASVS-PLATFORM
     severity: High
+    confidence: High
     source: AndroidManifest.xml
     detection_type: manifest_component_rule
     pattern_or_condition: "activity/@android:exported == true and missing android:permission"
@@ -50,8 +58,10 @@ rules:
   - id: MSAP-AND-005
     title: Exported service without protection
     description: An exported service is declared without an apparent permission guard.
+    standard: OWASP MASVS
     masvs_category: MASVS-PLATFORM
     severity: High
+    confidence: High
     source: AndroidManifest.xml
     detection_type: manifest_component_rule
     pattern_or_condition: "service/@android:exported == true and missing android:permission"
@@ -62,8 +72,10 @@ rules:
   - id: MSAP-AND-006
     title: Exported receiver without protection
     description: An exported broadcast receiver is declared without an apparent permission guard.
+    standard: OWASP MASVS
     masvs_category: MASVS-PLATFORM
     severity: High
+    confidence: High
     source: AndroidManifest.xml
     detection_type: manifest_component_rule
     pattern_or_condition: "receiver/@android:exported == true and missing android:permission"
@@ -74,8 +86,10 @@ rules:
   - id: MSAP-AND-007
     title: Hardcoded API key
     description: A value resembling an API key is present in code or resources.
+    standard: OWASP MASVS
     masvs_category: MASVS-AUTH
     severity: High
+    confidence: Medium
     source: Decompiled code, resources
     detection_type: regex_secret_detection
     pattern_or_condition: "(?i)(api[_-]?key|x-api-key)[\"'\\s:=]+[A-Za-z0-9_\\-]{16,}"
@@ -86,8 +100,10 @@ rules:
   - id: MSAP-AND-008
     title: Hardcoded token
     description: A value resembling an authentication token is present in code or resources.
+    standard: OWASP MASVS
     masvs_category: MASVS-AUTH
     severity: High
+    confidence: Medium
     source: Decompiled code, resources
     detection_type: regex_secret_detection
     pattern_or_condition: "(?i)(token|bearer|jwt)[\"'\\s:=]+[A-Za-z0-9_\\-.=]{20,}"
@@ -98,8 +114,10 @@ rules:
   - id: MSAP-AND-009
     title: Insecure HTTP URL
     description: An insecure HTTP endpoint is referenced in code or resources.
+    standard: OWASP MASVS
     masvs_category: MASVS-NETWORK
     severity: Medium
+    confidence: Medium
     source: Decompiled code, resources
     detection_type: string_pattern
     pattern_or_condition: "http://"
@@ -110,8 +128,10 @@ rules:
   - id: MSAP-AND-010
     title: Weak cryptographic algorithm
     description: The application references weak cryptographic primitives or modes.
+    standard: OWASP MASVS
     masvs_category: MASVS-CRYPTO
     severity: High
+    confidence: Medium
     source: Decompiled code
     detection_type: string_pattern
     pattern_or_condition: "MD5|SHA1|DES|RC4|AES/ECB"
@@ -122,8 +142,10 @@ rules:
   - id: MSAP-AND-011
     title: Sensitive data in logs
     description: Logging statements may include sensitive values such as tokens, passwords or personal data.
+    standard: OWASP MASVS
     masvs_category: MASVS-PRIVACY
     severity: Medium
+    confidence: Medium
     source: Decompiled code
     detection_type: heuristic_code_pattern
     pattern_or_condition: "Log.(d|e|i|v|w) combined with sensitive keywords"
@@ -134,8 +156,10 @@ rules:
   - id: MSAP-AND-012
     title: WebView JavaScript enabled
     description: A WebView enables JavaScript execution.
+    standard: OWASP MASVS
     masvs_category: MASVS-PLATFORM
     severity: Medium
+    confidence: Medium
     source: Decompiled code
     detection_type: code_pattern
     pattern_or_condition: "setJavaScriptEnabled(true)"
@@ -146,8 +170,10 @@ rules:
   - id: MSAP-AND-013
     title: Missing certificate pinning indicator
     description: No known indicator of certificate pinning is found during static analysis.
+    standard: OWASP MASVS
     masvs_category: MASVS-NETWORK
     severity: Low
+    confidence: Low
     source: Decompiled code, network_security_config
     detection_type: absence_indicator
     pattern_or_condition: "No TrustManager, CertificatePinner, pin-set or known pinning library indicator found"
@@ -158,8 +184,10 @@ rules:
   - id: MSAP-AND-014
     title: Weak network security configuration
     description: The network security configuration contains permissive or weak settings.
+    standard: OWASP MASVS
     masvs_category: MASVS-NETWORK
     severity: High
+    confidence: High
     source: network_security_config
     detection_type: xml_configuration_rule
     pattern_or_condition: "Permissive domain-config, debug-overrides, user trust anchors or cleartext exceptions in production"

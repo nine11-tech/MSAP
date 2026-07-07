@@ -1,113 +1,129 @@
-# Methodologie d'Evaluation de Securite Mobile - MSAP
+# Methodologie Hybride d'Evaluation Mobile - MSAP
 
-## Objectif de la methodologie d'audit
+## Objectif
 
-La methodologie MSAP definit une approche reproductible pour analyser statiquement des applications Android au format APK. Elle vise a produire des constats techniques exploitables, associes a des preuves, des categories OWASP MASVS, des niveaux de risque et des recommandations.
+La methodologie MSAP V1 combine une evaluation AppSec basee sur OWASP MASVS et un triage d'indicateurs suspects base sur MITRE ATT&CK Mobile. Elle s'applique uniquement a l'analyse statique locale d'APK Android.
 
-## Referentiel: OWASP MASVS
+## Partie 1: Evaluation AppSec OWASP MASVS
 
-OWASP MASVS sert de referentiel principal pour structurer les constats. MSAP ne remplace pas une certification MASVS complete; la plateforme fournit un support d'audit statique permettant d'identifier des indicateurs de non-conformite ou de risque.
+L'axe MASVS vise a identifier des faiblesses de securite applicative: stockage, reseau, cryptographie, exposition de composants, configuration WebView, logs sensibles, secrets hardcodes et resilience.
 
-## Type d'audit: analyse statique Android APK
+Chaque finding MASVS doit inclure:
 
-La Version 1 couvre uniquement l'analyse statique d'un fichier APK. Elle ne lance pas l'application, n'interagit pas avec un terminal mobile, n'utilise pas d'emulateur et n'execute pas d'instrumentation dynamique.
+- regle declenchee;
+- categorie MASVS;
+- severite;
+- preuve;
+- impact;
+- recommandation.
 
-## Artefacts analyses
+## Partie 2: Triage MITRE ATT&CK Mobile
 
-- `AndroidManifest.xml`
-- Code source decompile ou representation intermediaire
-- Ressources Android
-- Fichiers de configuration
-- Chaines de caracteres
-- Configurations de securite reseau
-- Metadonnees applicatives extraites localement
+L'axe ATT&CK Mobile vise a identifier des indicateurs statiques pouvant soutenir une analyse menace. Ces indicateurs peuvent indiquer des capacites ou comportements potentiels, mais ne prouvent pas qu'une application est malveillante.
 
-## Analyse du fichier AndroidManifest.xml
+Chaque indicateur doit etre revu par un analyste et presente comme non conclusif.
 
-L'analyse du manifeste permet d'identifier les permissions, composants exportes, options de sauvegarde, mode debug, configurations reseau et declarations sensibles. Les constats doivent inclure l'attribut ou le composant concerne comme preuve.
+## Static Analysis Workflow
 
-## Analyse du code decompile
+1. Upload et validation APK.
+2. Calcul SHA-256.
+3. Extraction metadonnees.
+4. Extraction manifeste, permissions, composants.
+5. Extraction certificats/signatures.
+6. Extraction ressources, chaines et code decompile lorsque possible.
+7. Normalisation des artefacts.
+8. Execution des regles MASVS.
+9. Execution des regles ATT&CK triage.
+10. Collecte preuves, scoring, reporting.
 
-L'analyse du code decompile recherche des motifs a risque: secrets hardcodes, usage de fonctions cryptographiques faibles, traces de logs sensibles, configuration WebView dangereuse et appels reseau non securises.
+## APK Artifacts Analyzed
 
-## Analyse des ressources
+- `AndroidManifest.xml`.
+- Permissions.
+- Activities, services, receivers et providers.
+- Certificat et signature.
+- Ressources XML et textuelles.
+- Strings.
+- URLs, IPs, domaines.
+- Code decompile lorsque possible.
+- Bibliotheques natives et references de chargement.
 
-Les ressources peuvent contenir des URLs, cles API, configurations, certificats, fichiers XML de securite reseau ou chaines sensibles. Elles doivent etre analysees avec prudence afin de reduire les faux positifs.
+## Manifest Checks
 
-## Detection de secrets
+- `android:debuggable`.
+- `android:allowBackup`.
+- `usesCleartextTraffic`.
+- Composants exportes.
+- Permissions sensibles.
+- Services d'accessibilite.
+- Device admin receiver.
 
-La detection de secrets recherche des cles API, tokens, identifiants, endpoints internes et valeurs ressemblant a des credentials. Un secret detecte doit etre accompagne du fichier, du type de motif et d'un extrait limite.
+## Permission Checks
 
-## Verifications de securite reseau
+Les permissions dangereuses sont extraites et classees. Certaines permissions constituent des faiblesses AppSec selon le contexte; d'autres sont des indicateurs de triage lorsqu'elles sont excessives ou coherentes avec des techniques ATT&CK Mobile.
 
-- Detection d'URLs HTTP.
-- Detection de trafic cleartext autorise.
-- Analyse de la configuration `network_security_config`.
-- Recherche d'indicateurs de certificate pinning.
-- Identification des configurations faibles ou permissives.
+## Component Exposure Checks
 
-## Verifications de stockage des donnees
+Les composants exportes sans permission sont evalues comme risques AppSec. Un service background exporte ou un receiver sensible peut aussi soutenir un triage ATT&CK selon le contexte.
 
-- Recherche de stockage potentiel de donnees sensibles dans les preferences, fichiers locaux ou bases embarquees.
-- Detection de noms de fichiers sensibles.
-- Identification d'indicateurs de stockage non chiffre.
+## Network Checks
 
-## Verifications cryptographiques
+- URLs HTTP.
+- Cleartext traffic.
+- Domaines et IPs.
+- Patterns d'URL pouvant ressembler a des endpoints C2.
+- Configuration reseau faible.
 
-- Recherche d'algorithmes faibles comme MD5, SHA-1, DES, RC4 ou ECB.
-- Identification de constantes cryptographiques hardcodees.
-- Signalement des usages qui necessitent une revue humaine.
+## Secrets and IOC Extraction
 
-## Verifications des interactions plateforme
+MSAP recherche des secrets, tokens, cles API, URLs, IPs, domaines et chaines sensibles. Ces elements doivent etre rediges dans les rapports si leur valeur complete est sensible.
 
-- Composants Android exportes.
-- Activites, services et receivers sans protection apparente.
-- Permissions dangereuses.
-- Usage potentiellement risqué d'intents.
+## Crypto Checks
 
-## Verifications de protection du code
+Detection d'algorithmes faibles, modes dangereux et usages cryptographiques necessitant revue humaine.
 
-- Presence ou absence d'indicateurs d'obfuscation.
-- Usage de logs sensibles.
-- Recherche d'informations de debug.
-- Limites: l'absence d'obfuscation ne constitue pas toujours une vulnerabilite, mais peut augmenter l'exposition.
+## Storage Checks
 
-## Modele de preuve
+Recherche d'indicateurs de stockage non protege, backup active et references a donnees sensibles locales.
 
-Chaque preuve doit contenir:
+## Obfuscation Indicators
 
-- Source de la preuve.
-- Fichier ou artefact concerne.
-- Regle declenchee.
-- Extrait ou attribut detecte.
-- Contexte minimal.
-- Niveau de confiance.
+Les indicateurs d'obfuscation ou de noms de classes peu lisibles peuvent soutenir le triage, mais ne constituent pas seuls une preuve de malveillance.
 
-## Modele de scoring du risque
+## Suspicious API Indicators
 
-Le score initial combine:
+Exemples: reflection, dynamic code loading, chargement de bibliotheques natives, accessibilite, installation de packages, clipboard, overlay. Ces indicateurs doivent etre interpretes avec prudence.
 
-- Severite de la regle.
-- Exposition de l'artefact.
-- Confiance de detection.
-- Impact potentiel.
-- Besoin de validation manuelle.
+## Evidence Model
 
-Les niveaux proposes sont: `Informational`, `Low`, `Medium`, `High`, `Critical`.
+Une preuve contient source, artefact, chemin, ligne si disponible, extrait, regle, standard, confiance et horodatage.
 
-## Limites de l'analyse statique
+## Confidence Model
 
-- Impossible de confirmer certains comportements a l'execution.
-- Risque de faux positifs sur les secrets et URLs.
-- Les chemins de code morts peuvent etre detectes.
-- Les protections runtime ne sont pas observees.
-- Le certificate pinning peut etre difficile a confirmer uniquement par analyse statique.
+- `Low`: indicateur faible ou contexte insuffisant.
+- `Medium`: motif pertinent mais necessitant revue.
+- `High`: preuve directe d'une configuration ou capacite.
 
-## Extensions futures
+## Risk Scoring Model
 
-- Analyse dynamique locale.
-- Instrumentation Frida dans un cadre autorise.
-- Analyse iOS.
-- Integration optionnelle de MobSF comme outil externe dans une version ulterieure.
-- Enrichissement du moteur de regles.
-- Correlation entre resultats statiques et dynamiques.
+Le risque combine severite, confiance, impact, exposition et exploitabilite. Les scores servent a prioriser les revues et corrections.
+
+## Compliance Scoring Model
+
+Le score de conformite MASVS mesure l'absence relative de findings AppSec par categorie. Il reste indicatif et ne remplace pas une certification MASVS.
+
+## Limitations of Static Analysis
+
+- Pas d'observation runtime.
+- Faux positifs possibles.
+- Code mort ou bibliotheques inutilisees possibles.
+- Impossible de confirmer un comportement C2 actif.
+- Impossible de classifier definitivement malware/benin.
+
+## Triage vs Malware Verdict
+
+Le triage ATT&CK Mobile identifie des signaux a examiner. Il ne produit pas de verdict definitif. Une classification malveillante necessiterait d'autres sources, analyse dynamique, contexte de distribution, reputation et revue expert.
+
+## Future Dynamic Analysis Extension
+
+Une version future pourrait ajouter de l'analyse dynamique locale autorisee. Cette extension reste hors perimetre V1.

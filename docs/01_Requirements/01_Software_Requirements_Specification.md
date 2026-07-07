@@ -1,95 +1,103 @@
-# Software Requirements Specification - MSAP
+# Software Requirements Specification - MSAP V1
 
 ## Introduction
 
-Ce document decrit les exigences initiales de MSAP, plateforme locale d'evaluation de securite mobile. Il sert de reference pour cadrer le developpement, les tests, les livrables et les criteres d'acceptation de la Version 1.
+Ce document specifie les exigences de MSAP - Mobile Security Assessment & Triage Platform. La Version 1 couvre l'analyse statique locale d'APK Android, avec evaluation OWASP MASVS et triage MITRE ATT&CK Mobile.
 
-## Vision du projet
+## Vision
 
-MSAP doit fournir un environnement local, structure et extensible pour realiser des audits statiques d'applications Android sous forme d'APK. La plateforme doit aider l'auditeur a identifier des risques, conserver les preuves et produire un rapport aligne avec OWASP MASVS.
+MSAP doit permettre a un auditeur autorise d'importer un APK localement, d'executer une analyse statique, d'obtenir des findings AppSec, des indicateurs suspects de triage, des preuves, des scores et un rapport exploitable.
 
-## Parties prenantes
+## Stakeholders
 
-- Etudiant porteur du projet.
+- Etudiant porteur du PFA.
 - Encadrant academique.
-- Jury de soutenance.
-- Utilisateurs auditeurs.
-- Equipes techniques pouvant fournir des APK de test autorises.
+- Jury.
+- Auditeurs securite.
+- Institution ou laboratoire utilisant un poste local.
 
-## Exigences fonctionnelles
+## Functional Requirements
 
-| ID | Exigence | Priorite |
-|---|---|---|
-| FR-01 | Permettre la creation d'un audit local | Haute |
-| FR-02 | Permettre l'ajout d'un fichier APK a analyser | Haute |
-| FR-03 | Extraire les informations principales du manifeste Android | Haute |
-| FR-04 | Identifier des configurations dangereuses dans le manifeste | Haute |
-| FR-05 | Rechercher des secrets et motifs sensibles dans le code decompile | Haute |
-| FR-06 | Detecter des usages reseau non securises | Haute |
-| FR-07 | Associer chaque constat a une categorie MASVS | Haute |
-| FR-08 | Calculer une severite et un score de risque initial | Moyenne |
-| FR-09 | Centraliser les preuves techniques par constat | Haute |
-| FR-10 | Generer un rapport d'audit local | Moyenne |
-| FR-11 | Afficher un tableau de bord synthetique des resultats | Moyenne |
+| ID | Requirement | Module | Priority |
+|---|---|---|---|
+| FR-01 | Creer et gerer des projets d'audit | Project and audit management | High |
+| FR-02 | Creer un audit APK autorise | Project and audit management | High |
+| FR-03 | Importer un APK localement | APK ingestion | High |
+| FR-04 | Valider type, taille et lisibilite du fichier | APK ingestion | High |
+| FR-05 | Calculer SHA-256 | APK ingestion | High |
+| FR-06 | Extraire les metadonnees APK | Static analysis | High |
+| FR-07 | Extraire manifeste, permissions et composants | Static analysis | High |
+| FR-08 | Extraire certificat et metadonnees signature | Static analysis | Medium |
+| FR-09 | Extraire ressources, chaines, URLs, IPs et domaines | Static analysis | High |
+| FR-10 | Inspecter le code decompile lorsque possible | Static analysis | Medium |
+| FR-11 | Executer les regles AppSec | AppSec detection | High |
+| FR-12 | Executer les regles de triage menace | Threat triage | High |
+| FR-13 | Mapper les findings vers OWASP MASVS | MASVS mapping | High |
+| FR-14 | Mapper les indicateurs vers MITRE ATT&CK Mobile | ATT&CK Mobile mapping | High |
+| FR-15 | Collecter et afficher les preuves | Evidence management | High |
+| FR-16 | Gerer les faux positifs et statuts analyste | False-positive handling | Medium |
+| FR-17 | Calculer un risk score | Risk scoring | High |
+| FR-18 | Calculer un compliance score MASVS | Compliance scoring | Medium |
+| FR-19 | Generer un rapport PDF | Reporting | Medium |
+| FR-20 | Generer un export JSON | Reporting | Medium |
 
-## Exigences non fonctionnelles
+## Non-Functional Requirements
 
-- L'application doit fonctionner localement.
-- Les analyses doivent etre reproductibles.
-- Les resultats doivent etre tracables.
-- L'architecture doit etre modulaire.
-- Les composants d'analyse doivent etre remplacables ou extensibles.
-- L'interface doit rester simple, lisible et orientee audit.
-- La documentation doit permettre la reprise du projet par un autre etudiant ou auditeur.
+- Fonctionnement local sans service distant.
+- Architecture modulaire par plugins d'analyse.
+- Resultats reproductibles.
+- Conservation des preuves.
+- Interface claire orientee audit et triage.
+- Performances suffisantes pour des APK de taille raisonnable sur poste institutionnel.
+- Deploiement Docker Compose local.
 
-## Exigences de securite
+## Security Requirements
 
-- Aucun fichier APK ne doit etre transmis a un service distant.
-- Les fichiers importes doivent etre stockes dans un espace local controle.
-- Les chemins de fichiers et noms d'APK doivent etre traites avec prudence.
-- Les rapports doivent distinguer clairement les preuves, impacts et recommandations.
-- Les analyses doivent etre limitees a des applications pour lesquelles l'utilisateur dispose d'une autorisation.
-- Les erreurs d'analyse ne doivent pas exposer d'informations sensibles inutiles.
+- Les APK ne doivent jamais etre envoyes a un service distant.
+- Les chemins de stockage doivent etre controles.
+- Les snippets de secrets doivent etre tronques ou masques.
+- Les erreurs ne doivent pas exposer de donnees sensibles.
+- L'utilisateur doit confirmer que l'analyse est autorisee.
+- Les rapports doivent inclure un disclaimer sur les limites du triage.
 
-## Exigences d'audit
+## Audit and Triage Requirements
 
-- Chaque finding doit contenir un identifiant unique.
-- Chaque finding doit inclure une preuve technique.
-- Chaque finding doit etre rattache a une categorie OWASP MASVS.
-- Chaque finding doit inclure une severite.
-- Chaque finding doit proposer une recommandation concrete.
-- Les limites de l'analyse statique doivent etre mentionnees dans les rapports.
+- Chaque finding doit etre lie a une regle MASVS.
+- Chaque indicateur suspect doit etre lie a une regle de triage.
+- Chaque mapping ATT&CK doit etre prudent et non conclusif.
+- Chaque element doit disposer d'une preuve et d'un niveau de confiance.
+- Les faux positifs doivent pouvoir etre marques par un analyste.
 
-## Exigences de reporting
+## Reporting Requirements
 
-- Le rapport doit contenir une synthese executive.
-- Le rapport doit contenir une vue detaillee des findings.
-- Le rapport doit inclure les preuves collectees.
-- Le rapport doit inclure les recommandations.
-- Le rapport doit preciser le perimetre et les limites de l'analyse.
-- Le rapport doit etre generable localement.
+- Synthese executive.
+- Perimetre et limites.
+- Score de risque.
+- Score de conformite MASVS.
+- Synthese ATT&CK Mobile.
+- Findings AppSec.
+- Indicateurs suspects.
+- Preuves et recommandations.
+- Export JSON technique.
 
-## Exigences de deploiement
+## Deployment Requirements
 
-- Deploiement local uniquement pour la Version 1.
-- Preparation d'une architecture compatible avec Docker local.
-- Pas de dependance a un service cloud.
-- Pas d'utilisation d'emulateur Android.
-- Pas d'integration MobSF dans la Version 1.
+- Docker Compose local.
+- Volumes pour APK, artefacts et rapports.
+- Variables d'environnement documentees.
+- Compatibilite Ubuntu WSL.
+- Prise en compte ARM64 lorsque possible.
+- Aucune dependance a MobSF ou a un emulateur.
 
-## Contraintes
+## Authorized-Use Constraints
 
-- Duree cible: 8 semaines.
-- Perimetre limite a Android APK static analysis.
-- Utilisation d'outils locaux uniquement.
-- Niveau de maturite attendu: prototype presentable, pas produit commercial complet.
-- Les detections doivent etre documentees et justifiables.
+MSAP doit etre utilise uniquement sur des APK pour lesquels l'utilisateur dispose d'une autorisation. La plateforme ne doit pas fournir de fonctions d'exploitation offensive contre des systemes tiers.
 
-## Criteres d'acceptation
+## Acceptance Criteria
 
-- La structure documentaire est complete et coherente.
-- Le catalogue initial de regles statiques est disponible.
-- L'architecture de la plateforme est documentee.
-- La methodologie d'audit est alignee avec OWASP MASVS.
-- La Version 1 reste strictement locale et statique.
-- Les livrables permettent de demarrer le developpement sans ambiguite majeure.
+- Un APK peut etre importe, valide et hashe localement.
+- Les artefacts statiques principaux sont extraits.
+- Les catalogues MASVS et ATT&CK sont charges et valides.
+- Les findings et indicateurs incluent preuve, standard, severite et confiance.
+- Les rapports ne presentent pas les indicateurs comme verdict malware.
+- Le deploiement local est documente.

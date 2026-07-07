@@ -2,40 +2,64 @@
 
 ```mermaid
 flowchart TB
-    User[User]
+    Auditor[User / Auditor]
 
-    subgraph UI[Presentation Layer]
-        React[React Frontend]
+    subgraph Presentation
+        FE[React Frontend]
     end
 
-    subgraph Backend[Application Layer]
+    subgraph API_Layer
         API[Django REST API]
-        Report[Report Generator]
+        ORCH[Audit Orchestrator]
     end
 
-    subgraph Analysis[Analysis Layer]
-        Static[Static Analysis Engine]
-        APKTool[APKTool Adapter]
+    subgraph Analyzer_Layer
+        PM[Analyzer Plugin Manager]
+        APK[APKTool Adapter]
         JADX[JADX Adapter]
-        Androguard[Androguard Adapter]
-        MASVS[MASVS Engine]
-        Risk[Risk Engine]
+        AG[Androguard Adapter]
+        RY[Custom Regex/YARA Rules Adapter]
     end
 
-    subgraph Data[Data Layer]
+    subgraph Normalization
+        NORM[Normalization Layer]
+    end
+
+    subgraph Security_Engines
+        MASVS[MASVS Engine]
+        ATTCK[ATT&CK Triage Engine]
+        EVID[Evidence Engine]
+        RISK[Risk Engine]
+    end
+
+    subgraph Data
         DB[(PostgreSQL)]
     end
 
-    User --> React
-    React --> API
+    subgraph Reporting
+        REPORT[Report Generator]
+    end
+
+    Auditor --> FE
+    FE --> API
+    API --> ORCH
+    ORCH --> PM
+    PM --> APK
+    PM --> JADX
+    PM --> AG
+    PM --> RY
+    APK --> NORM
+    JADX --> NORM
+    AG --> NORM
+    RY --> NORM
+    NORM --> MASVS
+    NORM --> ATTCK
+    MASVS --> EVID
+    ATTCK --> EVID
+    EVID --> RISK
+    RISK --> DB
+    EVID --> DB
     API --> DB
-    API --> Static
-    Static --> APKTool
-    Static --> JADX
-    Static --> Androguard
-    Static --> MASVS
-    MASVS --> Risk
-    Risk --> Report
-    Report --> DB
-    API --> Report
+    DB --> REPORT
+    REPORT --> API
 ```
