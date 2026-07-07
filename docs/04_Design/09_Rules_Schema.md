@@ -1,61 +1,108 @@
-# Schema Officiel des Regles Statiques V1 - MSAP
+# Schema des Regles MSAP V1
 
 ## Objectif
 
-Le fichier `rules/masvs_static_rules.yaml` constitue le catalogue de regles statiques de la Version 1. Il doit etre lisible, validable et directement exploitable par le backend pour executer les controles d'analyse statique Android et produire des findings alignes avec OWASP MASVS.
+MSAP V1 utilise deux catalogues YAML:
 
-## Structure racine
+- `rules/masvs_static_rules.yaml` pour les regles AppSec OWASP MASVS.
+- `rules/attck_mobile_triage_rules.yaml` pour les indicateurs de triage MITRE ATT&CK Mobile.
+
+Les deux catalogues sont des configurations de securite. Ils doivent etre charges et valides avant toute analyse.
+
+## Common Fields
+
+| Field | Description |
+|---|---|
+| `id` | Identifiant unique, par exemple `MSAP-AND-001` ou `MSAP-MOB-001`. |
+| `title` | Titre court. |
+| `description` | Description de la detection. |
+| `standard` | `OWASP MASVS` ou `MITRE ATT&CK Mobile`. |
+| `severity` | Severite par defaut. |
+| `confidence` | Confiance par defaut. |
+| `source` | Artefact analyse. |
+| `detection_type` | Type d'execution. |
+| `pattern_or_condition` | Motif, regex ou condition. |
+| `evidence_example` | Exemple de preuve attendue. |
+
+## MASVS Static Rules Schema
+
+Champs obligatoires:
+
+- `id`
+- `title`
+- `description`
+- `standard`
+- `masvs_category`
+- `severity`
+- `source`
+- `detection_type`
+- `pattern_or_condition`
+- `impact`
+- `recommendation`
+- `evidence_example`
+- `confidence`
+
+Example:
 
 ```yaml
-rules:
-  - id: MSAP-AND-001
-    title: Android debuggable enabled
-    description: The application is configured with android:debuggable set to true.
-    masvs_category: MASVS-RESILIENCE
-    severity: High
-    source: AndroidManifest.xml
-    detection_type: manifest_attribute
-    pattern_or_condition: "application/@android:debuggable == true"
-    impact: Debuggable production builds can expose runtime inspection.
-    recommendation: Disable android:debuggable for production builds.
-    evidence_example: "<application android:debuggable=\"true\" ...>"
+id: MSAP-AND-001
+title: Android debuggable enabled
+description: The application is configured with android:debuggable set to true.
+standard: OWASP MASVS
+masvs_category: MASVS-RESILIENCE
+severity: High
+confidence: High
+source: AndroidManifest.xml
+detection_type: manifest_attribute
+pattern_or_condition: "application/@android:debuggable == true"
+impact: Debuggable production builds can expose runtime inspection.
+recommendation: Disable android:debuggable for production builds.
+evidence_example: "<application android:debuggable=\"true\" ...>"
 ```
 
-La cle racine obligatoire est `rules`. Sa valeur doit etre une liste non vide de regles.
+## ATT&CK Triage Rules Schema
 
-## Champs obligatoires
+Champs obligatoires:
 
-### id
+- `id`
+- `title`
+- `description`
+- `standard`
+- `tactic`
+- `technique_id`
+- `technique_name`
+- `platform`
+- `severity`
+- `confidence`
+- `source`
+- `detection_type`
+- `pattern_or_condition`
+- `triage_interpretation`
+- `analyst_recommendation`
+- `evidence_example`
 
-Identifiant unique de la regle. Le format V1 attendu est `MSAP-AND-NNN`, par exemple `MSAP-AND-001`.
+Example:
 
-### title
+```yaml
+id: MSAP-MOB-004
+title: Accessibility service usage
+description: The APK declares an accessibility service.
+standard: MITRE ATT&CK Mobile
+tactic: Privilege Escalation
+technique_id: M1016
+technique_name: Accessibility Features
+platform: Android
+severity: High
+confidence: High
+source: AndroidManifest.xml
+detection_type: manifest_component_rule
+pattern_or_condition: "service declares android.accessibilityservice.AccessibilityService"
+triage_interpretation: May indicate accessibility capability and should be reviewed by an analyst.
+analyst_recommendation: Verify legitimate accessibility purpose and user consent.
+evidence_example: "<service android:permission=\"android.permission.BIND_ACCESSIBILITY_SERVICE\" ...>"
+```
 
-Titre court et explicite du controle.
-
-### description
-
-Description du probleme recherche par la regle.
-
-### masvs_category
-
-Categorie MASVS associee au finding produit.
-
-Valeurs initiales acceptees:
-
-- `MASVS-STORAGE`
-- `MASVS-CRYPTO`
-- `MASVS-AUTH`
-- `MASVS-NETWORK`
-- `MASVS-PLATFORM`
-- `MASVS-PRIVACY`
-- `MASVS-RESILIENCE`
-
-### severity
-
-Severite par defaut de la regle.
-
-Valeurs autorisees:
+## Rule Severity Values
 
 - `Informational`
 - `Low`
@@ -63,127 +110,61 @@ Valeurs autorisees:
 - `High`
 - `Critical`
 
-### source
+## Confidence Values
 
-Artefact ou famille d'artefacts analysee.
+- `Low`
+- `Medium`
+- `High`
 
-Valeurs autorisees pour V1:
-
-- `AndroidManifest.xml`
-- `network_security_config`
-- `Decompiled code`
-- `resources`
-- `Decompiled code, resources`
-- `AndroidManifest.xml, network_security_config`
-- `Decompiled code, network_security_config`
-
-### detection_type
-
-Type de detection applique par le moteur.
-
-Valeurs autorisees pour V1:
+## Detection Types
 
 - `manifest_attribute`
+- `manifest_permission`
 - `manifest_component_rule`
 - `configuration_condition`
 - `xml_configuration_rule`
 - `string_pattern`
 - `regex_secret_detection`
+- `regex_ioc_detection`
 - `heuristic_code_pattern`
 - `code_pattern`
 - `absence_indicator`
+- `permission_set_heuristic`
+- `obfuscation_heuristic`
 
-### pattern_or_condition
+## Evidence Fields Produced by Engines
 
-Motif, expression, condition ou description operationnelle permettant d'executer la detection. Le contenu depend du `detection_type`.
+- `standard`
+- `rule_id` or `indicator_id`
+- `source`
+- `artifact_type`
+- `file_path`
+- `line_number`
+- `snippet`
+- `redacted`
+- `confidence`
+- `detected_at`
 
-### impact
+## Validation Rules
 
-Impact securite attendu si le constat est confirme.
+- Root key must be `rules`.
+- Rule IDs must be unique.
+- MASVS IDs must match `MSAP-AND-NNN`.
+- ATT&CK indicator IDs must match `MSAP-MOB-NNN`.
+- All required fields must be present and non-empty.
+- `severity`, `confidence` and `detection_type` must be allowed values.
+- `standard` must match the file purpose.
+- Regex patterns must compile before analysis.
+- Triage text must avoid definitive malware verdict language.
+- Evidence examples must not contain real secrets.
 
-### recommendation
+## Backend Loading Process
 
-Recommandation de remediation exploitable par une equipe technique.
-
-### evidence_example
-
-Exemple de preuve attendue, utile pour le rapport et les tests de validation.
-
-## Exemples complets
-
-### Exemple 1: attribut manifeste
-
-```yaml
-id: MSAP-AND-001
-title: Android debuggable enabled
-description: The application is configured with android:debuggable set to true.
-masvs_category: MASVS-RESILIENCE
-severity: High
-source: AndroidManifest.xml
-detection_type: manifest_attribute
-pattern_or_condition: "application/@android:debuggable == true"
-impact: Debuggable production builds can expose runtime inspection, debugging interfaces and sensitive execution details.
-recommendation: Disable android:debuggable for production builds and enforce release build configuration checks.
-evidence_example: "<application android:debuggable=\"true\" ...>"
-```
-
-### Exemple 2: detection de secret
-
-```yaml
-id: MSAP-AND-007
-title: Hardcoded API key
-description: A value resembling an API key is present in code or resources.
-masvs_category: MASVS-AUTH
-severity: High
-source: Decompiled code, resources
-detection_type: regex_secret_detection
-pattern_or_condition: "(?i)(api[_-]?key|x-api-key)[\"'\\s:=]+[A-Za-z0-9_\\-]{16,}"
-impact: Exposed API keys may allow unauthorized use of backend services.
-recommendation: Remove API keys from the mobile client and use server-side secret management or scoped short-lived credentials.
-evidence_example: "API_KEY = \"AIza...\""
-```
-
-### Exemple 3: configuration reseau
-
-```yaml
-id: MSAP-AND-014
-title: Weak network security configuration
-description: The network security configuration contains permissive or weak settings.
-masvs_category: MASVS-NETWORK
-severity: High
-source: network_security_config
-detection_type: xml_configuration_rule
-pattern_or_condition: "Permissive domain-config, debug-overrides, user trust anchors or cleartext exceptions in production"
-impact: Weak network settings can reduce transport security and expose application traffic.
-recommendation: Restrict trust anchors, remove debug overrides from release builds and avoid broad cleartext exceptions.
-evidence_example: "<certificates src=\"user\" />"
-```
-
-## Regles de validation
-
-- La cle racine `rules` est obligatoire.
-- Chaque regle doit contenir tous les champs obligatoires.
-- `id` doit etre unique.
-- `id` doit respecter le format `MSAP-AND-NNN`.
-- `severity` doit appartenir aux valeurs autorisees.
-- `source` doit appartenir aux valeurs autorisees.
-- `detection_type` doit appartenir aux valeurs autorisees.
-- `masvs_category` doit appartenir aux categories MASVS retenues.
-- Les champs textuels ne doivent pas etre vides.
-- Les expressions regex doivent etre compilables pour les regles `regex_secret_detection`.
-- Les snippets d'exemple ne doivent pas contenir de vrai secret.
-
-## Chargement et validation par le backend
-
-Au demarrage ou avant une analyse, le backend doit:
-
-1. Lire `rules/masvs_static_rules.yaml` depuis un chemin local configure.
-2. Parser le YAML avec une bibliotheque robuste.
-3. Verifier la presence de la cle racine `rules`.
-4. Valider chaque regle selon le schema V1.
-5. Compiler les regex lorsque le type de detection le necessite.
-6. Refuser le lancement de l'analyse si le catalogue est invalide.
-7. Synchroniser les regles valides dans la table `Rule` ou les charger en memoire selon le MVP.
-8. Journaliser uniquement les erreurs de schema et jamais de donnees sensibles issues d'un APK.
-
-Le catalogue YAML est considere comme une configuration de securite. Une regle invalide peut fausser l'audit; elle doit donc etre detectee avant l'execution du pipeline.
+1. Load YAML files from local `rules/`.
+2. Parse YAML safely.
+3. Validate root structure and required fields.
+4. Validate enum values and ID formats.
+5. Compile regex-based rules.
+6. Synchronize valid rules into database or load in memory.
+7. Fail fast if a mandatory rules file is invalid.
+8. Log schema errors locally without leaking APK data.

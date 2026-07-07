@@ -1,0 +1,255 @@
+rules:
+  - id: MSAP-MOB-001
+    title: Suspicious SMS access permissions
+    description: The APK requests permissions that may allow SMS access.
+    standard: MITRE ATT&CK Mobile
+    tactic: Collection
+    technique_id: M1007
+    technique_name: SMS Messages
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_permission
+    pattern_or_condition: "READ_SMS|RECEIVE_SMS|SEND_SMS"
+    triage_interpretation: May indicate SMS collection or abuse capability; legitimate messaging apps can also request these permissions.
+    analyst_recommendation: Review declared app purpose, permission justification and related code paths.
+    evidence_example: "<uses-permission android:name=\"android.permission.READ_SMS\" />"
+
+  - id: MSAP-MOB-002
+    title: Contact access permissions
+    description: The APK requests access to contacts.
+    standard: MITRE ATT&CK Mobile
+    tactic: Collection
+    technique_id: M1013
+    technique_name: Contact List
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_permission
+    pattern_or_condition: "READ_CONTACTS|WRITE_CONTACTS|GET_ACCOUNTS"
+    triage_interpretation: Can support triage for potential contact collection, but requires context.
+    analyst_recommendation: Validate business need and data handling controls.
+    evidence_example: "<uses-permission android:name=\"android.permission.READ_CONTACTS\" />"
+
+  - id: MSAP-MOB-003
+    title: Location access permissions
+    description: The APK requests precise or background location access.
+    standard: MITRE ATT&CK Mobile
+    tactic: Collection
+    technique_id: M1008
+    technique_name: Location Tracking
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_permission
+    pattern_or_condition: "ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|ACCESS_BACKGROUND_LOCATION"
+    triage_interpretation: May indicate location tracking capability and should be reviewed against app purpose.
+    analyst_recommendation: Check consent, foreground/background use and privacy documentation.
+    evidence_example: "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />"
+
+  - id: MSAP-MOB-004
+    title: Accessibility service usage
+    description: The APK declares an accessibility service.
+    standard: MITRE ATT&CK Mobile
+    tactic: Privilege Escalation
+    technique_id: M1016
+    technique_name: Accessibility Features
+    platform: Android
+    severity: High
+    confidence: High
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "service with android.permission.BIND_ACCESSIBILITY_SERVICE"
+    triage_interpretation: May indicate accessibility capability; suspicious when unrelated to a clear accessibility feature.
+    analyst_recommendation: Review service declaration, user-facing justification and code behavior.
+    evidence_example: "<service android:permission=\"android.permission.BIND_ACCESSIBILITY_SERVICE\" />"
+
+  - id: MSAP-MOB-005
+    title: Device admin receiver
+    description: The APK declares a device administrator receiver.
+    standard: MITRE ATT&CK Mobile
+    tactic: Defense Evasion
+    technique_id: M1012
+    technique_name: Device Administrator Permissions
+    platform: Android
+    severity: High
+    confidence: High
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "receiver with android.app.device_admin metadata"
+    triage_interpretation: May indicate administrative control or persistence capability; legitimate MDM apps may use it.
+    analyst_recommendation: Validate enterprise use case and requested policies.
+    evidence_example: "<meta-data android:name=\"android.app.device_admin\" />"
+
+  - id: MSAP-MOB-006
+    title: Overlay permission
+    description: The APK requests permission to draw over other apps.
+    standard: MITRE ATT&CK Mobile
+    tactic: Credential Access
+    technique_id: M1003
+    technique_name: Screen Overlay
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_permission
+    pattern_or_condition: "SYSTEM_ALERT_WINDOW"
+    triage_interpretation: Can support triage for overlay abuse patterns, but is not malicious by itself.
+    analyst_recommendation: Review UI flows requiring overlay and user consent.
+    evidence_example: "<uses-permission android:name=\"android.permission.SYSTEM_ALERT_WINDOW\" />"
+
+  - id: MSAP-MOB-007
+    title: Suspicious HTTP C2-like URL pattern
+    description: Strings contain HTTP URLs with paths or hostnames commonly worth triage review.
+    standard: MITRE ATT&CK Mobile
+    tactic: Command and Control
+    technique_id: M1015
+    technique_name: Application Layer Protocol
+    platform: Android
+    severity: High
+    confidence: Medium
+    source: Decompiled code, resources
+    detection_type: regex_ioc_detection
+    pattern_or_condition: "http://[^\\s\"']+/(gate|panel|cmd|command|task|upload|beacon|api)"
+    triage_interpretation: May indicate a suspicious network endpoint; not a definitive C2 classification.
+    analyst_recommendation: Review domain, path, surrounding code and authorized external reputation sources.
+    evidence_example: "http://example.invalid/gate"
+
+  - id: MSAP-MOB-008
+    title: Dynamic code loading indicators
+    description: The code references dynamic class loading or DEX loading APIs.
+    standard: MITRE ATT&CK Mobile
+    tactic: Defense Evasion
+    technique_id: M1045
+    technique_name: Dynamic Code Loading
+    platform: Android
+    severity: High
+    confidence: High
+    source: Decompiled code
+    detection_type: code_pattern
+    pattern_or_condition: "DexClassLoader|PathClassLoader|loadDex|InMemoryDexClassLoader"
+    triage_interpretation: May indicate runtime code loading capability that requires analyst review.
+    analyst_recommendation: Identify code source, integrity checks and legitimate plugin framework use.
+    evidence_example: "new DexClassLoader(path, outDir, null, loader)"
+
+  - id: MSAP-MOB-009
+    title: Reflection usage
+    description: The code uses Java reflection APIs.
+    standard: MITRE ATT&CK Mobile
+    tactic: Defense Evasion
+    technique_id: M1027
+    technique_name: Obfuscated Files or Information
+    platform: Android
+    severity: Medium
+    confidence: Low
+    source: Decompiled code
+    detection_type: code_pattern
+    pattern_or_condition: "Class.forName|Method.invoke|getDeclaredMethod|getDeclaredField"
+    triage_interpretation: Reflection is common but can support triage when combined with obfuscation or dynamic loading.
+    analyst_recommendation: Correlate with package context, obfuscation and sensitive API use.
+    evidence_example: "Class.forName(className).getDeclaredMethod(methodName)"
+
+  - id: MSAP-MOB-010
+    title: Native library loading
+    description: The APK loads native libraries or includes native binaries.
+    standard: MITRE ATT&CK Mobile
+    tactic: Defense Evasion
+    technique_id: M1009
+    technique_name: Native Code
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: Decompiled code, resources
+    detection_type: code_pattern
+    pattern_or_condition: "System.loadLibrary|System.load|lib/*.so"
+    triage_interpretation: Native code may be legitimate, protected commercial code or suspicious depending on context.
+    analyst_recommendation: Review library names, origins and expected SDK dependencies.
+    evidence_example: "System.loadLibrary(\"native-lib\")"
+
+  - id: MSAP-MOB-011
+    title: Package installation permission
+    description: The APK requests package installation capability.
+    standard: MITRE ATT&CK Mobile
+    tactic: Persistence
+    technique_id: M1014
+    technique_name: Install Insecure or Malicious Configuration
+    platform: Android
+    severity: High
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_permission
+    pattern_or_condition: "REQUEST_INSTALL_PACKAGES"
+    triage_interpretation: May indicate updater or package installation capability requiring review.
+    analyst_recommendation: Confirm legitimate updater flow and source validation.
+    evidence_example: "<uses-permission android:name=\"android.permission.REQUEST_INSTALL_PACKAGES\" />"
+
+  - id: MSAP-MOB-012
+    title: Clipboard access indicators
+    description: The code references clipboard APIs.
+    standard: MITRE ATT&CK Mobile
+    tactic: Collection
+    technique_id: M1043
+    technique_name: Clipboard Data
+    platform: Android
+    severity: Medium
+    confidence: Low
+    source: Decompiled code
+    detection_type: code_pattern
+    pattern_or_condition: "ClipboardManager|getPrimaryClip|setPrimaryClip"
+    triage_interpretation: Can support triage for potential clipboard access, but common legitimate uses exist.
+    analyst_recommendation: Review whether clipboard access handles sensitive data.
+    evidence_example: "ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE)"
+
+  - id: MSAP-MOB-013
+    title: Suspicious background service exported
+    description: A background service appears exported without protection.
+    standard: MITRE ATT&CK Mobile
+    tactic: Persistence
+    technique_id: M1010
+    technique_name: Background Services
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: manifest_component_rule
+    pattern_or_condition: "service exported=true and missing permission"
+    triage_interpretation: May indicate externally reachable background functionality; requires context.
+    analyst_recommendation: Review service purpose, intent filters and permissions.
+    evidence_example: "<service android:name=\".BackgroundService\" android:exported=\"true\" />"
+
+  - id: MSAP-MOB-014
+    title: Excessive dangerous permissions
+    description: The APK requests a high number of dangerous permissions.
+    standard: MITRE ATT&CK Mobile
+    tactic: Discovery
+    technique_id: M1011
+    technique_name: Permission Groups Discovery
+    platform: Android
+    severity: Medium
+    confidence: Medium
+    source: AndroidManifest.xml
+    detection_type: permission_set_heuristic
+    pattern_or_condition: "dangerous_permission_count >= 8"
+    triage_interpretation: Broad permission access can support triage but may be legitimate for complex apps.
+    analyst_recommendation: Compare requested permissions against declared app functionality.
+    evidence_example: "Dangerous permissions: READ_SMS, READ_CONTACTS, ACCESS_FINE_LOCATION, RECORD_AUDIO..."
+
+  - id: MSAP-MOB-015
+    title: Obfuscation indicators
+    description: Decompiled code contains indicators of heavy obfuscation.
+    standard: MITRE ATT&CK Mobile
+    tactic: Defense Evasion
+    technique_id: M1027
+    technique_name: Obfuscated Files or Information
+    platform: Android
+    severity: Low
+    confidence: Low
+    source: Decompiled code
+    detection_type: obfuscation_heuristic
+    pattern_or_condition: "short class names, unreadable identifiers, high string entropy, packed-looking code"
+    triage_interpretation: Obfuscation is not malicious by itself and should be treated as a supporting signal.
+    analyst_recommendation: Correlate with dynamic loading, suspicious permissions and network indicators.
+    evidence_example: "Classes named a.a.a with high density of encoded strings"

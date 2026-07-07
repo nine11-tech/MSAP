@@ -1,165 +1,134 @@
-# Pipeline d'Analyse Statique APK V1 - MSAP
+# Pipeline d'Analyse Statique et de Triage APK - MSAP V1
 
-## Objectif
+## Pipeline
 
-Ce document definit le pipeline technique de la Version 1 de MSAP. Le pipeline couvre uniquement l'analyse statique locale d'un fichier APK Android et exclut MobSF, Frida, l'emulateur Android, l'analyse dynamique et iOS.
+1. APK upload.
+2. File validation.
+3. Hash calculation.
+4. APK metadata extraction.
+5. Manifest extraction.
+6. Certificate/signature metadata extraction.
+7. Permission and component extraction.
+8. Resource and string extraction.
+9. Decompiled code extraction when possible.
+10. Raw analyzer result collection.
+11. Normalization into internal artifact schema.
+12. MASVS rule loading.
+13. ATT&CK triage rule loading.
+14. AppSec rule execution.
+15. Threat indicator detection.
+16. Evidence collection.
+17. MASVS mapping.
+18. ATT&CK Mobile mapping.
+19. Risk scoring.
+20. Compliance scoring.
+21. Result persistence.
+22. Report generation.
 
-## Entrees du pipeline
+## Inputs
 
-- Fichier APK fourni par l'utilisateur.
-- Contexte d'audit: projet, nom d'audit, perimetre declare.
-- Catalogue de regles `rules/masvs_static_rules.yaml`.
-- Configuration locale: chemins de stockage, limites de taille, options d'extraction.
+- APK autorise.
+- Projet et audit.
+- `rules/masvs_static_rules.yaml`.
+- `rules/attck_mobile_triage_rules.yaml`.
+- Configuration locale des chemins et limites.
 
-## Sorties du pipeline
+## Outputs
 
-- Metadonnees APK: hash, package, version, SDK.
-- Artefacts extraits: manifeste, ressources, code decompile, configurations.
-- Findings normalises.
-- Preuves techniques associees.
-- Mapping MASVS.
-- Scores de risque.
-- Rapport local.
-- Journal technique d'execution.
+- APKMetadata.
+- RawAnalyzerResult.
+- NormalizedArtifact.
+- Findings MASVS.
+- SuspiciousIndicators ATT&CK Mobile.
+- Evidence.
+- RiskScore et ComplianceScore.
+- Rapport PDF et export JSON.
 
-## Etapes du pipeline
-
-### 1. APK upload
-
-L'utilisateur depose un fichier APK via l'interface. Le backend stocke le fichier dans un repertoire local controle associe a l'audit.
-
-### 2. File validation
-
-Le backend verifie l'extension, la taille, la presence du fichier, le type attendu et la lisibilite. La validation ne doit pas executer le contenu de l'APK.
-
-### 3. Hash calculation
-
-Le backend calcule au minimum le hash SHA-256. Des hashes SHA-1 et MD5 peuvent etre conserves a titre de compatibilite documentaire.
-
-### 4. Metadata extraction
-
-Le moteur extrait les metadonnees principales: nom de package, version, SDK minimum, SDK cible et informations de signature si disponibles.
-
-### 5. Manifest extraction
-
-Le pipeline extrait et parse `AndroidManifest.xml` pour identifier les permissions, composants exportes, attributs applicatifs et configurations de securite.
-
-### 6. Resource extraction
-
-Les ressources textuelles et fichiers de configuration sont extraits pour rechercher URLs, secrets potentiels et fichiers comme `network_security_config.xml`.
-
-### 7. Decompiled code extraction
-
-Le code decompile ou representation equivalente est prepare pour les detections par motifs. Cette etape reste locale et ne lance pas l'application.
-
-### 8. Rule loading from YAML
-
-Le backend charge `rules/masvs_static_rules.yaml`, valide son schema et prepare les regles actives.
-
-### 9. Rule execution
-
-Le moteur applique les regles selon leur `source` et `detection_type`: conditions de manifeste, motifs de chaines, regex, heuristiques ou analyse XML.
-
-### 10. Evidence collection
-
-Chaque detection doit produire au moins une preuve: source, fichier, extrait limite, ligne si disponible, type d'artefact et confiance.
-
-### 11. MASVS mapping
-
-Chaque finding est associe a la categorie MASVS indiquee par la regle, par exemple `MASVS-NETWORK` ou `MASVS-PLATFORM`.
-
-### 12. Risk scoring
-
-Le moteur de risque calcule une severite finale et un score indicatif a partir de la severite de la regle, la confiance, l'exposition et le contexte.
-
-### 13. Result persistence
-
-Les resultats sont persistés dans PostgreSQL. Les fichiers extraits restent sur disque local avec des chemins references en base.
-
-### 14. Report generation
-
-Le generateur produit un rapport local contenant le perimetre, les limites, la synthese, les findings, les preuves et les recommandations.
-
-## Sequence diagram
+## Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-    actor User as Auditeur
+    actor Auditor
     participant FE as React Frontend
     participant API as Django REST API
-    participant ORCH as Analysis Orchestrator
-    participant FS as Local Storage
-    participant RULES as YAML Rule Loader
-    participant STATIC as Static Analysis Engine
+    participant ORCH as Audit Orchestrator
+    participant PM as Analyzer Plugin Manager
+    participant NORM as Normalization Layer
     participant MASVS as MASVS Engine
-    participant RISK as Risk Engine
+    participant ATTCK as ATT&CK Triage Engine
+    participant EVID as Evidence Engine
+    participant SCORE as Risk/Compliance Engine
     participant DB as PostgreSQL
-    participant REPORT as Report Generator
+    participant REP as Report Generator
 
-    User->>FE: Deposer un APK
-    FE->>API: POST /api/v1/audits/{id}/apk
-    API->>FS: Stocker le fichier localement
-    API->>API: Valider le fichier et calculer les hashes
-    API->>DB: Enregistrer APKFile
-    User->>FE: Lancer l'analyse
-    FE->>API: POST /api/v1/audits/{id}/analysis/start
-    API->>ORCH: Demarrer le pipeline
-    ORCH->>RULES: Charger et valider masvs_static_rules.yaml
-    ORCH->>STATIC: Extraire manifeste, ressources et code
-    STATIC->>FS: Ecrire les artefacts extraits
-    STATIC->>STATIC: Executer les regles
-    STATIC->>MASVS: Associer les categories MASVS
-    MASVS->>RISK: Demander le scoring
-    RISK-->>MASVS: Scores et severites
-    MASVS-->>ORCH: Findings normalises
-    ORCH->>DB: Persister resultats, findings, preuves, scores
-    ORCH->>REPORT: Generer le rapport
-    REPORT->>FS: Ecrire le rapport local
-    REPORT->>DB: Enregistrer Report
-    API-->>FE: Statut completed
-    FE-->>User: Afficher synthese et findings
+    Auditor->>FE: Upload APK
+    FE->>API: POST /apk
+    API->>API: Validate file and calculate SHA-256
+    API->>DB: Save APKFile
+    Auditor->>FE: Start analysis
+    FE->>API: POST /analysis/start
+    API->>ORCH: Start pipeline
+    ORCH->>PM: Run APKTool/JADX/Androguard/Regex adapters
+    PM-->>ORCH: Raw analyzer results
+    ORCH->>NORM: Normalize artifacts
+    NORM-->>ORCH: Internal artifact schema
+    ORCH->>MASVS: Load rules and execute AppSec detections
+    ORCH->>ATTCK: Load triage rules and detect indicators
+    MASVS-->>EVID: Findings with evidence candidates
+    ATTCK-->>EVID: Indicators with evidence candidates
+    EVID->>SCORE: Evidence-backed results
+    SCORE->>DB: Persist scores and compliance
+    EVID->>DB: Persist evidence
+    ORCH->>REP: Generate PDF and JSON
+    REP->>DB: Save report metadata
+    API-->>FE: Completed status
 ```
 
-## Activity diagram
+## Activity Diagram
 
 ```mermaid
 flowchart TD
-    Start([Debut]) --> Upload[Depot APK]
-    Upload --> Validate{Fichier valide ?}
-    Validate -- Non --> Reject[Rejeter le fichier et journaliser]
-    Reject --> EndFail([Fin en erreur])
-    Validate -- Oui --> Hash[Calculer SHA-256]
-    Hash --> Metadata[Extraire metadonnees APK]
-    Metadata --> Manifest[Extraire AndroidManifest.xml]
-    Manifest --> Resources[Extraire ressources]
-    Resources --> Code[Extraire code decompile]
-    Code --> LoadRules[Charger regles YAML]
-    LoadRules --> RulesValid{Regles valides ?}
-    RulesValid -- Non --> RuleError[Arreter analyse et signaler erreur de configuration]
-    RuleError --> EndFail
-    RulesValid -- Oui --> Execute[Executer les regles]
-    Execute --> Evidence[Collecter les preuves]
-    Evidence --> Mapping[Associer MASVS]
-    Mapping --> Scoring[Calculer le risque]
-    Scoring --> Persist[Persister les resultats]
-    Persist --> Report[Generer rapport]
-    Report --> EndOk([Fin completed])
+    Start([Start]) --> Upload[APK upload]
+    Upload --> Validate{Valid APK?}
+    Validate -- No --> Reject[Reject and log reason]
+    Reject --> Fail([Failed])
+    Validate -- Yes --> Hash[Calculate SHA-256]
+    Hash --> Meta[Extract APK metadata]
+    Meta --> Manifest[Extract manifest]
+    Manifest --> Cert[Extract certificate/signature metadata]
+    Cert --> Perms[Extract permissions and components]
+    Perms --> Strings[Extract resources and strings]
+    Strings --> Code[Extract decompiled code when possible]
+    Code --> Raw[Collect raw analyzer results]
+    Raw --> Norm[Normalize artifacts]
+    Norm --> LoadMASVS[Load MASVS rules]
+    Norm --> LoadATTCK[Load ATT&CK triage rules]
+    LoadMASVS --> AppSec[Execute AppSec rules]
+    LoadATTCK --> Triage[Detect threat indicators]
+    AppSec --> Evidence[Collect evidence]
+    Triage --> Evidence
+    Evidence --> MapMASVS[MASVS mapping]
+    Evidence --> MapATTCK[ATT&CK Mobile mapping]
+    MapMASVS --> Risk[Risk scoring]
+    MapATTCK --> Risk
+    Risk --> Compliance[Compliance scoring]
+    Compliance --> Persist[Persist results]
+    Persist --> Report[Generate PDF and JSON]
+    Report --> Done([Completed])
 ```
 
-## Gestion des echecs
+## Failure Handling
 
-- **Upload invalide**: retourner une erreur `400`, ne pas creer de resultat d'analyse.
-- **APK illisible ou corrompu**: marquer l'audit `failed`, conserver le message d'erreur fonctionnel.
-- **Extraction partielle**: poursuivre si possible et indiquer les artefacts manquants dans le resultat.
-- **Erreur de schema YAML**: bloquer l'analyse, car les regles ne sont pas fiables.
-- **Erreur d'execution d'une regle**: journaliser l'erreur, marquer la regle comme echouee dans la synthese et continuer les autres regles si possible.
-- **Erreur de reporting**: conserver les resultats d'analyse et marquer uniquement le rapport `failed`.
+- Invalid upload: return `400`, no analysis launched.
+- Tool unavailable: mark plugin result failed and continue when non-critical.
+- YAML invalid: block analysis because rules are not trustworthy.
+- Partial extraction: continue with missing-artifact warning.
+- Rule failure: log rule ID and continue other rules.
+- Reporting failure: keep analysis results and mark report failed.
 
-## Exigences de journalisation
+## Logging Requirements
 
-- Journaliser le debut et la fin de chaque etape.
-- Inclure `audit_id`, `apk_file_id`, `analysis_result_id` et duree d'execution.
-- Ne jamais journaliser un secret complet detecte.
-- Journaliser les erreurs techniques avec stack trace cote serveur uniquement.
-- Journaliser les erreurs fonctionnelles avec message comprehensible pour l'utilisateur.
-- Conserver une synthese d'execution dans `StaticAnalysisResult.summary`.
+- Include `audit_id`, `apk_file_id`, plugin name, step and duration.
+- Never log full secrets or complete sensitive snippets.
+- Distinguish analyst-facing errors from technical debug logs.
+- Keep local logs only.

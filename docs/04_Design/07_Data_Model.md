@@ -2,243 +2,153 @@
 
 ## Objectif
 
-Ce document definit le modele de donnees cible pour la Version 1 de MSAP. Il guide l'implementation Django + PostgreSQL d'une plateforme locale d'audit statique Android, avec tracabilite des APK, resultats, findings, preuves, controles MASVS, scores de risque et rapports.
+Ce modele guide l'implementation Django + PostgreSQL de MSAP. Il couvre l'audit statique Android, les resultats bruts d'analyse, la normalisation, les findings MASVS, les indicateurs ATT&CK Mobile, les preuves, les scores et les rapports.
 
-## Entites du domaine
+## Entites
 
 ### User
 
-**Purpose**: representer un utilisateur local de la plateforme, principalement l'auditeur qui cree des projets, lance des analyses et consulte les rapports.
+**Purpose**: utilisateur local, auditeur ou administrateur.
 
-**Main fields**:
+**Main fields**: `id`, `username`, `email`, `password_hash`, `role`, `is_active`, `created_at`.
 
-- `id`: identifiant technique.
-- `username`: nom d'utilisateur.
-- `email`: adresse email.
-- `password_hash`: mot de passe gere par Django.
-- `role`: role fonctionnel, par exemple `admin` ou `auditor`.
-- `is_active`: etat du compte.
-- `created_at`, `updated_at`: dates de suivi.
-
-**Relationships**:
-
-- Un utilisateur peut posseder plusieurs projets.
-- Un utilisateur peut creer plusieurs audits.
+**Relationships**: possede des projets et cree des audits.
 
 ### Project
 
-**Purpose**: regrouper les audits lies a un contexte fonctionnel, academique ou applicatif.
+**Purpose**: regrouper des audits lies a un contexte institutionnel ou applicatif.
 
-**Main fields**:
+**Main fields**: `id`, `owner_id`, `name`, `description`, `context`, `created_at`.
 
-- `id`: identifiant technique.
-- `owner_id`: utilisateur proprietaire.
-- `name`: nom du projet.
-- `description`: description courte.
-- `client_or_context`: contexte d'audit, optionnel.
-- `created_at`, `updated_at`: dates de suivi.
-
-**Relationships**:
-
-- Un projet appartient a un utilisateur.
-- Un projet contient plusieurs audits.
+**Relationships**: appartient a un User, contient des Audits.
 
 ### Audit
 
-**Purpose**: representer une campagne d'analyse statique pour un APK donne.
+**Purpose**: campagne d'analyse d'un APK.
 
-**Main fields**:
+**Main fields**: `id`, `project_id`, `created_by_id`, `name`, `scope`, `status`, `started_at`, `completed_at`.
 
-- `id`: identifiant technique.
-- `project_id`: projet rattache.
-- `created_by_id`: utilisateur ayant cree l'audit.
-- `name`: nom de l'audit.
-- `scope`: perimetre declare.
-- `status`: `created`, `uploaded`, `running`, `completed`, `failed`.
-- `started_at`, `completed_at`: dates d'execution.
-- `created_at`, `updated_at`: dates de suivi.
-
-**Relationships**:
-
-- Un audit appartient a un projet.
-- Un audit possede un APK principal en Version 1.
-- Un audit possede zero ou un resultat d'analyse statique.
-- Un audit peut produire plusieurs rapports.
+**Relationships**: contient APKFile, resultats, findings, indicateurs, scores et rapports.
 
 ### APKFile
 
-**Purpose**: stocker les metadonnees et le chemin local du fichier APK analyse.
+**Purpose**: fichier APK importe localement.
 
-**Main fields**:
+**Main fields**: `id`, `audit_id`, `original_filename`, `stored_filename`, `storage_path`, `size_bytes`, `sha256`, `uploaded_at`.
 
-- `id`: identifiant technique.
-- `audit_id`: audit associe.
-- `original_filename`: nom d'origine.
-- `stored_filename`: nom local normalise.
-- `storage_path`: chemin local controle.
-- `size_bytes`: taille du fichier.
-- `sha256`: empreinte principale.
-- `sha1`: empreinte secondaire optionnelle.
-- `md5`: empreinte de compatibilite optionnelle.
-- `package_name`: nom de package Android.
-- `version_name`: version applicative.
-- `version_code`: code version.
-- `min_sdk`: SDK minimum.
-- `target_sdk`: SDK cible.
-- `uploaded_at`: date de depot.
+**Relationships**: appartient a un Audit, possede APKMetadata.
 
-**Relationships**:
+### APKMetadata
 
-- Un APK appartient a un audit.
-- Un APK alimente un resultat d'analyse statique.
+**Purpose**: metadonnees techniques extraites.
 
-### StaticAnalysisResult
+**Main fields**: `id`, `apk_file_id`, `package_name`, `version_name`, `version_code`, `min_sdk`, `target_sdk`, `certificate_subject`, `certificate_issuer`, `signature_scheme`, `extracted_at`.
 
-**Purpose**: representer l'execution d'analyse statique et son etat global.
+**Relationships**: appartient a APKFile.
 
-**Main fields**:
+### AnalyzerPlugin
 
-- `id`: identifiant technique.
-- `audit_id`: audit analyse.
-- `apk_file_id`: APK analyse.
-- `status`: `pending`, `running`, `completed`, `failed`.
-- `tool_versions`: versions locales des outils utilises, au format JSON.
-- `started_at`, `completed_at`: dates de traitement.
-- `error_message`: erreur fonctionnelle si echec.
-- `summary`: synthese technique au format JSON.
+**Purpose**: representer un adaptateur d'analyse local.
 
-**Relationships**:
+**Main fields**: `id`, `name`, `plugin_type`, `version`, `enabled`, `description`.
 
-- Un resultat appartient a un audit.
-- Un resultat concerne un APK.
-- Un resultat contient plusieurs findings.
+**Relationships**: produit des RawAnalyzerResult.
+
+### RawAnalyzerResult
+
+**Purpose**: resultat brut produit par un plugin avant normalisation.
+
+**Main fields**: `id`, `audit_id`, `plugin_id`, `artifact_type`, `file_path`, `raw_payload`, `status`, `created_at`.
+
+**Relationships**: appartient a Audit et AnalyzerPlugin; alimente NormalizedArtifact.
+
+### NormalizedArtifact
+
+**Purpose**: representation interne commune des artefacts.
+
+**Main fields**: `id`, `audit_id`, `raw_result_id`, `artifact_type`, `key`, `value`, `location`, `metadata`, `created_at`.
+
+**Relationships**: alimente Rule, TriageRule, Finding, SuspiciousIndicator et Evidence.
 
 ### Finding
 
-**Purpose**: representer un constat de securite issu d'une regle statique.
+**Purpose**: faiblesse AppSec mappee OWASP MASVS.
 
-**Main fields**:
+**Main fields**: `id`, `audit_id`, `rule_id`, `masvs_control_id`, `title`, `severity`, `confidence`, `status`, `impact`, `recommendation`.
 
-- `id`: identifiant technique.
-- `analysis_result_id`: resultat parent.
-- `rule_id`: regle declenchee.
-- `masvs_control_id`: controle MASVS associe.
-- `title`: titre du finding.
-- `description`: description du probleme.
-- `severity`: severite initiale.
-- `confidence`: niveau de confiance, par exemple `low`, `medium`, `high`.
-- `status`: `open`, `reviewed`, `false_positive`, `accepted_risk`.
-- `impact`: impact securite.
-- `recommendation`: recommandation.
-- `created_at`: date de detection.
+**Relationships**: lie a Rule, MASVSControl, Evidence, RiskScore.
 
-**Relationships**:
+### SuspiciousIndicator
 
-- Un finding appartient a un resultat d'analyse.
-- Un finding est lie a une regle.
-- Un finding est associe a un controle MASVS.
-- Un finding possede une ou plusieurs preuves.
-- Un finding peut contribuer a un score de risque.
+**Purpose**: indicateur de triage mappe MITRE ATT&CK Mobile.
+
+**Main fields**: `id`, `audit_id`, `triage_rule_id`, `attck_technique_id`, `title`, `severity`, `confidence`, `triage_interpretation`, `analyst_status`.
+
+**Relationships**: lie a TriageRule, ATTCKTechnique, Evidence, RiskScore.
 
 ### Evidence
 
-**Purpose**: conserver la preuve technique qui justifie un finding.
+**Purpose**: preuve technique sourcee.
 
-**Main fields**:
+**Main fields**: `id`, `audit_id`, `finding_id`, `indicator_id`, `artifact_id`, `source`, `file_path`, `line_number`, `snippet`, `redacted`, `confidence`.
 
-- `id`: identifiant technique.
-- `finding_id`: finding parent.
-- `source`: source de preuve, par exemple `AndroidManifest.xml` ou `Decompiled code`.
-- `file_path`: chemin relatif dans les artefacts extraits.
-- `line_number`: ligne si disponible.
-- `snippet`: extrait limite.
-- `artifact_type`: `manifest`, `resource`, `code`, `configuration`, `metadata`.
-- `confidence`: confiance de la preuve.
-- `created_at`: date de collecte.
-
-**Relationships**:
-
-- Une preuve appartient a un finding.
+**Relationships**: appartient a un finding ou indicateur.
 
 ### MASVSControl
 
-**Purpose**: representer une categorie ou un controle MASVS utilise pour classer les findings.
+**Purpose**: categorie ou controle OWASP MASVS.
 
-**Main fields**:
+**Main fields**: `id`, `code`, `name`, `description`, `version`.
 
-- `id`: identifiant technique.
-- `code`: code, par exemple `MASVS-NETWORK`.
-- `name`: nom lisible.
-- `description`: description.
-- `version`: version du referentiel retenue pour le projet.
+**Relationships**: associe a Rules et Findings.
 
-**Relationships**:
+### ATTCKTechnique
 
-- Un controle MASVS peut etre associe a plusieurs regles.
-- Un controle MASVS peut etre associe a plusieurs findings.
+**Purpose**: technique MITRE ATT&CK Mobile referencee.
+
+**Main fields**: `id`, `technique_id`, `technique_name`, `tactic`, `platform`, `description`.
+
+**Relationships**: associe a TriageRules et SuspiciousIndicators.
 
 ### Rule
 
-**Purpose**: representer une regle chargee depuis `rules/masvs_static_rules.yaml`.
+**Purpose**: regle AppSec chargee depuis `masvs_static_rules.yaml`.
 
-**Main fields**:
+**Main fields**: `id`, `standard`, `title`, `masvs_category`, `severity`, `confidence`, `source`, `detection_type`, `pattern_or_condition`, `enabled`.
 
-- `id`: identifiant fonctionnel, par exemple `MSAP-AND-001`.
-- `title`: titre de la regle.
-- `description`: description.
-- `masvs_category`: categorie MASVS.
-- `severity`: severite par defaut.
-- `source`: source analysee.
-- `detection_type`: type de detection.
-- `pattern_or_condition`: motif ou condition.
-- `impact`: impact attendu.
-- `recommendation`: recommandation.
-- `evidence_example`: exemple de preuve.
-- `enabled`: activation locale.
+**Relationships**: produit des Findings.
 
-**Relationships**:
+### TriageRule
 
-- Une regle peut produire plusieurs findings.
-- Une regle est associee a une categorie MASVS.
+**Purpose**: regle de triage chargee depuis `attck_mobile_triage_rules.yaml`.
+
+**Main fields**: `id`, `standard`, `title`, `tactic`, `technique_id`, `technique_name`, `severity`, `confidence`, `source`, `detection_type`, `pattern_or_condition`, `enabled`.
+
+**Relationships**: produit des SuspiciousIndicators.
 
 ### RiskScore
 
-**Purpose**: stocker le score de risque calcule pour un finding ou pour un audit.
+**Purpose**: score de risque par audit, finding ou indicateur.
 
-**Main fields**:
+**Main fields**: `id`, `audit_id`, `finding_id`, `indicator_id`, `score`, `severity`, `calculation_details`, `created_at`.
 
-- `id`: identifiant technique.
-- `audit_id`: audit concerne.
-- `finding_id`: finding concerne, optionnel pour un score global.
-- `score`: valeur numerique indicative.
-- `severity`: niveau final.
-- `confidence`: confiance du scoring.
-- `calculation_details`: details au format JSON.
-- `created_at`: date de calcul.
+**Relationships**: rattache a Audit et optionnellement Finding ou SuspiciousIndicator.
 
-**Relationships**:
+### ComplianceScore
 
-- Un score peut etre rattache a un finding.
-- Un score global peut etre rattache uniquement a un audit.
+**Purpose**: score indicatif de conformite MASVS.
+
+**Main fields**: `id`, `audit_id`, `standard`, `category`, `score`, `passed_rules`, `failed_rules`, `not_applicable_rules`, `created_at`.
+
+**Relationships**: appartient a Audit.
 
 ### Report
 
-**Purpose**: representer un rapport local genere a partir d'un audit.
+**Purpose**: rapport PDF ou export JSON.
 
-**Main fields**:
+**Main fields**: `id`, `audit_id`, `format`, `status`, `file_path`, `generated_at`, `summary`.
 
-- `id`: identifiant technique.
-- `audit_id`: audit concerne.
-- `format`: `pdf`, `html` ou `markdown` selon les choix MVP.
-- `status`: `generated`, `failed`.
-- `file_path`: chemin local du rapport.
-- `generated_at`: date de generation.
-- `summary`: synthese au format JSON.
-
-**Relationships**:
-
-- Un rapport appartient a un audit.
-- Un audit peut avoir plusieurs rapports generes.
+**Relationships**: appartient a Audit.
 
 ## ERD
 
@@ -247,128 +157,33 @@ erDiagram
     USER ||--o{ PROJECT : owns
     USER ||--o{ AUDIT : creates
     PROJECT ||--o{ AUDIT : contains
-    AUDIT ||--|| APK_FILE : uses
-    AUDIT ||--o| STATIC_ANALYSIS_RESULT : produces
-    APK_FILE ||--o| STATIC_ANALYSIS_RESULT : analyzed_by
-    STATIC_ANALYSIS_RESULT ||--o{ FINDING : contains
+    AUDIT ||--|| APK_FILE : ingests
+    APK_FILE ||--o| APK_METADATA : describes
+    AUDIT ||--o{ RAW_ANALYZER_RESULT : receives
+    ANALYZER_PLUGIN ||--o{ RAW_ANALYZER_RESULT : produces
+    RAW_ANALYZER_RESULT ||--o{ NORMALIZED_ARTIFACT : normalizes_to
+    AUDIT ||--o{ NORMALIZED_ARTIFACT : contains
     RULE ||--o{ FINDING : triggers
-    MASVS_CONTROL ||--o{ RULE : classifies
     MASVS_CONTROL ||--o{ FINDING : maps
-    FINDING ||--o{ EVIDENCE : justified_by
+    TRIAGE_RULE ||--o{ SUSPICIOUS_INDICATOR : triggers
+    ATTCK_TECHNIQUE ||--o{ SUSPICIOUS_INDICATOR : maps
+    AUDIT ||--o{ FINDING : has
+    AUDIT ||--o{ SUSPICIOUS_INDICATOR : has
+    FINDING ||--o{ EVIDENCE : supported_by
+    SUSPICIOUS_INDICATOR ||--o{ EVIDENCE : supported_by
+    NORMALIZED_ARTIFACT ||--o{ EVIDENCE : sources
     AUDIT ||--o{ RISK_SCORE : has
     FINDING ||--o{ RISK_SCORE : scored_by
+    SUSPICIOUS_INDICATOR ||--o{ RISK_SCORE : scored_by
+    AUDIT ||--o{ COMPLIANCE_SCORE : has
     AUDIT ||--o{ REPORT : generates
-
-    USER {
-        uuid id PK
-        string username
-        string email
-        string role
-        boolean is_active
-    }
-
-    PROJECT {
-        uuid id PK
-        uuid owner_id FK
-        string name
-        text description
-        string client_or_context
-    }
-
-    AUDIT {
-        uuid id PK
-        uuid project_id FK
-        uuid created_by_id FK
-        string name
-        text scope
-        string status
-        datetime started_at
-        datetime completed_at
-    }
-
-    APK_FILE {
-        uuid id PK
-        uuid audit_id FK
-        string original_filename
-        string storage_path
-        integer size_bytes
-        string sha256
-        string package_name
-        string version_name
-    }
-
-    STATIC_ANALYSIS_RESULT {
-        uuid id PK
-        uuid audit_id FK
-        uuid apk_file_id FK
-        string status
-        json tool_versions
-        json summary
-    }
-
-    FINDING {
-        uuid id PK
-        uuid analysis_result_id FK
-        string rule_id FK
-        uuid masvs_control_id FK
-        string title
-        string severity
-        string confidence
-        string status
-    }
-
-    EVIDENCE {
-        uuid id PK
-        uuid finding_id FK
-        string source
-        string file_path
-        integer line_number
-        text snippet
-        string artifact_type
-    }
-
-    MASVS_CONTROL {
-        uuid id PK
-        string code
-        string name
-        text description
-        string version
-    }
-
-    RULE {
-        string id PK
-        string title
-        string masvs_category
-        string severity
-        string source
-        string detection_type
-    }
-
-    RISK_SCORE {
-        uuid id PK
-        uuid audit_id FK
-        uuid finding_id FK
-        decimal score
-        string severity
-        json calculation_details
-    }
-
-    REPORT {
-        uuid id PK
-        uuid audit_id FK
-        string format
-        string status
-        string file_path
-        datetime generated_at
-    }
 ```
 
-## Hypotheses de conception base de donnees
+## Database Design Assumptions
 
-- PostgreSQL est retenu pour le stockage local structure.
-- Les identifiants techniques peuvent etre des UUID pour faciliter les exports et eviter les collisions.
-- Les fichiers APK, artefacts extraits et rapports sont stockes sur disque local; la base conserve les chemins controles et les metadonnees.
-- Les champs JSON sont reserves aux donnees techniques variables: versions d'outils, syntheses, details de scoring.
-- Les snippets de preuve doivent etre limites en taille pour eviter de stocker des secrets complets.
-- Les regles YAML peuvent etre chargees au demarrage et synchronisees dans la table `Rule`.
-- Les donnees restent locales; aucun modele ne prevoit d'integration cloud dans la Version 1.
+- PostgreSQL stocke les metadonnees, resultats normalises, preuves, mappings et scores.
+- Les APK, artefacts volumineux, PDF et JSON restent sur disque local.
+- Les champs JSON servent aux payloads bruts, details de scoring et metadonnees variables.
+- Les preuves contenant des secrets doivent etre tronquees ou masquees.
+- Les statuts analyste permettent la gestion des faux positifs.
+- Les rules YAML sont chargees et validees avant execution.

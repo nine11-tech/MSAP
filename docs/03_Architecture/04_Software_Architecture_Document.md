@@ -1,105 +1,107 @@
 # Software Architecture Document - MSAP
 
-## Objectifs d'architecture
+## Architecture Goals
 
-- Fournir une plateforme locale d'audit statique Android.
-- Separer clairement l'interface, l'API, l'orchestration, les moteurs d'analyse et le reporting.
-- Faciliter l'ajout futur de nouveaux analyseurs sans modifier le coeur applicatif.
-- Garantir la tracabilite des preuves et des decisions de scoring.
-- Rester realiste pour un projet PFA de 8 semaines.
+- Fournir une plateforme locale d'evaluation de securite mobile et de triage d'APK.
+- Combiner OWASP MASVS pour l'AppSec et MITRE ATT&CK Mobile pour le triage menace.
+- Maintenir une architecture extensible par plugins d'analyse.
+- Normaliser les resultats bruts avant mapping, scoring et reporting.
+- Proteger la confidentialite des APK et artefacts analyses.
 
-## Principes architecturaux
+## Security Engineering Principles
 
-- **Local-first**: aucun transfert d'APK ou de resultat vers un service distant.
-- **Modularite**: chaque moteur possede une responsabilite claire.
-- **Traçabilite**: chaque finding doit etre relie a une preuve.
-- **Extensibilite controlee**: les integrations futures sont prevues par adaptateurs, sans etre incluses dans la Version 1.
-- **Separation des preoccupations**: detection, mapping MASVS, scoring et reporting sont separes.
+- **Local-first**: aucun APK ni artefact n'est transmis a un service distant.
+- **Evidence-based**: chaque finding ou indicateur doit etre relie a une preuve.
+- **Separation of concerns**: ingestion, analyse, normalisation, mapping, scoring et reporting sont separes.
+- **Cautious triage**: ATT&CK Mobile sert au triage, pas a un verdict malware.
+- **Extensibility**: les adaptateurs peuvent evoluer sans casser les moteurs metier.
 
-## Architecture modulaire
+## Local-First Architecture
 
-MSAP est structure autour d'un backend central qui orchestre les analyses locales. Le frontend sert a piloter les audits et consulter les resultats. Les moteurs d'analyse produisent des findings normalises, enrichis par les moteurs MASVS, risque et preuves.
+MSAP est deploye sur poste institutionnel via Docker Compose. Les APK, artefacts extraits, preuves, rapports PDF et exports JSON restent stockes localement.
 
-## Composants principaux
+## Plugin-Based Analyzer Architecture
 
-### Frontend
+Le gestionnaire de plugins orchestre plusieurs adaptateurs:
 
-Interface utilisateur prevue pour la gestion des audits, l'import d'APK, la consultation des resultats, le tableau de bord et le telechargement des rapports.
+- APKTool Adapter pour manifeste et ressources.
+- JADX Adapter pour code decompile.
+- Androguard Adapter pour metadonnees et inspections Python.
+- Custom Regex/YARA Rules Adapter pour motifs et indicateurs.
 
-### Backend API
+## Normalization Layer
 
-API locale chargee de recevoir les demandes du frontend, gerer les audits, stocker les metadonnees et exposer les resultats. Le choix prevu est Django REST Framework.
+La couche de normalisation transforme les resultats bruts en artefacts internes: manifest attributes, permissions, components, strings, URLs, domains, IPs, code patterns, certificates et signatures. Les moteurs MASVS et ATT&CK consomment ce schema commun.
 
-### Analysis Orchestrator
+## MASVS Engine
 
-Composant responsable de coordonner les etapes d'analyse: preparation du fichier, extraction des artefacts, execution des regles, consolidation des findings et generation des rapports.
+Le moteur MASVS charge `rules/masvs_static_rules.yaml`, execute les regles AppSec et produit des findings lies aux categories OWASP MASVS.
 
-### Static Analysis Engine
+## ATT&CK Triage Engine
 
-Moteur dedie a l'analyse statique Android. Il traite le manifeste, les ressources, le code decompile et les configurations.
+Le moteur ATT&CK charge `rules/attck_mobile_triage_rules.yaml`, detecte des indicateurs suspects et mappe ces signaux vers des tactiques et techniques MITRE ATT&CK Mobile. Il ne produit pas de verdict malveillant.
 
-### MASVS Engine
+## Risk Engine
 
-Composant qui associe les findings aux categories OWASP MASVS et applique le catalogue de regles MSAP.
+Le moteur de risque combine severite, confiance, impact, exposition et exploitabilite. Il produit un score global et des scores par finding ou indicateur.
 
-### Risk Engine
+## Evidence Engine
 
-Composant qui calcule une severite et un score de risque a partir de la regle, du contexte, de la confiance et de l'impact.
+Le moteur de preuves garantit la tracabilite: artefact APK -> regle -> finding/indicateur -> mapping standard -> score -> rapport.
 
-### Evidence Engine
+## Reporting Engine
 
-Composant responsable de normaliser et conserver les preuves techniques: fichier, ligne si disponible, extrait, artefact source et contexte.
+Le generateur de rapports produit un PDF et un export JSON contenant le perimetre, la methodologie, les limites, les findings MASVS, les indicateurs ATT&CK, les preuves, les scores et les recommandations.
 
-### Reporting Engine
+## Database
 
-Composant qui genere un rapport local contenant la synthese, le perimetre, les limites, les findings, les preuves et les recommandations.
+PostgreSQL stocke les projets, audits, APK, metadonnees, resultats bruts references, artefacts normalises, findings, indicateurs, preuves, scores et rapports.
 
-### Database
+## Local Deployment
 
-Base locale prevue pour stocker les audits, APK references, findings, preuves, scores et rapports. PostgreSQL est prevu pour un deploiement local structure.
+Docker Compose regroupe le frontend React, l'API Django REST, PostgreSQL et les volumes locaux. Les outils Android sont installes localement dans l'environnement d'analyse.
 
-## Architecture de deploiement local
+## Security Architecture
 
-La Version 1 est concue pour une execution locale. Un deploiement Docker local pourra regrouper le frontend, le backend, la base PostgreSQL et les analyseurs. Aucun composant ne doit necessiter un service cloud.
+- Validation des fichiers uploades.
+- Repertoires locaux controles.
+- Redaction des secrets dans logs et rapports.
+- Authentification locale.
+- Controle d'acces par projet/audit.
+- Journalisation sans fuite de donnees sensibles.
 
-## Architecture de securite
+## Confidentiality of Uploaded APKs
 
-- Isolation logique des fichiers APK importes.
-- Validation des fichiers et chemins.
-- Stockage local des preuves.
-- Journalisation technique sans fuite de secrets.
-- Controle du perimetre d'analyse.
-- Documentation explicite de l'usage autorise uniquement.
+Les APK peuvent etre sensibles ou proprietaires. MSAP doit eviter tout envoi reseau, conserver les fichiers dans des volumes locaux et documenter les pratiques de suppression, sauvegarde et acces.
 
-## Extensibilite future
+## Extensibility
 
-L'architecture prevoit des adaptateurs pour integrer ulterieurement:
+L'architecture permet d'ajouter plus tard analyse dynamique, iOS, integrations externes ou enrichissement YARA. Ces extensions restent hors perimetre V1.
 
-- MobSF comme outil optionnel externe.
-- Frida pour instrumentation dynamique autorisee.
-- Analyse dynamique sur terminal physique.
-- Analyse iOS.
-- Nouveaux packs de regles MASVS.
-
-Ces integrations restent hors perimetre de la Version 1.
-
-## Diagramme d'architecture
+## Architecture Diagram
 
 ```mermaid
 flowchart LR
-    User[Utilisateur auditeur] --> Frontend[React Frontend]
-    Frontend --> API[Django REST API]
-    API --> DB[(PostgreSQL local)]
-    API --> Orchestrator[Analysis Orchestrator]
-    Orchestrator --> StaticEngine[Static Analysis Engine]
-    StaticEngine --> APKTool[APKTool Adapter]
-    StaticEngine --> JADX[JADX Adapter]
-    StaticEngine --> Androguard[Androguard Adapter]
-    StaticEngine --> Evidence[Evidence Engine]
-    Evidence --> MASVS[MASVS Engine]
-    MASVS --> Risk[Risk Engine]
-    Risk --> Reporting[Reporting Engine]
-    Reporting --> Reports[Rapports locaux]
-    Reporting --> DB
-    Evidence --> DB
+    Auditor[User / Auditor] --> FE[React Frontend]
+    FE --> API[Django REST API]
+    API --> ORCH[Audit Orchestrator]
+    ORCH --> PM[Analyzer Plugin Manager]
+    PM --> APK[APKTool Adapter]
+    PM --> JADX[JADX Adapter]
+    PM --> AG[Androguard Adapter]
+    PM --> RY[Custom Regex/YARA Rules Adapter]
+    APK --> RAW[Raw Analyzer Results]
+    JADX --> RAW
+    AG --> RAW
+    RY --> RAW
+    RAW --> NORM[Normalization Layer]
+    NORM --> MASVS[MASVS Engine]
+    NORM --> ATTCK[ATT&CK Triage Engine]
+    MASVS --> EVID[Evidence Engine]
+    ATTCK --> EVID
+    EVID --> RISK[Risk Engine]
+    RISK --> DB[(PostgreSQL)]
+    EVID --> DB
+    DB --> REPORT[Report Generator]
+    REPORT --> OUT[PDF Report / JSON Export]
 ```
