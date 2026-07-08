@@ -22,7 +22,7 @@ MSAP doit centraliser l'analyse statique locale, produire des preuves, mapper le
 
 ## General Objective
 
-Concevoir une plateforme d'ingenierie cybersécurité locale pour l'analyse statique Android, l'evaluation MASVS, le triage ATT&CK Mobile, le scoring et le reporting.
+Concevoir une plateforme d'audit locale pour l'analyse statique Android, l'evaluation MASVS, le triage ATT&CK Mobile, le scoring et le reporting.
 
 ## Operational Objectives
 
