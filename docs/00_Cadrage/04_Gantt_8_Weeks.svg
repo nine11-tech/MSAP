@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" role="img" aria-labelledby="title desc">
+  <title id="title">Planning Gantt MSAP sur 8 semaines</title>
+  <desc id="desc">Diagramme Gantt clair du projet MSAP avec huit semaines, taches, dependances et jalons.</desc>
+
+  <defs>
+    <style>
+      .bg { fill: #ffffff; }
+      .title { font: 700 26px Arial, sans-serif; fill: #152238; }
+      .subtitle { font: 400 14px Arial, sans-serif; fill: #526174; }
+      .header { font: 700 14px Arial, sans-serif; fill: #152238; }
+      .label { font: 600 13px Arial, sans-serif; fill: #152238; }
+      .small { font: 400 12px Arial, sans-serif; fill: #526174; }
+      .week { fill: #f4f7fb; stroke: #d8e0ea; stroke-width: 1; }
+      .rowLine { stroke: #e5eaf1; stroke-width: 1; }
+      .axis { stroke: #c8d2df; stroke-width: 1.2; }
+      .bar1 { fill: #235789; }
+      .bar2 { fill: #2f7d95; }
+      .bar3 { fill: #3a8f5f; }
+      .bar4 { fill: #b7791f; }
+      .bar5 { fill: #8a4fa3; }
+      .bar6 { fill: #5c6ac4; }
+      .bar7 { fill: #c05621; }
+      .bar8 { fill: #4a5568; }
+      .barText { font: 700 12px Arial, sans-serif; fill: #ffffff; }
+      .milestone { fill: #d62828; stroke: #8f1d1d; stroke-width: 1; }
+      .milestoneText { font: 700 11px Arial, sans-serif; fill: #8f1d1d; }
+      .dep { stroke: #7b8794; stroke-width: 1.4; fill: none; marker-end: url(#arrow); stroke-dasharray: 4 4; }
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b8794"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="760"/>
+  <text class="title" x="48" y="48">MSAP - Planning Gantt 8 semaines</text>
+  <text class="subtitle" x="48" y="74">Mobile Security Assessment &amp; Triage Platform - conception, implementation MVP, validation et livraison</text>
+
+  <!-- Layout constants: left label area starts at x=48, chart starts at x=360, week width=130 -->
+  <text class="header" x="48" y="120">Lot / tache</text>
+  <text class="header" x="225" y="120">Livrable principal</text>
+
+  <!-- Week headers -->
+  <g transform="translate(360,96)">
+    <rect class="week" x="0" y="0" width="130" height="40"/>
+    <rect class="week" x="130" y="0" width="130" height="40"/>
+    <rect class="week" x="260" y="0" width="130" height="40"/>
+    <rect class="week" x="390" y="0" width="130" height="40"/>
+    <rect class="week" x="520" y="0" width="130" height="40"/>
+    <rect class="week" x="650" y="0" width="130" height="40"/>
+    <rect class="week" x="780" y="0" width="130" height="40"/>
+    <rect class="week" x="910" y="0" width="130" height="40"/>
+    <text class="header" x="50" y="25">S1</text>
+    <text class="header" x="180" y="25">S2</text>
+    <text class="header" x="310" y="25">S3</text>
+    <text class="header" x="440" y="25">S4</text>
+    <text class="header" x="570" y="25">S5</text>
+    <text class="header" x="700" y="25">S6</text>
+    <text class="header" x="830" y="25">S7</text>
+    <text class="header" x="960" y="25">S8</text>
+  </g>
+
+  <!-- Vertical grid -->
+  <g>
+    <line class="axis" x1="360" y1="136" x2="360" y2="636"/>
+    <line class="axis" x1="490" y1="136" x2="490" y2="636"/>
+    <line class="axis" x1="620" y1="136" x2="620" y2="636"/>
+    <line class="axis" x1="750" y1="136" x2="750" y2="636"/>
+    <line class="axis" x1="880" y1="136" x2="880" y2="636"/>
+    <line class="axis" x1="1010" y1="136" x2="1010" y2="636"/>
+    <line class="axis" x1="1140" y1="136" x2="1140" y2="636"/>
+    <line class="axis" x1="1270" y1="136" x2="1270" y2="636"/>
+    <line class="axis" x1="1400" y1="136" x2="1400" y2="636"/>
+  </g>
+
+  <!-- Rows -->
+  <g>
+    <line class="rowLine" x1="48" y1="164" x2="1400" y2="164"/>
+    <line class="rowLine" x1="48" y1="224" x2="1400" y2="224"/>
+    <line class="rowLine" x1="48" y1="284" x2="1400" y2="284"/>
+    <line class="rowLine" x1="48" y1="344" x2="1400" y2="344"/>
+    <line class="rowLine" x1="48" y1="404" x2="1400" y2="404"/>
+    <line class="rowLine" x1="48" y1="464" x2="1400" y2="464"/>
+    <line class="rowLine" x1="48" y1="524" x2="1400" y2="524"/>
+    <line class="rowLine" x1="48" y1="584" x2="1400" y2="584"/>
+    <line class="rowLine" x1="48" y1="644" x2="1400" y2="644"/>
+  </g>
+
+  <!-- Labels -->
+  <g>
+    <text class="label" x="48" y="190">S1 - Cadrage &amp; exigences</text>
+    <text class="small" x="225" y="190">Cahier des charges</text>
+
+    <text class="label" x="48" y="250">S2 - Architecture &amp; design</text>
+    <text class="small" x="225" y="250">UML, API, modele</text>
+
+    <text class="label" x="48" y="310">S3 - Socle backend/frontend</text>
+    <text class="small" x="225" y="310">Socle technique</text>
+
+    <text class="label" x="48" y="370">S4 - Analyse APK locale</text>
+    <text class="small" x="225" y="370">Upload, hash, extraction</text>
+
+    <text class="label" x="48" y="430">S5 - Detections AppSec</text>
+    <text class="small" x="225" y="430">Findings MASVS</text>
+
+    <text class="label" x="48" y="490">S6 - MASVS + ATT&amp;CK engines</text>
+    <text class="small" x="225" y="490">Mappings et scoring</text>
+
+    <text class="label" x="48" y="550">S7 - Dashboard &amp; reporting</text>
+    <text class="small" x="225" y="550">PDF et JSON</text>
+
+    <text class="label" x="48" y="610">S8 - Qualite &amp; livraison</text>
+    <text class="small" x="225" y="610">Tests, Docker, livraison</text>
+  </g>
+
+  <!-- Task bars -->
+  <g>
+    <rect class="bar1" x="370" y="174" width="110" height="28" rx="6"/>
+    <text class="barText" x="385" y="193">Cadrage</text>
+
+    <rect class="bar2" x="500" y="234" width="110" height="28" rx="6"/>
+    <text class="barText" x="518" y="253">Design</text>
+
+    <rect class="bar3" x="630" y="294" width="110" height="28" rx="6"/>
+    <text class="barText" x="650" y="313">Socle</text>
+
+    <rect class="bar4" x="760" y="354" width="110" height="28" rx="6"/>
+    <text class="barText" x="777" y="373">Analyse</text>
+
+    <rect class="bar5" x="890" y="414" width="110" height="28" rx="6"/>
+    <text class="barText" x="907" y="433">AppSec</text>
+
+    <rect class="bar6" x="1020" y="474" width="110" height="28" rx="6"/>
+    <text class="barText" x="1033" y="493">Engines</text>
+
+    <rect class="bar7" x="1150" y="534" width="110" height="28" rx="6"/>
+    <text class="barText" x="1164" y="553">Reporting</text>
+
+    <rect class="bar8" x="1280" y="594" width="110" height="28" rx="6"/>
+    <text class="barText" x="1296" y="613">Livraison</text>
+  </g>
+
+  <!-- Dependencies -->
+  <g>
+    <path class="dep" d="M480 188 C490 188 490 248 500 248"/>
+    <path class="dep" d="M610 248 C620 248 620 308 630 308"/>
+    <path class="dep" d="M740 308 C750 308 750 368 760 368"/>
+    <path class="dep" d="M870 368 C880 368 880 428 890 428"/>
+    <path class="dep" d="M1000 428 C1010 428 1010 488 1020 488"/>
+    <path class="dep" d="M1130 488 C1140 488 1140 548 1150 548"/>
+    <path class="dep" d="M1260 548 C1270 548 1270 608 1280 608"/>
+  </g>
+
+  <!-- Milestones -->
+  <g>
+    <polygon class="milestone" points="490,188 500,198 490,208 480,198"/>
+    <text class="milestoneText" x="470" y="222">M1</text>
+
+    <polygon class="milestone" points="620,248 630,258 620,268 610,258"/>
+    <text class="milestoneText" x="600" y="282">M2</text>
+
+    <polygon class="milestone" points="750,308 760,318 750,328 740,318"/>
+    <text class="milestoneText" x="730" y="342">M3</text>
+
+    <polygon class="milestone" points="880,368 890,378 880,388 870,378"/>
+    <text class="milestoneText" x="860" y="402">M4</text>
+
+    <polygon class="milestone" points="1140,488 1150,498 1140,508 1130,498"/>
+    <text class="milestoneText" x="1118" y="522">M5</text>
+
+    <polygon class="milestone" points="1270,548 1280,558 1270,568 1260,558"/>
+    <text class="milestoneText" x="1248" y="582">M6</text>
+
+    <polygon class="milestone" points="1340,608 1350,618 1340,628 1330,618"/>
+    <text class="milestoneText" x="1318" y="652">M7</text>
+
+    <polygon class="milestone" points="1400,608 1410,618 1400,628 1390,618"/>
+    <text class="milestoneText" x="1378" y="652">M8</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(48,700)">
+    <rect class="bar1" x="0" y="-14" width="34" height="14" rx="4"/>
+    <text class="small" x="44" y="-3">Tache principale</text>
+    <polygon class="milestone" points="180,-14 188,-6 180,2 172,-6"/>
+    <text class="small" x="200" y="-3">Jalon</text>
+    <line class="dep" x1="285" y1="-7" x2="340" y2="-7"/>
+    <text class="small" x="355" y="-3">Dependance</text>
+  </g>
+</svg>

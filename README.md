@@ -121,6 +121,43 @@ docs/
 └── 08_Delivery/
 ```
 
+## Documents Cles
+
+### Cadrage et Gestion de Projet
+
+- [Note de cadrage](docs/00_Cadrage/00_Note_de_Cadrage_MSAP.md)
+- [Cahier des charges](docs/01_Requirements/03_Cahier_des_Charges_MSAP.md)
+- [WBS - Work Breakdown Structure](docs/00_Cadrage/03_WBS_Work_Breakdown_Structure.md)
+- [Gantt 8 semaines](docs/00_Cadrage/04_Gantt_8_Weeks.md)
+- [Scrum project management](docs/00_Cadrage/05_Scrum_Project_Management.md)
+- [Sprint backlog 8 semaines](docs/00_Cadrage/06_Sprint_Backlog_8_Weeks.md)
+- [Matrice RACI](docs/00_Cadrage/07_RACI_Matrix.md)
+- [Registre des risques](docs/00_Cadrage/08_Risk_Register.md)
+
+### Architecture et Conception
+
+- [Software Architecture Document](docs/03_Architecture/04_Software_Architecture_Document.md)
+- [Component diagram](docs/03_Architecture/05_Component_Diagram.md)
+- [UML use case diagram](docs/03_Architecture/06_UML_Use_Case_Diagram.md)
+- [UML class diagram](docs/03_Architecture/07_UML_Class_Diagram.md)
+- [UML sequence diagrams](docs/03_Architecture/08_UML_Sequence_Diagrams.md)
+- [UML activity diagram](docs/03_Architecture/09_UML_Activity_Diagram.md)
+- [UML state diagram](docs/03_Architecture/10_UML_State_Diagram.md)
+- [Deployment diagram](docs/03_Architecture/11_Deployment_Diagram.md)
+- [Package/module diagram](docs/03_Architecture/12_Package_Module_Diagram.md)
+- [UI/UX wireframes](docs/04_Design/13_UI_UX_Wireframes.md)
+- [Non-functional design](docs/04_Design/14_Non_Functional_Design.md)
+- [Architecture Decision Records](docs/04_Design/15_Architecture_Decision_Records.md)
+
+### Validation et Livraison
+
+- [Test strategy](docs/06_Testing/16_Test_Strategy.md)
+- [Acceptance criteria](docs/06_Testing/17_Acceptance_Criteria.md)
+- [Local deployment strategy](docs/07_Deployment/17_Local_Deployment_Strategy.md)
+- [Delivery checklist](docs/08_Delivery/18_Delivery_Checklist.md)
+- [Demo scenario](docs/08_Delivery/19_Demo_Scenario.md)
+- [Final deliverables index](docs/08_Delivery/20_Final_Deliverables_Index.md)
+
 ## Stack Technique Prevue
 
 - Frontend: React.
