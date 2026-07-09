@@ -18,7 +18,7 @@ Une plateforme locale, documentee et reproductible permet de structurer ce trava
 
 Les analyses APK sont souvent realisees avec des outils isoles, des scripts ponctuels ou des rapports manuels. Cela limite la tracabilite, la comparaison des resultats, le mapping vers des standards reconnus et la gestion des faux positifs.
 
-MSAP doit centraliser l'analyse statique locale, produire des preuves, mapper les constats AppSec vers OWASP MASVS et mapper certains indicateurs suspects vers MITRE ATT&CK Mobile sans pretendre fournir un verdict malware garanti.
+MSAP doit centraliser l'analyse statique locale, produire des preuves, mapper les constats AppSec vers OWASP MASVS et mapper certains indicateurs suspects vers MITRE ATT&CK Mobile sans pretendre fournir une classification malveillante definitive.
 
 ## General Objective
 

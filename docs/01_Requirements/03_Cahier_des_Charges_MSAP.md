@@ -166,7 +166,7 @@ flowchart LR
 - Les regles MASVS et ATT&CK sont chargees depuis YAML.
 - Les findings et indicateurs contiennent preuves, severite et confiance.
 - Le rapport distingue clairement audit AppSec et triage menace.
-- Le rapport ne presente pas de verdict malware garanti.
+- Le rapport ne presente pas une classification malveillante definitive.
 - La solution est deployable localement.
 
 ## 15. Risques et Mesures de Mitigation

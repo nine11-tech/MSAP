@@ -60,5 +60,5 @@ Le rapport doit inclure perimetre, limites, scores, preuves, recommandations et 
 
 - Tests critiques passent.
 - YAML parse correctement.
-- Aucun verdict malware garanti.
+- Aucun verdict automatise de malveillance.
 - Aucun envoi distant d'APK.
