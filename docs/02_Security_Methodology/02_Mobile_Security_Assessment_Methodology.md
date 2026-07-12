@@ -127,3 +127,9 @@ Le triage ATT&CK Mobile identifie des signaux a examiner. Il ne produit pas de v
 ## Future Dynamic Analysis Extension
 
 Une version future pourrait ajouter de l'analyse dynamique locale autorisee. Cette extension reste hors perimetre V1.
+
+## Optional AI Assistance
+
+Kimi AI peut assister l'interpretation uniquement apres l'analyse deterministe, la collecte de preuves et le scoring. L'AI ne remplace pas les findings evidence-based, ne cree pas de nouvelles preuves et ne modifie pas directement les scores.
+
+Les textes AI sont des brouillons destines a l'auditeur: resume, explication, contextualisation ou remediation. Ils doivent etre valides par un analyste avant toute inclusion dans un rapport final.

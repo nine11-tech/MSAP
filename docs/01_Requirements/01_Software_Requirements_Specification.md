@@ -80,6 +80,19 @@ MSAP doit permettre a un auditeur autorise d'importer un APK localement, d'execu
 - Preuves et recommandations.
 - Export JSON technique.
 
+## Optional AI Requirements - V1.1
+
+- AI-01: The AI assistant shall be disabled by default.
+- AI-02: The platform shall work fully in no-AI mode.
+- AI-03: The AI assistant may generate executive summary drafts from deterministic results.
+- AI-04: The AI assistant may explain existing MASVS findings using provided evidence IDs.
+- AI-05: The AI assistant may contextualize existing ATT&CK Mobile indicators without producing a malware verdict.
+- AI-06: The AI assistant may draft remediation wording for analyst review.
+- AI-07: The AI context builder shall provide only minimized post-analysis context.
+- AI-08: The AI redaction layer shall mask secrets, tokens, URLs, domains, email addresses and personal data before external AI calls.
+- AI-09: AI output shall require human validation before final report inclusion.
+- AI-10: AI shall not receive raw APK files or full decompiled source code.
+
 ## Deployment Requirements
 
 - Docker Compose local.
@@ -101,3 +114,4 @@ MSAP doit etre utilise uniquement sur des APK pour lesquels l'utilisateur dispos
 - Les findings et indicateurs incluent preuve, standard, severite et confiance.
 - Les rapports ne presentent pas les indicateurs comme verdict malware.
 - Le deploiement local est documente.
+- Le mode sans AI reste le mode par defaut.

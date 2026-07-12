@@ -65,3 +65,9 @@ Les faux positifs sont attendus dans un triage statique. MSAP doit permettre de 
 ## Report Interpretation
 
 Les sections ATT&CK du rapport doivent indiquer que les resultats sont des indicateurs de triage, pas une classification definitive.
+
+## Optional AI Contextualization
+
+Kimi AI peut aider a contextualiser un indicateur ATT&CK Mobile existant en expliquant la tactique, la technique et les verifications analyste possibles. Cette assistance reste optionnelle, post-analyse et basee uniquement sur les indicateurs et preuves deja produits par MSAP.
+
+L'AI ne doit pas classifier l'APK comme malware ou benin. Toute contextualisation AI doit etre validee par un analyste avant d'etre incluse dans un rapport.

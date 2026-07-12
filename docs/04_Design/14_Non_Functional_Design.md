@@ -59,3 +59,13 @@ L'interface doit etre sobre, lisible et orientee decision d'audit: scores, sever
 ## Deployment Constraints
 
 Toute dependance a MobSF est exclue en V1, ainsi que l'emulateur, l'analyse dynamique et les services distants. Les catalogues YAML restent locaux et versionnables.
+
+## Optional AI Non-Functional Requirements - V1.1
+
+- Privacy: AI receives only minimized, redacted post-analysis context.
+- Redaction: secrets, tokens, credentials, URLs, domains, emails and personal data are masked before AI calls.
+- API key security: Kimi keys are environment-only, never committed and never logged.
+- Audit logging: AI requests record purpose, provider, model, context hash, redaction summary, status and reviewer state without secrets.
+- Availability fallback: if AI is disabled, offline or failing, MSAP continues in no-AI mode.
+- Non-determinism management: AI output is draft text, not a deterministic result.
+- Human validation: accepted analyst review is required before report inclusion.

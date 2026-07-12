@@ -22,6 +22,12 @@ flowchart LR
         EVID[evidence]
         SCORE[scoring]
         REP[reports]
+        subgraph AI[ai_assistant optional V1.1]
+            AICB[context_builder]
+            AIR[redaction]
+            KCON[kimi_connector]
+            AIV[validation_workflow]
+        end
     end
 
     RULES[rules]
@@ -41,6 +47,12 @@ flowchart LR
     IND --> EVID
     EVID --> SCORE
     SCORE --> REP
+    SCORE -. optional .-> AICB
+    EVID -. optional .-> AICB
+    AICB --> AIR
+    AIR --> KCON
+    KCON --> AIV
+    AIV -. accepted text .-> REP
     RULES --> APP
     RULES --> TRI
     DOCS -. guide .-> BE
@@ -54,3 +66,4 @@ flowchart LR
 - `appsec_rules` et `triage_rules` restent separes.
 - `evidence` centralise la preuve pour findings et indicateurs.
 - `reports` lit les resultats persistés et ne relance pas l'analyse.
+- `ai_assistant` est optionnel V1.1, desactive par defaut, et consomme seulement des resultats post-analyse rediges.

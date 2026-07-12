@@ -40,6 +40,16 @@ L'APK de demonstration doit etre autorise. Il peut etre une application de test 
 - Risk score et compliance summary visibles.
 - Rapport PDF et export JSON generes localement.
 
+## Optional AI Demo Section - V1.1
+
+This section is optional and should be shown only if Kimi AI is explicitly enabled and institutionally approved.
+
+1. Generate an AI executive summary from deterministic results.
+2. Explain one existing MASVS finding using its evidence IDs.
+3. Contextualize one existing ATT&CK Mobile indicator with cautious wording.
+4. Show analyst validation: draft, accepted or rejected.
+5. Confirm that no raw APK, full decompiled source or malware verdict is sent or produced.
+
 ## What to Say During Demo
 
 - MSAP est un projet d'ingenierie cybersécurité, pas une simple application web.
@@ -48,3 +58,4 @@ L'APK de demonstration doit etre autorise. Il peut etre une application de test 
 - MITRE ATT&CK Mobile soutient le triage d'indicateurs suspects.
 - Les indicateurs ne constituent pas une classification definitive malware/benin.
 - Les preuves assurent la tracabilite et la qualite du rapport.
+- L'assistance AI, si activee, reste optionnelle, redigee et validee par un analyste.

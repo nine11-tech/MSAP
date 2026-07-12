@@ -47,3 +47,19 @@ Les APK, artefacts et rapports doivent rester dans des volumes locaux. Les tests
 4. Ajouter outils Android.
 5. Configurer volumes locaux.
 6. Lancer tests de validation.
+
+## Optional AI Environment Variables - V1.1
+
+These variables are documented for the future optional Kimi AI assistant. They are disabled by default and are not required for V1 setup.
+
+```env
+AI_ASSISTANT_ENABLED=false
+AI_PROVIDER=kimi
+KIMI_API_KEY=
+KIMI_MODEL=
+AI_REDACTION_ENABLED=true
+AI_MAX_FINDINGS_CONTEXT=
+AI_TIMEOUT_SECONDS=
+```
+
+Real API keys must not be committed to Git or logged. Enabling external AI requires institutional approval.

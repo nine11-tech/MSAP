@@ -59,3 +59,9 @@ Les secrets, tokens, cles API et donnees personnelles doivent etre masques ou tr
 ## Confidentiality Considerations
 
 Les preuves peuvent contenir du code proprietaire ou des donnees sensibles. Elles restent locales, soumises au controle d'acces et exclues de tout service distant.
+
+## AI-Safe Evidence Format
+
+Pour l'extension optionnelle AI, les preuves transmises a l'assistant doivent etre minimales, tronquees et redigees. Le contexte AI doit utiliser des `evidence_id` stables afin que les sorties AI referencent les preuves sans recopier de donnees sensibles.
+
+Avant tout appel AI, la couche de redaction masque secrets, tokens, cles API, emails, donnees personnelles, URLs et domaines lorsque leur valeur exacte n'est pas necessaire. Les sorties AI doivent citer les `evidence_id` fournis et ne doivent pas inventer de nouvelles preuves.

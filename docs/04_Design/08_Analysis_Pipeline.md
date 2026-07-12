@@ -23,7 +23,8 @@
 19. Risk scoring.
 20. Compliance scoring.
 21. Result persistence.
-22. Report generation.
+22. Optional AI enrichment if enabled.
+23. Report generation.
 
 ## Inputs
 
@@ -113,9 +114,19 @@ flowchart TD
     MapATTCK --> Risk
     Risk --> Compliance[Compliance scoring]
     Compliance --> Persist[Persist results]
-    Persist --> Report[Generate PDF and JSON]
+    Persist --> AIEnabled{AI enabled?}
+    AIEnabled -- No --> Report[Generate PDF and JSON]
+    AIEnabled -- Yes --> AIContext[Build AI context]
+    AIContext --> AIRedact[Redact AI context]
+    AIRedact --> AIDraft[Generate optional AI draft]
+    AIDraft --> HumanReview[Human validation]
+    HumanReview --> Report
     Report --> Done([Completed])
 ```
+
+## Optional Post-Scoring AI Enrichment
+
+The AI enrichment step is optional V1.1 and occurs only after deterministic risk and compliance scoring. It may prepare redacted draft text before final report generation, but it cannot change findings, indicators, evidence or scores.
 
 ## Failure Handling
 
@@ -125,6 +136,7 @@ flowchart TD
 - Partial extraction: continue with missing-artifact warning.
 - Rule failure: log rule ID and continue other rules.
 - Reporting failure: keep analysis results and mark report failed.
+- AI unavailable or disabled: continue report generation without AI content.
 
 ## Logging Requirements
 

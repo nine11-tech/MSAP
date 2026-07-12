@@ -38,9 +38,22 @@
 | POST | `/audits/{audit_id}/exports/json` | Generer export JSON. | `{}` | Export metadata. | 201, 401, 403, 409 | Export local redige. |
 | GET | `/exports/{export_id}/download` | Telecharger export JSON. | None | Fichier JSON. | 200, 401, 403, 404 | Ne pas exposer chemins absolus. |
 
+## Optional AI Endpoints - V1.1
+
+These endpoints are available only when `AI_ASSISTANT_ENABLED=true`. They use redacted post-analysis context only and never accept raw APK files or full decompiled source code.
+
+| Method | URL | Purpose | Request Body | Response Body | Status Codes | Security Requirement |
+|---|---|---|---|---|---|---|
+| POST | `/api/audits/{id}/ai/summary/` | Generer un brouillon de synthese executive. | `{"scope":"executive"}` | AIResponse en etat Draft. | 201, 400, 403, 409, 503 | Redaction obligatoire, pas d'APK brut. |
+| POST | `/api/findings/{id}/ai/explain/` | Expliquer un finding MASVS existant. | `{}` | AIResponse en etat Draft. | 201, 400, 403, 404, 503 | Referencer finding ID et evidence IDs uniquement. |
+| POST | `/api/indicators/{id}/ai/contextualize/` | Contextualiser un indicateur ATT&CK Mobile. | `{}` | AIResponse en etat Draft. | 201, 400, 403, 404, 503 | Aucun verdict malware/benin. |
+| POST | `/api/reports/{id}/ai/enhance/` | Proposer une amelioration de texte de rapport. | `{"sections":["summary","conclusion"]}` | Liste AIResponse Draft. | 201, 400, 403, 404, 503 | Utiliser seulement resultats deterministes. |
+| POST | `/api/ai-outputs/{id}/review/` | Accepter, modifier, rejeter ou archiver une sortie AI. | `{"state":"accepted","review_notes":"..."}` | AIOutputReview. | 200, 400, 403, 404 | Validation analyste requise. |
+
 ## Notes de Securite
 
 - Toutes les operations d'audit exigent authentification.
 - Les uploads doivent limiter taille et type.
 - Les snippets contenant des secrets sont tronques.
 - Les endpoints ATT&CK doivent utiliser un vocabulaire de triage prudent.
+- Les endpoints AI sont optionnels V1.1, desactives par defaut et doivent fonctionner avec redaction obligatoire.

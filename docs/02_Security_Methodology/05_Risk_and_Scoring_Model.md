@@ -83,3 +83,9 @@ Le score global combine:
 - `android:debuggable=true`: High, confidence High, priorite forte.
 - `DexClassLoader`: High, confidence High, a revoir selon contexte.
 - Obfuscation seule: Low, confidence Low, signal de support uniquement.
+
+## Optional AI and Scoring Boundaries
+
+L'AI ne peut pas changer le score de risque deterministe, le score de conformite MASVS ou le score de triage ATT&CK Mobile. Elle peut seulement expliquer la priorisation a partir des scores existants.
+
+Si une sortie AI suggere une priorite differente, cette suggestion reste un commentaire de revue et ne doit pas ecraser le moteur de scoring.

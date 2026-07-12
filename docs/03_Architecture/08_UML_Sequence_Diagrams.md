@@ -114,3 +114,35 @@ sequenceDiagram
     API->>REP: Generer export JSON
     REP-->>API: Export disponible
 ```
+
+## E. AI-assisted report enhancement - optional V1.1
+
+```mermaid
+sequenceDiagram
+    actor U as Auditeur
+    participant FE as Frontend
+    participant API as Django API
+    participant DB as PostgreSQL
+    participant CTX as AI Context Builder
+    participant RED as AI Redaction Layer
+    participant KCON as Kimi AI Connector
+    participant KIMI as External Kimi AI API
+    participant REV as AI Output Review
+    participant REP as Report Generator
+
+    U->>FE: Demander resume AI optionnel
+    FE->>API: POST /api/audits/{id}/ai/summary/
+    API->>API: Verifier AI_ASSISTANT_ENABLED
+    API->>DB: Charger findings, indicateurs, preuves, scores
+    API->>CTX: Construire contexte minimal
+    CTX-->>API: Contexte AI
+    API->>RED: Rediger secrets et donnees sensibles
+    RED-->>API: Contexte redige
+    API->>KCON: Appeler template controle
+    KCON->>KIMI: Envoyer contexte redige uniquement
+    KIMI-->>KCON: Brouillon AI
+    KCON-->>API: Reponse AI
+    API->>REV: Stocker en etat Draft
+    U->>REV: Valider ou rejeter
+    REV-->>REP: Texte accepte uniquement
+```

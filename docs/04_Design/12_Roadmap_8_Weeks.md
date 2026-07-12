@@ -10,3 +10,9 @@
 | S6 | MASVS + ATT&CK engines | Ajouter moteur ATT&CK triage, mappings, scores compliance/triage et faux positifs. |
 | S7 | Dashboard & reporting | Construire dashboard, rapports PDF, export JSON et vues de preuve. |
 | S8 | Qualite & livraison | Tests, Docker Compose, documentation finale, demo et checklist de livraison. |
+
+## Optional Post-V1.0 Extension
+
+Kimi AI is planned as an optional V1.1/post-V1.0 extension for redacted report drafting and analyst-reviewed triage explanations. It is not blocking S1-S8 core delivery.
+
+The S1-S8 roadmap remains focused on the local deterministic APK analysis platform. AI implementation starts only after core V1 is delivered and institutional approval for external AI use is available.

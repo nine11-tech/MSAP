@@ -79,3 +79,20 @@
 **Consequences**: Reproductibilite accrue, vigilance ARM64 necessaire.
 
 **Alternatives considered**: installation manuelle uniquement. Rejetee pour demonstration et livraison.
+
+## ADR-009: Optional AI-assisted triage and reporting layer
+
+**Context**: MSAP produces deterministic findings, indicators, evidence and scores that can be dense for final reporting. AI may help draft clearer summaries and explanations, but external AI introduces confidentiality, non-determinism and availability concerns.
+
+**Decision**: Add Kimi AI as an optional post-analysis assistant for V1.1. It is disabled by default, receives only redacted normalized context, and cannot replace deterministic rules, evidence, scores or analyst judgment.
+
+**Consequences**: Reports may become easier to read when AI is enabled and approved. The platform must add context construction, redaction, prompt templates, audit logging and human validation. Core V1 remains fully functional without AI.
+
+**Alternatives considered**:
+
+- No AI: safest and simplest, but does not help draft readable analyst text.
+- External AI assistant: useful for report wording, but requires redaction and institutional approval.
+- Local LLM: better data locality, but heavier operational requirements and still non-deterministic.
+- Direct raw APK AI analysis: rejected because it violates confidentiality, local-first positioning and evidence-based deterministic design.
+
+**Final decision**: Optional post-analysis AI assistant, disabled by default.
