@@ -177,6 +177,11 @@ erDiagram
     SUSPICIOUS_INDICATOR ||--o{ RISK_SCORE : scored_by
     AUDIT ||--o{ COMPLIANCE_SCORE : has
     AUDIT ||--o{ REPORT : generates
+    AUDIT ||--o{ AI_CONTEXT : may_prepare
+    AI_CONTEXT ||--o{ AI_REQUEST : sent_as
+    AI_REQUEST ||--o{ AI_RESPONSE : receives
+    AI_RESPONSE ||--o{ AI_OUTPUT_REVIEW : reviewed_by
+    AI_PROVIDER_CONFIG ||--o{ AI_REQUEST : configures
 ```
 
 ## Database Design Assumptions
@@ -187,3 +192,37 @@ erDiagram
 - Les preuves contenant des secrets doivent etre tronquees ou masquees.
 - Les statuts analyste permettent la gestion des faux positifs.
 - Les rules YAML sont chargees et validees avant execution.
+
+## Optional AI V1.1 Entities
+
+### AIContext
+
+**Purpose**: contexte minimal et redige construit depuis les findings, indicateurs, preuves et scores deterministes.
+
+**Main fields**: `id`, `audit_id`, `purpose`, `context_hash`, `redaction_summary`, `created_by`, `created_at`.
+
+### AIRequest
+
+**Purpose**: trace d'une demande AI optionnelle.
+
+**Main fields**: `id`, `ai_context_id`, `provider`, `model`, `prompt_template`, `status`, `latency_ms`, `created_at`.
+
+### AIResponse
+
+**Purpose**: brouillon produit par l'assistant AI.
+
+**Main fields**: `id`, `ai_request_id`, `output_type`, `draft_text`, `referenced_ids`, `created_at`.
+
+### AIOutputReview
+
+**Purpose**: validation humaine d'une sortie AI.
+
+**Main fields**: `id`, `ai_response_id`, `state`, `reviewer_id`, `review_notes`, `reviewed_at`.
+
+### AIProviderConfig
+
+**Purpose**: configuration optionnelle du fournisseur AI.
+
+**Main fields**: `id`, `provider`, `model`, `enabled`, `timeout_seconds`, `redaction_enabled`, `created_at`.
+
+Ces entites sont une extension optionnelle V1.1. Elles ne sont pas requises pour le fonctionnement local-first V1.

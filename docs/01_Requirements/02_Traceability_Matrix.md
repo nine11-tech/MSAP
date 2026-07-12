@@ -16,3 +16,9 @@
 | FR-18 | Calculer compliance score | Compliance scoring | OWASP MASVS | MSAP-AND-* | Compliance test | Compliance summary |
 | FR-19 | Generer PDF | Reporting | Both | All results | Report generation test | PDF report |
 | FR-20 | Exporter JSON | Reporting | Both | All results | JSON schema test | JSON export |
+| AI-01 | Construire un contexte AI minimal | AI context builder | MASVS/ATT&CK post-analysis | Existing findings/indicators only | Context schema test | Optional AI appendix |
+| AI-02 | Rediger le contexte avant AI | AI redaction layer | Confidentiality control | Evidence IDs only | Redaction test | Optional AI appendix |
+| AI-03 | Generer une synthese assistee AI | AI triage assistant | Reporting support | Existing scores/results | Prompt template test | Executive summary draft |
+| AI-04 | Expliquer un finding MASVS existant | AI triage assistant | OWASP MASVS | Finding ID + evidence IDs | Hallucination checklist | Finding explanation draft |
+| AI-05 | Valider humainement les sorties AI | AI output review | Analyst workflow | Reviewed AI outputs | Workflow test | Accepted report text |
+| AI-06 | Configurer AI comme option desactivee | Optional configuration | Deployment control | N/A | Disabled fallback test | Deployment notes |

@@ -162,6 +162,13 @@ MSAP apporte une vision hybride AppSec + threat triage, tout en conservant une e
 - Extension de regles YARA.
 - Support iOS dans une version future.
 - Integration optionnelle d'outils externes, sans casser l'architecture locale.
+- Kimi AI comme extension optionnelle V1.1 pour assister la redaction et l'interpretation apres analyse deterministe.
+
+## Optional AI Future Extension
+
+Kimi AI est retenu comme piste d'extension optionnelle, pas comme composant du noyau deterministe V1. L'assistance AI peut aider a produire des resumes executifs, expliquer des findings MASVS existants, contextualiser des indicateurs ATT&CK Mobile existants, proposer une formulation de remediation et ameliorer la lisibilite du rapport.
+
+L'AI ne recoit pas d'APK brut, pas de source decompilee complete et pas de secrets non rediges. Elle ne remplace pas les regles deterministes, ne modifie pas les scores et ne produit pas de verdict garanti malware/benin. Toute sortie AI reste un brouillon soumis a validation analyste.
 
 ## Conclusion
 

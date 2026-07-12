@@ -58,6 +58,18 @@ Risk score, compliance score MASVS et triage score.
 
 Generation PDF, export JSON et telechargement local.
 
+### ai_assistant - optional V1.1
+
+Module futur optionnel, desactive par defaut, dedie aux brouillons AI post-analyse.
+
+Services prevus:
+
+- `AIContextBuilder`: construit un contexte minimal depuis findings, indicateurs, preuves et scores.
+- `AIRedactionService`: masque secrets, tokens, URLs, domaines, emails et donnees personnelles.
+- `KimiAIConnector`: encapsule les appels Kimi AI avec timeouts et sans journaliser les cles.
+- `AITriageAssistantService`: orchestre les templates de prompts et stocke les brouillons.
+- `AIOutputReviewService`: gere validation, acceptation, rejet et archivage.
+
 ## Service Boundaries
 
 - Les vues API appellent des services applicatifs.
@@ -74,3 +86,4 @@ Generation PDF, export JSON et telechargement local.
 5. findings, indicators, evidence.
 6. scoring.
 7. reports.
+8. ai_assistant optionnel apres V1.

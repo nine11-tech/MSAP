@@ -31,3 +31,9 @@ Construire un MVP local, realiste pour un PFA de deux mois, couvrant ingestion A
 4. Premieres detections et preuves.
 5. Scoring, reporting, dashboard.
 6. Tests, Docker, livraison.
+
+## AI Positioning
+
+Kimi AI is not part of the core V1 implementation. During V1, the work is limited to documentation and design preparation for an optional V1.1 extension.
+
+The Kimi connector, AI context builder implementation, redaction service implementation and AI validation workflow implementation are post-V1 tasks. They do not block the deterministic MVP.

@@ -40,6 +40,13 @@ flowchart TB
         REPORT[Report Generator]
     end
 
+    subgraph Optional_AI_V1_1
+        AICTX[AI Context Builder]
+        AIRED[AI Redaction Layer]
+        KIMI[Kimi AI Connector]
+        AIA[AI Triage & Audit Assistant]
+    end
+
     Auditor --> FE
     FE --> API
     API --> ORCH
@@ -60,6 +67,12 @@ flowchart TB
     RISK --> DB
     EVID --> DB
     API --> DB
+    EVID -. optional .-> AICTX
+    RISK -. optional .-> AICTX
+    AICTX -. minimized context .-> AIRED
+    AIRED -. redacted context .-> KIMI
+    KIMI -. draft output .-> AIA
+    AIA -. analyst-reviewed text .-> REPORT
     DB --> REPORT
     REPORT --> API
 ```

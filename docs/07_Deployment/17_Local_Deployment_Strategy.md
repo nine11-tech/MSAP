@@ -59,6 +59,12 @@ Les APK et preuves restent locaux. Les sauvegardes doivent etre chiffrees ou sto
 
 MSAP doit fonctionner sans service distant et respecter les politiques locales de confidentialite.
 
+## Optional AI External Dependency
+
+Kimi AI is an optional V1.1 external dependency and is disabled by default. The local-first mode remains the default deployment mode, and no-AI mode works offline for APK analysis, evidence, scoring and reporting.
+
+Kimi configuration is allowed only if the institution permits external AI use. When enabled, MSAP must send only redacted post-analysis context and must never send raw APK files or full decompiled source code.
+
 ## ARM64 Constraints and Mitigations
 
 - Preferer images multi-arch.

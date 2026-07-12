@@ -53,6 +53,21 @@ Le moteur de preuves garantit la tracabilite: artefact APK -> regle -> finding/i
 
 Le generateur de rapports produit un PDF et un export JSON contenant le perimetre, la methodologie, les limites, les findings MASVS, les indicateurs ATT&CK, les preuves, les scores et les recommandations.
 
+## Optional AI Assistant Layer - V1.1
+
+Une couche Kimi AI optionnelle peut etre ajoutee apres le moteur de preuves et le moteur de risque:
+
+```text
+Evidence + Risk Engine
+-> AI Context Builder
+-> AI Redaction Layer
+-> Kimi AI Connector
+-> AI Triage & Audit Assistant
+-> Report/Dashboard
+```
+
+Cette couche est desactivee par defaut. Elle ne recoit pas d'APK brut, pas de source decompilee complete, ne remplace pas les regles deterministes et ne produit pas de verdict malware/benin. Elle fournit uniquement des brouillons valides par analyste.
+
 ## Database
 
 PostgreSQL stocke les projets, audits, APK, metadonnees, resultats bruts references, artefacts normalises, findings, indicateurs, preuves, scores et rapports.
@@ -102,6 +117,12 @@ flowchart LR
     EVID --> RISK[Risk Engine]
     RISK --> DB[(PostgreSQL)]
     EVID --> DB
+    EVID -. optional V1.1 .-> AICTX[AI Context Builder]
+    RISK -. optional V1.1 .-> AICTX
+    AICTX -. minimized context .-> AIRED[AI Redaction Layer]
+    AIRED -. redacted context .-> KIMI[Kimi AI Connector]
+    KIMI -. draft assistance .-> AIA[AI Triage & Audit Assistant]
+    AIA -. accepted text only .-> REPORT
     DB --> REPORT[Report Generator]
     REPORT --> OUT[PDF Report / JSON Export]
 ```

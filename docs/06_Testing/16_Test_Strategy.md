@@ -56,9 +56,21 @@ Le rapport doit inclure perimetre, limites, scores, preuves, recommandations et 
 - PostgreSQL accessible localement.
 - Pas de dependance reseau externe obligatoire.
 
+## Future Optional AI Tests - V1.1
+
+- Redaction tests for secrets, tokens, URLs, domains, emails and personal data.
+- Prompt template tests to ensure outputs reference only supplied IDs.
+- No raw APK transmission test.
+- No full decompiled source transmission test.
+- AI disabled fallback test.
+- Human validation workflow test.
+- Audit log test without API key leakage.
+- Hallucination control review checklist.
+
 ## Acceptance Criteria
 
 - Tests critiques passent.
 - YAML parse correctement.
 - Aucun verdict automatise de malveillance.
 - Aucun envoi distant d'APK.
+- Le mode AI desactive ne bloque aucun workflow V1.

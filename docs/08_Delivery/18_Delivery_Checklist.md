@@ -53,3 +53,14 @@
 - MASVS and ATT&CK mappings present.
 - Evidence and scoring included.
 - Report includes authorized-use disclaimer.
+
+## Optional AI Documentation Checklist
+
+- AI integration decision documented.
+- AI-assisted triage methodology documented.
+- AI assistant architecture documented.
+- AI context and redaction model documented.
+- AI prompt templates documented.
+- Human validation workflow documented.
+- Optional AI configuration documented.
+- AI remains disabled by default and post-V1.0/V1.1.

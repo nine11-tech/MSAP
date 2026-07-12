@@ -11,6 +11,7 @@ MSAP V1 cible un deploiement local sur poste institutionnel via Docker Compose. 
 - Volumes locaux pour APK, artefacts, rapports et exports.
 - Catalogues de regles locaux.
 - Pas de dependance MobSF, emulateur ou analyse dynamique.
+- Kimi AI optionnel, desactive par defaut et appele uniquement avec contexte redige.
 
 ```mermaid
 flowchart TB
@@ -30,6 +31,11 @@ flowchart TB
         end
 
         TOOLS[Outils locaux\nJava / APKTool / JADX / Androguard]
+        AICFG[AI config optionnelle\nAI_ASSISTANT_ENABLED=false]
+    end
+
+    subgraph EXT[External optional boundary]
+        KIMI[Kimi AI API\noptional V1.1]
     end
 
     User[Auditeur] --> FE
@@ -41,8 +47,12 @@ flowchart TB
     BE --> EXP
     BE --> RULES
     BE --> TOOLS
+    BE --> AICFG
+    BE -. only when enabled\nno raw APK .-> KIMI
 ```
 
 ## Notes de deploiement
 
 Les images Docker et outils doivent etre testes sur l'environnement cible. Si un outil n'est pas disponible en ARM64, il doit etre documente comme optionnel ou remplace par une alternative compatible.
+
+L'appel Kimi AI est hors du noyau local V1. Il est autorise uniquement si l'institution l'approuve, si la configuration l'active explicitement et si la redaction empeche l'envoi d'APK brut, de source complete ou de secrets.

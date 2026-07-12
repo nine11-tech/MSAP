@@ -13,6 +13,12 @@ La plateforme combine deux angles complementaires:
 
 MSAP ne fournit pas un verdict garanti malware/benin. Les indicateurs ATT&CK Mobile servent a soutenir une revue analyste.
 
+## Optional Kimi AI Extension
+
+Kimi AI is documented as an optional V1.1 extension for AI-assisted triage and audit reporting. It is not part of the deterministic V1 core, is disabled by default, and is not required for MSAP to work.
+
+The AI layer may draft executive summaries, explain existing MASVS findings, contextualize existing ATT&CK Mobile indicators, suggest remediation wording and improve report readability. It does not process raw APK files, does not receive full decompiled source code, does not replace deterministic rules or scores, and does not generate guaranteed malware or benign verdicts. All AI-generated text requires analyst validation before final report inclusion.
+
 ## Problem Statement
 
 Les equipes academiques et institutionnelles ont besoin d'un environnement local pour analyser des APK sans exposer les fichiers a des services distants. Les outils existants peuvent etre puissants, mais ils sont parfois trop larges, dependants de plateformes externes ou insuffisamment adaptes a une demarche structuree autour de preuves, scoring, conformite et triage.
@@ -89,6 +95,12 @@ flowchart LR
     Normalize --> Evidence[Evidence Engine]
     Risk --> DB[(PostgreSQL)]
     Evidence --> DB
+    Risk -. optional V1.1 .-> AICTX[AI Context Builder]
+    Evidence -. optional V1.1 .-> AICTX
+    AICTX -. redacted context .-> AIRED[AI Redaction Layer]
+    AIRED -. optional external call .-> KIMI[Kimi AI Connector]
+    KIMI -. draft text .-> AIA[AI Triage & Audit Assistant]
+    AIA -. reviewed text .-> Report
     Risk --> Report[Report Generator]
     Report --> Exports[PDF Report / JSON Export]
 ```
@@ -105,6 +117,7 @@ flowchart LR
 8. Risk engine.
 9. Evidence engine.
 10. Reporting engine.
+11. Optional V1.1 AI triage and audit reporting assistant.
 
 ## Documentation Structure
 
@@ -149,6 +162,16 @@ docs/
 - [Non-functional design](docs/04_Design/14_Non_Functional_Design.md)
 - [Architecture Decision Records](docs/04_Design/15_Architecture_Decision_Records.md)
 
+### Optional AI Assistance
+
+- [AI integration decision](docs/00_Cadrage/10_AI_Integration_Decision.md)
+- [AI-assisted triage methodology](docs/02_Security_Methodology/07_AI_Assisted_Triage_Methodology.md)
+- [AI assistant architecture](docs/03_Architecture/13_AI_Assistant_Architecture.md)
+- [AI context and redaction model](docs/04_Design/16_AI_Context_and_Redaction_Model.md)
+- [AI prompt templates](docs/04_Design/17_AI_Prompt_Templates.md)
+- [AI human validation workflow](docs/04_Design/18_AI_Human_Validation_Workflow.md)
+- [AI optional configuration](docs/07_Deployment/18_AI_Optional_Configuration.md)
+
 ### Validation et Livraison
 
 - [Test strategy](docs/06_Testing/16_Test_Strategy.md)
@@ -166,10 +189,13 @@ docs/
 - Analyse Android: APKTool, JADX, Androguard, regles regex/YARA optionnelles.
 - Reporting: PDF et JSON.
 - Deploiement: Docker Compose local.
+- Optional V1.1 AI: Kimi AI connector disabled by default, using redacted post-analysis context only.
 
 ## Contraintes Local-First 
 
 MSAP doit rester deployable sur un poste institutionnel, y compris en environnement WSL et machines ARM64 lorsque possible. Les dependances doivent etre choisies avec prudence, sans imposer MobSF, emulateur Android ou service externe. 
+
+Kimi AI does not change the local-first V1 baseline. It is an optional V1.1 external service integration that requires explicit configuration and institutional approval.
 
 ## Roadmap Summary
 
@@ -183,6 +209,7 @@ MSAP doit rester deployable sur un poste institutionnel, y compris en environnem
 | S6 | MASVS + ATT&CK engines |
 | S7 | Dashboard & reporting |
 | S8 | Qualite & livraison |
+| Post-V1.0 / V1.1 | Optional Kimi AI assistant for redacted report drafting and analyst-reviewed triage text |
 
 ## Authorized-Use Disclaimer
 
