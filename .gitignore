@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 .Python
 venv/
+.venv/
 .env
 .env.*
 !.env.example
@@ -13,6 +14,7 @@ venv/
 *.log
 local_settings.py
 db.sqlite3
+.pytest_cache/
 media/
 staticfiles/
 

@@ -1,7 +1,9 @@
-# Note de Cadrage - MSAP 
+# Note de Cadrage - MSAP
 
 ## Project Title
-**MSAP - Cloud-Native Mobile Security Assessment & Triage Platform**
+**MSAP**
+
+Cloud-Native Mobile Security Assessment & Triage Platform
 
 ## Product Identity
 MSAP est une plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
@@ -10,7 +12,7 @@ MSAP est une plateforme cloud-native d'evaluation de securite mobile et de triag
 Les organisations ont besoin d'une plateforme d'audit mobile capable de traiter des APK sensibles, de conserver les preuves, de tracer les analyses et de s'integrer dans une infrastructure institutionnelle. Le pivot cloud-native permet de passer d'un prototype local a une architecture scalable, auditable et auto-hebergeable.
 
 ## Problem Statement
-Les analyses APK restent souvent dispersees entre outils, scripts et rapports manuels. MSAP Cloud centralise l'analyse statique Android, le mapping MASVS, le triage ATT&CK Mobile, les preuves et le reporting dans une architecture Kubernetes avec stockage objet MinIO et metadonnees PostgreSQL.
+Les analyses APK restent souvent dispersees entre outils, scripts et rapports manuels. MSAP centralise l'analyse statique Android, le mapping MASVS, le triage ATT&CK Mobile, les preuves et le reporting dans une architecture Kubernetes avec stockage objet MinIO et metadonnees PostgreSQL.
 
 ## Objectif general
 Concevoir une plateforme cloud-native de security engineering pour l'analyse statique Android, l'evaluation MASVS, le triage ATT&CK Mobile, le scoring, la preuve et le reporting.
@@ -78,4 +80,4 @@ Python/Django REST, React, PostgreSQL, Redis/Celery, MinIO, Kubernetes, Helm, In
 | Confusion triage/verdict | Wording prudent, validation analyste, disclaimer |
 
 ## Conclusion
-MSAP Cloud devient une plateforme cloud-native de cybersécurité orientee architecture, preuve et analyse statique Android. Kubernetes est la cible de deploiement, MinIO le stockage objet, Docker Compose un outil de developpement local.
+MSAP devient une plateforme cloud-native de cybersécurité orientee architecture, preuve et analyse statique Android. Kubernetes est la cible de deploiement, MinIO le stockage objet, Docker Compose un outil de developpement local.
