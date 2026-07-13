@@ -1,78 +1,19 @@
-# Index des Livrables Finaux - MSAP
+# Final Deliverables Index - MSAP Cloud
 
-## Product Deliverables
+## Documentation deliverables
+Cadrage cloud-native, SRS, traceability matrix, security methodology, evidence model, cloud architecture, Kubernetes deployment architecture, MinIO architecture, data flow, Kubernetes resource model, multi-tenant security model, testing strategy and acceptance criteria.
 
-- MVP backend.
-- MVP frontend.
-- Pipeline d'analyse statique.
-- Moteurs MASVS et ATT&CK Mobile.
-- Reporting PDF et export JSON.
+## Deployment deliverables
+- Kubernetes manifests plan.
+- Helm chart strategy and values model.
+- MinIO bucket strategy.
+- PostgreSQL metadata/reference model.
+- Redis/Celery worker strategy.
+- Deployment guide for local K3s/kind, self-hosted Kubernetes and institutional clusters.
+- Cloud DevSecOps strategy with Trivy, Helm lint and manifest validation.
 
-## Documentation Deliverables
+## Demo deliverables
+Kubernetes/K3s deployment, APK upload, MinIO object verification, worker analysis, MASVS/ATT&CK review, report generation and report download.
 
-- Note de cadrage.
-- Cahier des charges.
-- Project charter.
-- Requirements specification.
-- Traceability matrix.
-
-## Security Methodology Deliverables
-
-- Methodologie hybride MASVS + ATT&CK.
-- Mapping MASVS/ATT&CK.
-- Methodologie triage ATT&CK Mobile.
-- Modele de scoring.
-- Modele de preuve.
-- Methodologie AI-assisted triage optionnelle.
-
-## Architecture Deliverables
-
-- Software Architecture Document.
-- Component diagram.
-- UML use case, class, sequence, activity and state diagrams.
-- Deployment diagram.
-- Package/module diagram.
-- AI assistant architecture.
-
-## Project Management Deliverables
-
-- WBS.
-- Gantt 8 semaines.
-- Scrum management plan.
-- Sprint backlog.
-- RACI matrix.
-- Risk register.
-- ADRs.
-
-## Testing Deliverables
-
-- Test strategy.
-- Acceptance criteria.
-- Rule validation tests.
-- Deployment validation.
-
-## Deployment Deliverables
-
-- Docker Compose strategy.
-- Volumes locaux.
-- Variables d'environnement.
-- Contraintes ARM64.
-- Configuration Kimi AI optionnelle et desactivee par defaut.
-
-## Optional AI Deliverables
-
-- `docs/00_Cadrage/10_AI_Integration_Decision.md`
-- `docs/02_Security_Methodology/07_AI_Assisted_Triage_Methodology.md`
-- `docs/03_Architecture/13_AI_Assistant_Architecture.md`
-- `docs/04_Design/16_AI_Context_and_Redaction_Model.md`
-- `docs/04_Design/17_AI_Prompt_Templates.md`
-- `docs/04_Design/18_AI_Human_Validation_Workflow.md`
-- `docs/07_Deployment/18_AI_Optional_Configuration.md`
-
-## Demo Deliverables
-
-- Demo scenario.
-- APK ou fixture autorisee.
-- Rapport PDF exemple.
-- Export JSON exemple.
-- Checklist de livraison.
+## Scope reminders
+Docker Compose is development-only. MinIO is object storage, not application hosting. Kimi AI is optional post-analysis only. MSAP Cloud does not provide guaranteed malware classification.

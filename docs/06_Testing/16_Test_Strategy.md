@@ -1,76 +1,16 @@
-# Test Strategy - MSAP V1
+# Test Strategy - MSAP Cloud
 
-## Test Objectives
+## Test scope
+Tester le coeur cybersécurité et la plateforme cloud-native: ingestion APK, MinIO, PostgreSQL references, Redis/Celery workers, MASVS, ATT&CK Mobile, evidence, reporting, Kubernetes et Helm.
 
-Verifier que MSAP analyse localement des APK autorises, produit des preuves fiables, limite les faux positifs et genere des rapports coherents.
+## Test categories
+- Unit tests: engines, normalization, risk scoring, storage reference validation.
+- API tests: auth, RBAC, upload, job status, report download.
+- MinIO storage tests: bucket creation, object write/read, metadata consistency, lifecycle cleanup.
+- Worker tests: queue processing, retries, failure states, artifact persistence.
+- Kubernetes deployment tests: pods ready, Ingress, Secrets refs, Services, Jobs, probes.
+- Helm tests: `helm lint`, `helm template`, install/upgrade/rollback on kind/K3s.
+- Security tests: object access authorization, URL expiry, redaction, no secrets in logs.
 
-## Unit Tests
-
-- Validation YAML.
-- Scoring.
-- Redaction de secrets.
-- Mapping MASVS et ATT&CK.
-
-## Integration Tests
-
-- Upload APK -> extraction -> normalisation.
-- Normalisation -> MASVS engine.
-- Normalisation -> ATT&CK triage engine.
-- Resultats -> reporting.
-
-## Functional Tests
-
-- Creation projet/audit.
-- Upload APK.
-- Lancement analyse.
-- Consultation findings, indicateurs, preuves et scores.
-- Telechargement PDF/JSON.
-
-## Static Analysis Validation Tests
-
-Fixtures manifest, permissions, composants, ressources et code snippets.
-
-## Rule Validation Tests
-
-Chaque regle critique doit avoir au moins un cas positif et un cas negatif.
-
-## False Positive Tests
-
-Verifier que des usages legitimes frequents ne sont pas presentes comme verdicts malveillants.
-
-## Report Validation Tests
-
-Le rapport doit inclure perimetre, limites, scores, preuves, recommandations et disclaimer.
-
-## Security Tests
-
-- Upload invalide.
-- Path traversal.
-- Snippet redaction.
-- Controle d'acces projet/audit.
-
-## Deployment Tests
-
-- Docker Compose local.
-- Volumes persistants.
-- PostgreSQL accessible localement.
-- Pas de dependance reseau externe obligatoire.
-
-## Future Optional AI Tests - V1.1
-
-- Redaction tests for secrets, tokens, URLs, domains, emails and personal data.
-- Prompt template tests to ensure outputs reference only supplied IDs.
-- No raw APK transmission test.
-- No full decompiled source transmission test.
-- AI disabled fallback test.
-- Human validation workflow test.
-- Audit log test without API key leakage.
-- Hallucination control review checklist.
-
-## Acceptance Criteria
-
-- Tests critiques passent.
-- YAML parse correctement.
-- Aucun verdict automatise de malveillance.
-- Aucun envoi distant d'APK.
-- Le mode AI desactive ne bloque aucun workflow V1.
+## Constraints
+No tests should imply guaranteed malware classification. Optional Kimi AI tests use redacted post-analysis context only.

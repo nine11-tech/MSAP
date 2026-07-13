@@ -1,98 +1,71 @@
-# Architecture Decision Records - MSAP
+# Architecture Decision Records - MSAP Cloud
 
-## ADR-001: Local-first architecture
+## ADR-001: Evidence-first static analysis core
+**Status**: Accepted
 
-**Context**: Les APK peuvent contenir du code proprietaire et des donnees sensibles.
+MSAP Cloud garde l'analyse statique Android comme coeur fonctionnel. Chaque finding MASVS ou indicateur ATT&CK Mobile doit etre relie a une preuve technique sourcee.
 
-**Decision**: MSAP V1 fonctionne localement, sans service distant.
+## ADR-002: OWASP MASVS as AppSec assessment standard
+**Status**: Accepted
 
-**Consequences**: Meilleure confidentialite, mais l'installation locale doit gerer les dependances.
+OWASP MASVS structure les constats AppSec et les recommandations. Le scoring de conformite reste indicatif et auditable.
 
-**Alternatives considered**: service cloud, API externe d'analyse. Rejetees pour confidentialite et contraintes PFA.
+## ADR-003: MITRE ATT&CK Mobile as cautious triage mapping
+**Status**: Accepted
 
-## ADR-002: Static analysis only for Version 1
+MITRE ATT&CK Mobile sert a mapper des indicateurs statiques suspects. Il ne produit pas de verdict malware/benin garanti.
 
-**Context**: Le delai PFA impose un perimetre realiste.
+## ADR-004: PostgreSQL metadata database
+**Status**: Accepted
 
-**Decision**: V1 couvre uniquement l'analyse statique Android APK.
+PostgreSQL stocke utilisateurs, organisations, projets, audits, statuts, references MinIO, resultats normalises, findings, indicateurs, preuves, scores et rapports.
 
-**Consequences**: Pipeline plus maitrisable, mais pas d'observation runtime.
+## ADR-005: Analyzer adapters remain modular
+**Status**: Accepted
 
-**Alternatives considered**: analyse dynamique, instrumentation, sandbox. Reportees hors V1.
+APKTool, JADX, Androguard et regles custom restent des adaptateurs remplaçables. MobSF, Frida et analyse dynamique restent des plugins futurs optionnels.
 
-## ADR-003: Excluding MobSF from V1 dependencies
+## ADR-006: AI optional post-analysis only
+**Status**: Accepted
 
-**Context**: Le projet doit demontrer une architecture propre et eviter une dependance centrale a un outil monolithique.
+Kimi AI est optionnel, desactive par defaut et limite a un contexte post-analyse redige. Il ne traite pas d'APK brut, ne remplace pas les regles deterministes et ne modifie pas les scores.
 
-**Decision**: Toute dependance a MobSF est exclue du perimetre V1.
+## ADR-007: Multi-tenant isolation
+**Status**: Accepted
 
-**Consequences**: Plus de controle sur les modules, mais plus d'effort de conception.
+Les donnees sont isolees par organisation, projet et audit. Les acces API et objets MinIO sont controles par RBAC, prefixes objet et audit logs.
 
-**Alternatives considered**: baser le MVP sur MobSF. Rejete pour V1.
+## ADR-008: Ingress HTTPS and Kubernetes Secrets
+**Status**: Accepted
 
-## ADR-004: Plugin-based analyzer architecture
+Les acces utilisateurs passent par Ingress HTTPS. Les credentials PostgreSQL, MinIO, Django, Redis et AI optionnelle sont fournis via Kubernetes Secrets.
 
-**Context**: APKTool, JADX, Androguard et regex/YARA produisent des formats differents.
+## ADR-009: Observability optional for MVP
+**Status**: Accepted
 
-**Decision**: Utiliser un gestionnaire de plugins d'analyse.
+Prometheus/Grafana sont optionnels pour le MVP, mais les metriques API, workers, queue, Jobs et stockage doivent rester compatibles avec une integration future.
 
-**Consequences**: Extensibilite accrue, contrat plugin a definir.
+## ADR-010: Cloud-native Kubernetes deployment
+**Status**: Accepted
 
-**Alternatives considered**: analyseur unique. Rejete pour manque de flexibilite.
+MSAP Cloud adopte Kubernetes comme cible de deploiement afin de supporter Ingress HTTPS, Secrets, Services, Deployments, Jobs, NetworkPolicies, probes et scaling des workers. Docker Compose est conserve uniquement pour le developpement local.
 
-## ADR-005: Normalization layer before rule engines
+## ADR-011: MinIO object storage for APKs and reports
+**Status**: Accepted
 
-**Context**: Les moteurs MASVS et ATT&CK doivent consommer des donnees coherentes.
+Les APK, artefacts, preuves volumineuses, rapports et exports sont stockes dans MinIO. PostgreSQL conserve les metadonnees et references objet. MinIO est un stockage objet, pas un hebergeur applicatif.
 
-**Decision**: Ajouter une couche de normalisation entre resultats bruts et moteurs de regles.
+## ADR-012: Redis/Celery asynchronous analysis workers
+**Status**: Accepted
 
-**Consequences**: Meilleure maintenabilite, effort initial supplementaire.
+Les analyses APK longues sont executees hors requete HTTP via Redis/Celery workers ou Kubernetes Jobs. Les jobs disposent de statuts, retries bornes et traces d'erreur.
 
-**Alternatives considered**: regles directement sur outputs outils. Rejete pour couplage fort.
+## ADR-013: Helm chart packaging
+**Status**: Accepted
 
-## ADR-006: Hybrid MASVS + MITRE ATT&CK Mobile model
+Le packaging cible est un chart Helm avec values par environnement, templates Kubernetes, secrets references, ressources, probes et rollback.
 
-**Context**: MSAP doit couvrir audit AppSec et triage menace sans confusion.
+## ADR-014: Docker Compose only for local development
+**Status**: Accepted
 
-**Decision**: Utiliser OWASP MASVS pour findings AppSec et MITRE ATT&CK Mobile pour indicateurs de triage.
-
-**Consequences**: Positionnement cybersécurité plus fort, mais wording prudent obligatoire.
-
-**Alternatives considered**: MASVS seul ou triage menace seul. Juges moins complets.
-
-## ADR-007: Evidence-first finding model
-
-**Context**: Un audit professionnel doit etre defensible.
-
-**Decision**: Chaque finding ou indicateur doit etre lie a une preuve.
-
-**Consequences**: Meilleure tracabilite et reporting, mais exigences plus strictes sur l'extraction.
-
-**Alternatives considered**: resultats sans preuves detaillees. Rejete.
-
-## ADR-008: Docker Compose local deployment
-
-**Context**: Le MVP doit etre deployable sur poste institutionnel.
-
-**Decision**: Cible de deploiement Docker Compose local.
-
-**Consequences**: Reproductibilite accrue, vigilance ARM64 necessaire.
-
-**Alternatives considered**: installation manuelle uniquement. Rejetee pour demonstration et livraison.
-
-## ADR-009: Optional AI-assisted triage and reporting layer
-
-**Context**: MSAP produces deterministic findings, indicators, evidence and scores that can be dense for final reporting. AI may help draft clearer summaries and explanations, but external AI introduces confidentiality, non-determinism and availability concerns.
-
-**Decision**: Add Kimi AI as an optional post-analysis assistant for V1.1. It is disabled by default, receives only redacted normalized context, and cannot replace deterministic rules, evidence, scores or analyst judgment.
-
-**Consequences**: Reports may become easier to read when AI is enabled and approved. The platform must add context construction, redaction, prompt templates, audit logging and human validation. Core V1 remains fully functional without AI.
-
-**Alternatives considered**:
-
-- No AI: safest and simplest, but does not help draft readable analyst text.
-- External AI assistant: useful for report wording, but requires redaction and institutional approval.
-- Local LLM: better data locality, but heavier operational requirements and still non-deterministic.
-- Direct raw APK AI analysis: rejected because it violates confidentiality, local-first positioning and evidence-based deterministic design.
-
-**Final decision**: Optional post-analysis AI assistant, disabled by default.
+Docker Compose n'est plus le mode principal de deploiement. Il sert au developpement local, aux tests rapides et a l'integration de base avant validation Kubernetes.

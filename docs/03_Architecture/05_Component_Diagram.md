@@ -1,78 +1,55 @@
-# Component Diagram - MSAP
+# Component Diagram - MSAP Cloud
 
 ```mermaid
 flowchart TB
-    Auditor[User / Auditor]
-
-    subgraph Presentation
-        FE[React Frontend]
+    subgraph Client
+      U[Auditor]
     end
-
-    subgraph API_Layer
-        API[Django REST API]
-        ORCH[Audit Orchestrator]
+    subgraph Kubernetes[Namespace msap]
+      ING[Ingress TLS]
+      FE[React Frontend]
+      API[Django REST API]
+      ORCH[Audit Orchestrator]
+      Q[Redis Queue]
+      W[Analyzer Workers]
+      KJ[Kubernetes Jobs]
+      N[Normalization Layer]
+      M[MASVS Engine]
+      A[ATT&CK Triage Engine]
+      E[Evidence Engine]
+      R[Risk Engine]
+      RG[Report Generator]
+      DB[(PostgreSQL)]
+      S3[(MinIO Object Storage)]
+      SEC[Kubernetes Secrets]
     end
-
-    subgraph Analyzer_Layer
-        PM[Analyzer Plugin Manager]
-        APK[APKTool Adapter]
-        JADX[JADX Adapter]
-        AG[Androguard Adapter]
-        RY[Custom Regex/YARA Rules Adapter]
-    end
-
-    subgraph Normalization
-        NORM[Normalization Layer]
-    end
-
-    subgraph Security_Engines
-        MASVS[MASVS Engine]
-        ATTCK[ATT&CK Triage Engine]
-        EVID[Evidence Engine]
-        RISK[Risk Engine]
-    end
-
-    subgraph Data
-        DB[(PostgreSQL)]
-    end
-
-    subgraph Reporting
-        REPORT[Report Generator]
-    end
-
-    subgraph Optional_AI_V1_1
-        AICTX[AI Context Builder]
-        AIRED[AI Redaction Layer]
-        KIMI[Kimi AI Connector]
-        AIA[AI Triage & Audit Assistant]
-    end
-
-    Auditor --> FE
+    U --> ING
+    ING --> FE
+    ING --> API
     FE --> API
     API --> ORCH
-    ORCH --> PM
-    PM --> APK
-    PM --> JADX
-    PM --> AG
-    PM --> RY
-    APK --> NORM
-    JADX --> NORM
-    AG --> NORM
-    RY --> NORM
-    NORM --> MASVS
-    NORM --> ATTCK
-    MASVS --> EVID
-    ATTCK --> EVID
-    EVID --> RISK
-    RISK --> DB
-    EVID --> DB
+    ORCH --> Q
+    Q --> W
+    ORCH --> KJ
+    W --> N
+    KJ --> N
+    N --> M
+    N --> A
+    M --> E
+    A --> E
+    E --> R
+    R --> RG
     API --> DB
-    EVID -. optional .-> AICTX
-    RISK -. optional .-> AICTX
-    AICTX -. minimized context .-> AIRED
-    AIRED -. redacted context .-> KIMI
-    KIMI -. draft output .-> AIA
-    AIA -. analyst-reviewed text .-> REPORT
-    DB --> REPORT
-    REPORT --> API
+    E --> DB
+    R --> DB
+    RG --> DB
+    API --> S3
+    W --> S3
+    KJ --> S3
+    RG --> S3
+    SEC --> API
+    SEC --> W
 ```
+
+## Notes
+MinIO est un stockage objet pour APK, artefacts, preuves, rapports et exports. Kubernetes est la cible de deploiement. Docker Compose est reserve au developpement local.

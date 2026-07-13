@@ -1,175 +1,81 @@
-# Note de Cadrage - MSAP
+# Note de Cadrage - MSAP Cloud
 
 ## Project Title
-
-**MSAP - Mobile Security Assessment & Triage Platform**
+**MSAP Cloud - Cloud-Native Mobile Security Assessment & Triage Platform**
 
 ## Product Identity
+MSAP Cloud est une plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
 
-MSAP est une plateforme locale d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS et MITRE ATT&CK Mobile.
-
-## Context and Justification
-
-Les applications Android circulent dans des contextes institutionnels, academiques et professionnels ou la confidentialite des APK est importante. Les audits mobiles doivent couvrir les faiblesses AppSec classiques, mais aussi fournir un premier triage d'indicateurs suspects lorsque l'origine ou le comportement potentiel d'un APK doit etre qualifie.
-
-Une plateforme locale, documentee et reproductible permet de structurer ce travail sans transmettre les APK a des services distants.
+## Contexte et justification
+Les organisations ont besoin d'une plateforme d'audit mobile capable de traiter des APK sensibles, de conserver les preuves, de tracer les analyses et de s'integrer dans une infrastructure institutionnelle. Le pivot cloud-native permet de passer d'un prototype local a une architecture scalable, auditable et auto-hebergeable.
 
 ## Problem Statement
+Les analyses APK restent souvent dispersees entre outils, scripts et rapports manuels. MSAP Cloud centralise l'analyse statique Android, le mapping MASVS, le triage ATT&CK Mobile, les preuves et le reporting dans une architecture Kubernetes avec stockage objet MinIO et metadonnees PostgreSQL.
 
-Les analyses APK sont souvent realisees avec des outils isoles, des scripts ponctuels ou des rapports manuels. Cela limite la tracabilite, la comparaison des resultats, le mapping vers des standards reconnus et la gestion des faux positifs.
+## Objectif general
+Concevoir une plateforme cloud-native de security engineering pour l'analyse statique Android, l'evaluation MASVS, le triage ATT&CK Mobile, le scoring, la preuve et le reporting.
 
-MSAP doit centraliser l'analyse statique locale, produire des preuves, mapper les constats AppSec vers OWASP MASVS et mapper certains indicateurs suspects vers MITRE ATT&CK Mobile sans pretendre fournir une classification malveillante definitive.
+## Objectifs operationnels
+- Ingerer des APK via API securisee.
+- Stocker APK, artefacts, preuves, rapports et exports dans MinIO.
+- Stocker metadonnees, statuts, scores et references objet dans PostgreSQL.
+- Executer les analyses via Redis/Celery workers ou Kubernetes Jobs.
+- Produire findings MASVS et indicateurs ATT&CK Mobile prudents.
+- Garantir la tracabilite evidence-first.
+- Deployer via Kubernetes et Helm.
 
-## General Objective
+## Perimetre V1
+Android APK, analyse statique, upload securise, hash SHA-256, extraction manifeste/permissions/composants/signatures/ressources/chaines, detection AppSec, triage ATT&CK Mobile, preuves, scores, rapports PDF, exports JSON, MinIO, PostgreSQL, Redis/workers et manifests Kubernetes/Helm.
 
-Concevoir une plateforme d'audit locale pour l'analyse statique Android, l'evaluation MASVS, le triage ATT&CK Mobile, le scoring et le reporting.
+## Hors perimetre V1
+MobSF obligatoire, Frida, emulateur Android, analyse dynamique, malware sandbox, classification garantie malware/benin, support iOS/IPA, exploitation offensive ou tests intrusifs contre des systemes tiers.
 
-## Operational Objectives
-
-- Ingerer et valider des APK localement.
-- Calculer les hashes et extraire les metadonnees.
-- Extraire manifeste, permissions, composants, ressources, chaines, signatures et code decompile lorsque possible.
-- Detecter des faiblesses AppSec.
-- Detecter des indicateurs suspects pour triage analyste.
-- Produire des preuves normalisees.
-- Calculer risk score et compliance score.
-- Generer un rapport PDF et un export JSON.
-
-## Cybersecurity Positioning
-
-MSAP est un projet de security engineering: architecture locale, moteurs de detection, normalisation des artefacts, evidence-based audit, scoring, reporting et deploiement controlé.
-
-## Functional Scope V1
-
-- Android APK only.
-- Static analysis only.
-- Local analysis.
-- APK upload and validation.
-- SHA-256 hash calculation.
-- APK metadata, manifest, permissions, components, signatures, resources and string extraction.
-- Decompiled code inspection where possible.
-- Secrets, URLs, IPs, domains and sensitive string detection.
-- MASVS findings and ATT&CK Mobile suspicious indicators.
-- PDF report and JSON export.
-
-## Out-of-Scope V1
-
-- MobSF dependency.
-- Frida.
-- Android Emulator.
-- Dynamic analysis.
-- Malware sandbox.
-- Guaranteed malicious/benign classification.
-- iOS/IPA support.
-- Offensive exploitation or intrusive third-party testing.
-
-## Proposed Solution
-
-La solution repose sur une architecture modulaire: frontend React, API Django REST, orchestrateur d'audit, gestionnaire de plugins d'analyse, couche de normalisation, moteurs MASVS et ATT&CK, moteur de risque, moteur de preuves, PostgreSQL et generateur de rapports.
-
-## Modules
-
-1. Project and audit management.
-2. APK ingestion.
-3. Local Android static analysis.
-4. AppSec detection engine.
-5. Threat triage engine.
-6. MASVS mapping engine.
-7. MITRE ATT&CK Mobile mapping engine.
-8. Risk engine.
-9. Evidence engine.
-10. Reporting engine.
-
-## Target Architecture
-
+## Architecture cible
 ```mermaid
 flowchart LR
-    User[Auditeur] --> FE[React Frontend]
+    User[Auditeur] --> ING[Ingress TLS]
+    ING --> FE[React Frontend]
     FE --> API[Django REST API]
     API --> ORCH[Audit Orchestrator]
-    ORCH --> PM[Analyzer Plugin Manager]
-    PM --> NORM[Normalization Layer]
+    ORCH --> Q[Redis Queue]
+    Q --> W[Workers / Kubernetes Jobs]
+    W --> NORM[Normalization Layer]
     NORM --> MASVS[MASVS Engine]
     NORM --> ATTCK[ATT&CK Triage Engine]
-    MASVS --> RISK[Risk Engine]
-    ATTCK --> RISK
-    NORM --> EVID[Evidence Engine]
+    MASVS --> EVID[Evidence Engine]
+    ATTCK --> EVID
+    EVID --> RISK[Risk Engine]
     RISK --> DB[(PostgreSQL)]
     EVID --> DB
-    DB --> REP[Report Generator]
+    API --> OBJ[(MinIO Object Storage)]
+    W --> OBJ
+    RISK --> REP[Report Generator]
+    REP --> OBJ
 ```
 
-## Technologies and Hardware Constraints
-
-- Python, Django REST Framework, PostgreSQL.
-- React, Node.js.
-- Docker Compose local.
-- Java pour certains outils Android.
-- APKTool, JADX, Androguard, regex/YARA optionnel.
-- Compatible Ubuntu WSL lorsque possible.
-- Choix prudents pour ARM64; alternatives documentees si un outil est indisponible.
-
-## Methodology
-
-La methodologie combine deux axes:
-
-- OWASP MASVS pour l'audit AppSec.
-- MITRE ATT&CK Mobile pour le triage d'indicateurs suspects.
-
-Chaque finding ou indicateur doit etre relie a une preuve, une source, une confiance, un standard et une recommandation.
+## Technologies et contraintes
+Python/Django REST, React, PostgreSQL, Redis/Celery, MinIO, Kubernetes, Helm, Ingress TLS, Kubernetes Secrets, APKTool/JADX/Androguard, Trivy optionnel, Prometheus/Grafana optionnels. Docker Compose est limite au developpement local.
 
 ## Roadmap
-
 | Semaine | Objectif |
 |---|---|
-| S1 | Cadrage & exigences |
-| S2 | Architecture & design |
-| S3 | Socle backend/frontend |
-| S4 | Analyse APK locale |
-| S5 | Detections AppSec |
-| S6 | MASVS + ATT&CK engines |
-| S7 | Dashboard & reporting |
-| S8 | Qualite & livraison |
+| S1 | Cadrage cloud-native & exigences |
+| S2 | Architecture Kubernetes + MinIO + design |
+| S3 | Backend foundation + PostgreSQL + MinIO integration |
+| S4 | Queue + workers + APK ingestion |
+| S5 | Analyse statique + normalization |
+| S6 | MASVS + ATT&CK engines + evidence |
+| S7 | Dashboard + reporting + object exports |
+| S8 | Kubernetes deployment + tests + delivery |
 
-## Deliverables
-
-- Documentation de cadrage et exigences.
-- Methodologie MASVS + ATT&CK Mobile.
-- Architecture et design technique.
-- Catalogues de regles MASVS et triage ATT&CK.
-- Prototype MVP local.
-- Tests et strategie de validation.
-- Rapport final, demo et checklist de livraison.
-
-## Risks and Mitigation
-
+## Risques et mitigation
 | Risque | Mitigation |
 |---|---|
-| Faux positifs sur indicateurs suspects | Modele de confiance, revue analyste, wording prudent |
-| Complexite d'outils Android | Adapters optionnels et pipeline progressif |
-| Contraintes ARM64 | Alternatives documentees, tests locaux |
-| Confusion triage vs verdict malware | Disclaimer et rapport explicite |
-| Delai PFA limite | MVP restreint a l'analyse statique Android |
-
-## Value Added
-
-MSAP apporte une vision hybride AppSec + threat triage, tout en conservant une execution locale adaptee a un contexte institutionnel et academique.
-
-## Future Perspectives
-
-- Analyse dynamique locale autorisee.
-- Correlation statique/dynamique.
-- Extension de regles YARA.
-- Support iOS dans une version future.
-- Integration optionnelle d'outils externes, sans casser l'architecture locale.
-- Kimi AI comme extension optionnelle V1.1 pour assister la redaction et l'interpretation apres analyse deterministe.
-
-## Optional AI Future Extension
-
-Kimi AI est retenu comme piste d'extension optionnelle, pas comme composant du noyau deterministe V1. L'assistance AI peut aider a produire des resumes executifs, expliquer des findings MASVS existants, contextualiser des indicateurs ATT&CK Mobile existants, proposer une formulation de remediation et ameliorer la lisibilite du rapport.
-
-L'AI ne recoit pas d'APK brut, pas de source decompilee complete et pas de secrets non rediges. Elle ne remplace pas les regles deterministes, ne modifie pas les scores et ne produit pas de verdict garanti malware/benin. Toute sortie AI reste un brouillon soumis a validation analyste.
+| Complexite Kubernetes | Helm, manifests limites, kind/K3s pour validation |
+| Exposition d'objets sensibles | Buckets prives, RBAC, URLs courtes, logs audites |
+| Fuite de secrets | Kubernetes Secrets, rotation, pas de secrets commites |
+| Workers instables | Retries bornes, statuts explicites, ressources limitees |
+| Confusion triage/verdict | Wording prudent, validation analyste, disclaimer |
 
 ## Conclusion
-
-Le pivot vers MSAP - Mobile Security Assessment & Triage Platform renforce la valeur cybersécurité du projet. La Version 1 reste realiste: analyse statique Android locale, preuves, mapping MASVS, triage ATT&CK Mobile, scoring et reporting.
+MSAP Cloud devient une plateforme cloud-native de cybersécurité orientee architecture, preuve et analyse statique Android. Kubernetes est la cible de deploiement, MinIO le stockage objet, Docker Compose un outil de developpement local.

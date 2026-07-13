@@ -1,33 +1,25 @@
-# Planning Gantt 8 Semaines - MSAP
+# Gantt 8 Weeks - MSAP Cloud
 
-## Vue synthetique
+```mermaid
+gantt
+    title MSAP Cloud - Roadmap 8 Weeks
+    dateFormat  YYYY-MM-DD
+    section Cadrage
+    S1 Cadrage cloud-native & exigences :s1, 2026-07-13, 7d
+    section Architecture
+    S2 Architecture Kubernetes + MinIO + design :s2, after s1, 7d
+    section Backend & Storage
+    S3 Backend foundation + PostgreSQL + MinIO integration :s3, after s2, 7d
+    section Async Analysis
+    S4 Queue + workers + APK ingestion :s4, after s3, 7d
+    section Static Analysis
+    S5 Analyse statique + normalization :s5, after s4, 7d
+    section Security Engines
+    S6 MASVS + ATT&CK engines + evidence :s6, after s5, 7d
+    section Reporting
+    S7 Dashboard + reporting + object exports :s7, after s6, 7d
+    section Deployment
+    S8 Kubernetes deployment + tests + delivery :s8, after s7, 7d
+```
 
-| Semaine | Theme | Dependances | Livrables | Milestone |
-|---|---|---|---|---|
-| S1 | Cadrage & exigences | Aucune | Cahier des charges, exigences | M1: Cadrage valide |
-| S2 | Architecture & design | S1 | Architecture, UML, modele donnees, API | M2: Architecture validee |
-| S3 | Socle backend/frontend | S2 | Socle technique local | M3: Socle technique operationnel |
-| S4 | Analyse APK locale | S3 | Upload, hash, extraction, normalisation | M4: Analyse APK locale fonctionnelle |
-| S5 | Detections AppSec | S4 | Regles MASVS, findings, preuves | - |
-| S6 | MASVS + ATT&CK engines | S5 | Moteurs MASVS + ATT&CK, scoring | M5: Moteurs operationnels |
-| S7 | Dashboard & reporting | S6 | Dashboard, PDF, JSON | M6: Rapport PDF genere |
-| S8 | Qualite & livraison | S7 | Tests, Docker, documentation finale | M7: Version candidate / M8: Version livree |
-
-## Diagramme Gantt
-
-Le diagramme visuel est fourni au format SVG pour garantir un rendu lisible, stable et sans chevauchement, quel que soit le moteur Markdown utilise.
-
-![Diagramme Gantt MSAP - 8 semaines](./04_Gantt_8_Weeks.svg)
-
-## Jalons
-
-| Milestone | Description | Position |
-|---|---|---|
-| M1 | Cadrage valide | Fin S1 |
-| M2 | Architecture validee | Fin S2 |
-| M3 | Socle technique operationnel | Fin S3 |
-| M4 | Analyse APK locale fonctionnelle | Fin S4 |
-| M5 | Moteurs MASVS + ATT&CK operationnels | Fin S6 |
-| M6 | Rapport PDF genere | Fin S7 |
-| M7 | Version candidate | Debut fin S8 |
-| M8 | Version livree | Fin S8 |
+Docker Compose est limite au developpement local. Kubernetes, Helm, MinIO, PostgreSQL, Redis et workers sont les livrables structurants de la roadmap.
