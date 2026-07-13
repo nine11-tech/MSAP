@@ -1,7 +1,7 @@
-# Demo Scenario - MSAP Cloud
+# Demo Scenario - MSAP
 
 ## Scenario
-1. Deploy MSAP Cloud on Kubernetes/K3s using Helm.
+1. Deploy MSAP on Kubernetes/K3s using Helm.
 2. Verify pods, services, Ingress, Redis, PostgreSQL and MinIO.
 3. Create a project and audit.
 4. Upload an authorized APK.

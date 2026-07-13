@@ -1,4 +1,4 @@
-# Software Architecture Document - MSAP Cloud
+# Software Architecture Document - MSAP
 
 ## Architecture goals
 - Fournir une plateforme cloud-native d'evaluation de securite mobile et de triage d'APK.

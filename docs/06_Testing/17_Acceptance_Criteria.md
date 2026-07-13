@@ -1,4 +1,4 @@
-# Acceptance Criteria - MSAP Cloud
+# Acceptance Criteria - MSAP
 
 - APK upload is accepted only for authorized users.
 - APK is stored in MinIO bucket `msap-apk-uploads`.

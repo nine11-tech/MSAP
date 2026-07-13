@@ -1,4 +1,4 @@
-# Component Diagram - MSAP Cloud
+# Component Diagram - MSAP
 
 ```mermaid
 flowchart TB

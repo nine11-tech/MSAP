@@ -1,4 +1,4 @@
-# UML Sequence Diagrams - MSAP Cloud
+# UML Sequence Diagrams - MSAP
 
 ## Upload APK
 ```mermaid

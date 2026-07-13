@@ -1,4 +1,4 @@
-# WBS - MSAP Cloud
+# WBS - MSAP
 
 ## 1. Cadrage
 1.1 Decision de pivot cloud-native. 1.2 Exigences. 1.3 Risques. 1.4 Roadmap.

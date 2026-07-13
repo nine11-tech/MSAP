@@ -1,4 +1,4 @@
-# Strategie Cloud DevSecOps - MSAP Cloud
+# Strategie Cloud DevSecOps - MSAP
 
 ## CI/CD pipeline
 Le pipeline cible valide le code, les images et les artefacts Kubernetes avant livraison. Il produit des images versionnees et un chart Helm lintable, sans secrets embarques.

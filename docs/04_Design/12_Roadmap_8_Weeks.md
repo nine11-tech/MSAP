@@ -1,4 +1,4 @@
-# Roadmap 8 Weeks - MSAP Cloud
+# Roadmap 8 Weeks - MSAP
 
 | Semaine | Objectif | Livrables |
 |---|---|---|

@@ -1,7 +1,7 @@
-# Modele de Donnees - MSAP Cloud
+# Modele de Donnees - MSAP
 
 ## Objectif
-Ce modele guide l'implementation Django + PostgreSQL de MSAP Cloud. PostgreSQL stocke les metadonnees, references objet, statuts, resultats normalises, findings, indicateurs, preuves, scores et rapports. MinIO stocke les APK, artefacts, preuves volumineuses, rapports et exports.
+Ce modele guide l'implementation Django + PostgreSQL de MSAP. PostgreSQL stocke les metadonnees, references objet, statuts, resultats normalises, findings, indicateurs, preuves, scores et rapports. MinIO stocke les APK, artefacts, preuves volumineuses, rapports et exports.
 
 ## Entites principales
 
@@ -13,6 +13,8 @@ Campagne d'analyse d'un APK. Champs: `id`, `organization_id`, `project_id`, `cre
 
 ### ObjectStorageReference
 Reference canonique vers MinIO. Champs: `id`, `bucket_name`, `object_key`, `version_id`, `sha256`, `size_bytes`, `content_type`, `storage_policy_id`, `classification`, `created_at`, `deleted_at`.
+
+Le contrat detaille est defini dans [ObjectStorageReference Schema](22_ObjectStorageReference_Schema.md). L'implementation doit converger vers ce contrat: PostgreSQL conserve les metadonnees, les statuts, les relations et les references objet; MinIO conserve les APK, artefacts, preuves volumineuses, rapports et exports.
 
 ### BucketName
 Enum logique: `msap-apk-uploads`, `msap-artifacts`, `msap-reports`, `msap-exports`, `msap-evidence`.
@@ -26,6 +28,8 @@ Politique de retention et confidentialite: `temporary`, `active_audit`, `archive
 ### APKFile
 APK importe. Champs: `id`, `audit_id`, `original_filename`, `object_reference_id`, `size_bytes`, `sha256`, `uploaded_at`, `validation_status`.
 
+`APKFile.object_reference_id` pointe vers un objet MinIO de type `APK_UPLOAD` dans le bucket `msap-apk-uploads`. Le contenu brut de l'APK ne doit pas etre stocke dans PostgreSQL.
+
 ### RawAnalyzerResult
 Resultat brut produit par un analyseur. Champs: `id`, `audit_id`, `plugin_id`, `artifact_type`, `object_reference_id`, `raw_payload_summary`, `status`, `created_at`.
 
@@ -38,8 +42,12 @@ Findings AppSec mappes OWASP MASVS et indicateurs de triage mappes MITRE ATT&CK 
 ### Evidence
 Preuve technique sourcee. Champs: `id`, `audit_id`, `finding_id`, `indicator_id`, `artifact_id`, `object_reference_id`, `source`, `location`, `line_number`, `snippet`, `redacted`, `confidence`.
 
+`Evidence` peut stocker un court extrait redige en base et utiliser `object_reference_id` pour les preuves plus volumineuses dans `msap-evidence`. Les preuves doivent rester tracables vers l'artefact source et respecter le statut de redaction.
+
 ### Report
 Rapport PDF ou export JSON. Champs: `id`, `audit_id`, `format`, `status`, `object_reference_id`, `generated_at`, `summary`.
+
+`Report.object_reference_id` pointe vers `msap-reports` pour les PDF et vers `msap-exports` pour les exports JSON. Les rapports sont servis via le backend ou des URL pre-signees courtes, jamais par exposition publique directe des buckets.
 
 ## ERD
 ```mermaid

@@ -1,4 +1,4 @@
-# Package / Module Diagram - MSAP Cloud
+# Package / Module Diagram - MSAP
 
 ```mermaid
 flowchart LR
@@ -24,7 +24,7 @@ flowchart LR
     end
     subgraph infra[Infrastructure]
       K8S[infrastructure/k8s]
-      HELM[helm/msap-cloud]
+      HELM[helm/msap]
       DEV[docker-compose.dev]
       CI[ci-devsecops]
     end
@@ -45,4 +45,4 @@ flowchart LR
 ```
 
 ## Modules ajoutes
-`infrastructure/k8s`, `helm/msap-cloud`, `storage/minio`, `object_storage_references`, `workers` et `ci-devsecops` deviennent des modules de conception.
+`infrastructure/k8s`, `helm/msap`, `storage/minio`, `object_storage_references`, `workers` et `ci-devsecops` deviennent des modules de conception.

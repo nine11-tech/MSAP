@@ -1,7 +1,7 @@
-# Architecture de Stockage Objet MinIO - MSAP Cloud
+# Architecture de Stockage Objet MinIO - MSAP
 
 ## Role de MinIO
-MinIO est le stockage objet S3-compatible de MSAP Cloud. Il conserve les APK importes, artefacts d'analyse, preuves exportables, rapports PDF et exports JSON. Il n'heberge pas l'application; il stocke uniquement des objets applicatifs.
+MinIO est le stockage objet S3-compatible de MSAP. Il conserve les APK importes, artefacts d'analyse, preuves exportables, rapports PDF et exports JSON. Il n'heberge pas l'application; il stocke uniquement des objets applicatifs.
 
 ## Buckets
 - `msap-apk-uploads`: APK bruts importes par les auditeurs.

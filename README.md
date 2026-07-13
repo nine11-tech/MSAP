@@ -1,11 +1,13 @@
-# MSAP Cloud - Cloud-Native Mobile Security Assessment & Triage Platform
+# MSAP
+
+Cloud-Native Mobile Security Assessment & Triage Platform
 
 **Positionnement**: Plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
 
 ## Executive Summary
-MSAP Cloud est un projet d'ingenierie cybersécurité visant a fournir une plateforme cloud-native, auto-hebergeable et open-source pour l'audit applicatif mobile, le triage d'APK et la production de preuves techniques. Le coeur fonctionnel reste l'analyse statique Android, l'evaluation OWASP MASVS, le triage prudent MITRE ATT&CK Mobile, le scoring et le reporting.
+MSAP est un projet d'ingenierie cybersécurité visant a fournir une plateforme cloud-native, auto-hebergeable et open-source pour l'audit applicatif mobile, le triage d'APK et la production de preuves techniques. Le coeur fonctionnel reste l'analyse statique Android, l'evaluation OWASP MASVS, le triage prudent MITRE ATT&CK Mobile, le scoring et le reporting.
 
-MSAP Cloud ne fournit pas de verdict garanti malware/benin. Les indicateurs ATT&CK Mobile soutiennent une revue analyste evidence-first.
+MSAP ne fournit pas de verdict garanti malware/benin. Les indicateurs ATT&CK Mobile soutiennent une revue analyste evidence-first.
 
 ## Architecture cible
 ```mermaid
@@ -33,7 +35,7 @@ flowchart LR
 ```
 
 ## Role de MinIO
-MinIO est le stockage objet S3-compatible de MSAP Cloud. Il stocke les APK, artefacts d'analyse, preuves, rapports et exports. Il n'heberge pas l'application. PostgreSQL conserve les metadonnees, statuts, scores et references vers les objets MinIO.
+MinIO est le stockage objet S3-compatible de MSAP. Il stocke les APK, artefacts d'analyse, preuves, rapports et exports. Il n'heberge pas l'application. PostgreSQL conserve les metadonnees, statuts, scores et references vers les objets MinIO.
 
 ## Deploiement
 Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTTPS, Secrets, ConfigMaps, Services, Deployments, workers, Jobs, PVC, NetworkPolicies et packaging Helm. Docker Compose est conserve uniquement pour le developpement local et les tests rapides.
@@ -54,13 +56,18 @@ Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTT
 - [Architecture cloud-native](docs/03_Architecture/14_Cloud_Native_Architecture.md)
 - [Architecture de deploiement Kubernetes](docs/03_Architecture/15_Kubernetes_Deployment_Architecture.md)
 - [Architecture MinIO](docs/03_Architecture/16_Object_Storage_MinIO_Architecture.md)
+- [Implementation boundaries cloud-native](docs/03_Architecture/17_Cloud_Native_Implementation_Boundaries.md)
 - [Modele de flux de donnees cloud](docs/04_Design/19_Cloud_Data_Flow_Model.md)
 - [Modele de ressources Kubernetes](docs/04_Design/20_Kubernetes_Resource_Model.md)
 - [Modele de securite multi-tenant](docs/04_Design/21_Multi_Tenant_Security_Model.md)
+- [Schema ObjectStorageReference](docs/04_Design/22_ObjectStorageReference_Schema.md)
+- [Contrat Helm values.yaml](docs/04_Design/23_Helm_Values_Contract.md)
+- [Freeze MVP cloud-native](docs/04_Design/24_Cloud_Native_MVP_Freeze.md)
 - [Strategie de deploiement Kubernetes](docs/07_Deployment/19_Kubernetes_Deployment_Strategy.md)
 - [Strategie Helm](docs/07_Deployment/20_Helm_Chart_Strategy.md)
 - [Strategie MinIO](docs/07_Deployment/21_MinIO_Storage_Strategy.md)
 - [Strategie Cloud DevSecOps](docs/07_Deployment/22_Cloud_DevSecOps_Strategy.md)
+- [Contrat variables d'environnement](docs/07_Deployment/23_Environment_Variables_Contract.md)
 
 ## Stack technique prevue
 Frontend React, Backend Django REST Framework, PostgreSQL, Redis/Celery, workers scalables ou Kubernetes Jobs, MinIO object storage, Kubernetes + Helm. Docker Compose est uniquement un mode de developpement local. Options: Argo CD, Prometheus/Grafana, Trivy, Kimi AI post-analysis assistant.
@@ -78,4 +85,4 @@ Frontend React, Backend Django REST Framework, PostgreSQL, Redis/Celery, workers
 | S8 | Kubernetes deployment + tests + delivery |
 
 ## Authorized-Use Disclaimer
-MSAP Cloud est une plateforme academique et institutionnelle d'audit cybersécurité. Elle doit etre utilisee uniquement pour analyser des APK avec autorisation explicite. Les resultats de triage ne constituent pas une classification definitive malware/benin et doivent etre interpretes par un analyste.
+MSAP est une plateforme academique et institutionnelle d'audit cybersécurité. Elle doit etre utilisee uniquement pour analyser des APK avec autorisation explicite. Les resultats de triage ne constituent pas une classification definitive malware/benin et doivent etre interpretes par un analyste.

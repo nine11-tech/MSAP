@@ -1,7 +1,7 @@
-# Evidence Model - MSAP Cloud
+# Evidence Model - MSAP
 
 ## Objective
-Le modele de preuve garantit qu'un finding MASVS ou un indicateur ATT&CK Mobile est relie a une source technique verifiable. MSAP Cloud conserve les binaires et artefacts volumineux dans MinIO et les references, statuts et metadonnees dans PostgreSQL.
+Le modele de preuve garantit qu'un finding MASVS ou un indicateur ATT&CK Mobile est relie a une source technique verifiable. MSAP conserve les binaires et artefacts volumineux dans MinIO et les references, statuts et metadonnees dans PostgreSQL.
 
 ## Evidence storage
 Les preuves ne reposent plus sur un chemin disque local comme reference principale. Chaque preuve pointe vers une `ObjectStorageReference` contenant bucket, object key, hash, taille, type, politique de retention et statut de redaction.

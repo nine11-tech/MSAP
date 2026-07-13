@@ -1,4 +1,4 @@
-# First Sprint Tasks - MSAP Cloud
+# First Sprint Tasks - MSAP
 
 | Task | Output |
 |---|---|

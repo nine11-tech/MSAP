@@ -1,7 +1,7 @@
-# Software Requirements Specification - MSAP Cloud
+# Software Requirements Specification - MSAP
 
 ## Scope
-MSAP Cloud est une plateforme cloud-native pour l'analyse statique Android, l'evaluation OWASP MASVS, le triage MITRE ATT&CK Mobile, la gestion des preuves et le reporting. Kubernetes est la cible de deploiement; Docker Compose sert uniquement au developpement local.
+MSAP est une plateforme cloud-native pour l'analyse statique Android, l'evaluation OWASP MASVS, le triage MITRE ATT&CK Mobile, la gestion des preuves et le reporting. Kubernetes est la cible de deploiement; Docker Compose sert uniquement au developpement local.
 
 ## Functional requirements
 - FR-001: creer organisations, projets et audits.

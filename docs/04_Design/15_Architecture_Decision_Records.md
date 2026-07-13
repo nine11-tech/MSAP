@@ -1,9 +1,9 @@
-# Architecture Decision Records - MSAP Cloud
+# Architecture Decision Records - MSAP
 
 ## ADR-001: Evidence-first static analysis core
 **Status**: Accepted
 
-MSAP Cloud garde l'analyse statique Android comme coeur fonctionnel. Chaque finding MASVS ou indicateur ATT&CK Mobile doit etre relie a une preuve technique sourcee.
+MSAP garde l'analyse statique Android comme coeur fonctionnel. Chaque finding MASVS ou indicateur ATT&CK Mobile doit etre relie a une preuve technique sourcee.
 
 ## ADR-002: OWASP MASVS as AppSec assessment standard
 **Status**: Accepted
@@ -48,7 +48,7 @@ Prometheus/Grafana sont optionnels pour le MVP, mais les metriques API, workers,
 ## ADR-010: Cloud-native Kubernetes deployment
 **Status**: Accepted
 
-MSAP Cloud adopte Kubernetes comme cible de deploiement afin de supporter Ingress HTTPS, Secrets, Services, Deployments, Jobs, NetworkPolicies, probes et scaling des workers. Docker Compose est conserve uniquement pour le developpement local.
+MSAP adopte Kubernetes comme cible de deploiement afin de supporter Ingress HTTPS, Secrets, Services, Deployments, Jobs, NetworkPolicies, probes et scaling des workers. Docker Compose est conserve uniquement pour le developpement local.
 
 ## ADR-011: MinIO object storage for APKs and reports
 **Status**: Accepted
