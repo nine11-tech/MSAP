@@ -17,7 +17,8 @@ db.sqlite3
 .pytest_cache/
 media/
 staticfiles/
-
+backend/venv/
+backend/.venv/
 # Node / React
 node_modules/
 dist/
