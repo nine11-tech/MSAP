@@ -1,7 +1,7 @@
-# Architecture Cloud-Native - MSAP Cloud
+# Architecture Cloud-Native - MSAP
 
 ## Vue d'ensemble
-MSAP Cloud est une plateforme cloud-native de security engineering pour l'analyse statique Android, l'evaluation OWASP MASVS, le triage MITRE ATT&CK Mobile, la gestion des preuves et le reporting. L'architecture cible se deploie dans Kubernetes et separe l'interface, l'API, l'orchestration, les workers, les metadonnees et le stockage objet.
+MSAP est une plateforme cloud-native de security engineering pour l'analyse statique Android, l'evaluation OWASP MASVS, le triage MITRE ATT&CK Mobile, la gestion des preuves et le reporting. L'architecture cible se deploie dans Kubernetes et separe l'interface, l'API, l'orchestration, les workers, les metadonnees et le stockage objet.
 
 ## Vue cluster Kubernetes
 Le namespace applicatif cible est `msap`. Il contient frontend service, backend API service, worker service, Redis, ConfigMaps, Secrets, Services, Ingress, NetworkPolicies et, pour une installation autonome, PostgreSQL et MinIO avec PVC. PostgreSQL et MinIO peuvent aussi etre fournis par une plateforme institutionnelle.

@@ -1,4 +1,4 @@
-# Initial Backlog - MSAP Cloud
+# Initial Backlog - MSAP
 
 | Epic | Story | Acceptance criteria | Priority |
 |---|---|---|---|

@@ -1,4 +1,4 @@
-# Architecture de Deploiement Kubernetes - MSAP Cloud
+# Architecture de Deploiement Kubernetes - MSAP
 
 ## Ressources Kubernetes
 - **Namespace**: `msap` pour isoler les ressources applicatives.

@@ -1,4 +1,4 @@
-# API Design - MSAP Cloud
+# API Design - MSAP
 
 ## Principles
 L'API Django REST est l'intermediaire de confiance pour utilisateurs, audits, uploads, jobs, references MinIO, rapports et exports. Elle applique RBAC, isolation projet/audit et journalisation.

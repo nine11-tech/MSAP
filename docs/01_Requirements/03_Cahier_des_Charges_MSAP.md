@@ -1,7 +1,7 @@
-# Cahier des Charges - MSAP Cloud
+# Cahier des Charges - MSAP
 
 ## Identite
-MSAP Cloud est une plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
+MSAP est une plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
 
 ## Objectifs
 - Fournir une plateforme de security engineering pour APK Android.

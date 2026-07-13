@@ -1,4 +1,4 @@
-# Analysis Pipeline - MSAP Cloud
+# Analysis Pipeline - MSAP
 
 ## Pipeline cible
 1. Upload APK via API ou URL pre-signee controlee.

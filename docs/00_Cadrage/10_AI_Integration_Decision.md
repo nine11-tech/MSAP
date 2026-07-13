@@ -1,7 +1,7 @@
-# AI Integration Decision - MSAP Cloud
+# AI Integration Decision - MSAP
 
 ## Decision
-Kimi AI reste une extension optionnelle post-analyse. Le noyau MSAP Cloud reste deterministe: analyse statique Android, MASVS, ATT&CK Mobile prudent, preuves, scores et rapports.
+Kimi AI reste une extension optionnelle post-analyse. Le noyau MSAP reste deterministe: analyse statique Android, MASVS, ATT&CK Mobile prudent, preuves, scores et rapports.
 
 ## Cloud-native compatibility
 L'option AI n'affecte pas la cible Kubernetes. Les secrets AI sont fournis via Kubernetes Secrets. L'activation est explicite par configuration Helm ou environnement.

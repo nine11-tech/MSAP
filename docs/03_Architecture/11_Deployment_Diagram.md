@@ -1,4 +1,4 @@
-# Deployment Diagram - MSAP Cloud
+# Deployment Diagram - MSAP
 
 Kubernetes est la cible de deploiement. Docker Compose existe seulement pour le developpement local.
 

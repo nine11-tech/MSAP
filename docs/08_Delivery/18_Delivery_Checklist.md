@@ -1,4 +1,4 @@
-# Delivery Checklist - MSAP Cloud
+# Delivery Checklist - MSAP
 
 - Cloud-native pivot decision documented.
 - Kubernetes architecture and deployment strategy documented.

@@ -1,11 +1,11 @@
-# Modele de Ressources Kubernetes - MSAP Cloud
+# Modele de Ressources Kubernetes - MSAP
 
 ## Planned Kubernetes manifests
 Namespace, Deployments, Services, Ingress, ConfigMaps, Secrets, PVC, Jobs, CronJobs, NetworkPolicies, ServiceAccounts et RBAC minimal.
 
 ## Helm chart structure
 ```text
-charts/msap-cloud/
+charts/msap/
   Chart.yaml
   values.yaml
   templates/

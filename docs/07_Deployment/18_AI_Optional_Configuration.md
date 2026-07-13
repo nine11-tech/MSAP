@@ -1,4 +1,4 @@
-# AI Optional Configuration - MSAP Cloud
+# AI Optional Configuration - MSAP
 
 ## Purpose
 Kimi AI est une option post-analyse pour assister la redaction et l'interpretation. Elle est desactivee par defaut.

@@ -1,4 +1,4 @@
-# Non-Functional Design - MSAP Cloud
+# Non-Functional Design - MSAP
 
 ## Scalability
 API, frontend et workers doivent scaler horizontalement. Les workers supportent Kubernetes Jobs ou replicas Celery selon taille et volume des APK.
@@ -16,4 +16,4 @@ MinIO stocke APK, artefacts, preuves, rapports et exports. PostgreSQL stocke les
 Prometheus/Grafana sont optionnels pour metriques API, queue, workers, Jobs, latence d'analyse, erreurs et taille objets. Les logs ne doivent pas exposer secrets ni APK.
 
 ## Compliance and safety
-MSAP Cloud reste un outil d'audit autorise. Il ne promet pas de classification malware garantie et ne fournit pas d'exploitation offensive contre des systemes tiers.
+MSAP reste un outil d'audit autorise. Il ne promet pas de classification malware garantie et ne fournit pas d'exploitation offensive contre des systemes tiers.

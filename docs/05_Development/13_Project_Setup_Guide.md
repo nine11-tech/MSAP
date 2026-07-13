@@ -1,4 +1,4 @@
-# Project Setup Guide - MSAP Cloud
+# Project Setup Guide - MSAP
 
 ## Development purpose
 This guide is for developer setup only. The target deployment platform is Kubernetes with Helm.

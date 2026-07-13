@@ -1,4 +1,4 @@
-# Modele de Securite Multi-Tenant - MSAP Cloud
+# Modele de Securite Multi-Tenant - MSAP
 
 ## User roles
 Admin, Lead Auditor, Auditor et Viewer. Les droits couvrent creation de projets, upload APK, lancement d'analyse, consultation, export, validation et administration.

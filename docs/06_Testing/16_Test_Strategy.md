@@ -1,4 +1,4 @@
-# Test Strategy - MSAP Cloud
+# Test Strategy - MSAP
 
 ## Test scope
 Tester le coeur cybersécurité et la plateforme cloud-native: ingestion APK, MinIO, PostgreSQL references, Redis/Celery workers, MASVS, ATT&CK Mobile, evidence, reporting, Kubernetes et Helm.

@@ -1,8 +1,8 @@
-# Gantt 8 Weeks - MSAP Cloud
+# Gantt 8 Weeks - MSAP
 
 ```mermaid
 gantt
-    title MSAP Cloud - Roadmap 8 Weeks
+    title MSAP - Roadmap 8 Weeks
     dateFormat  YYYY-MM-DD
     section Cadrage
     S1 Cadrage cloud-native & exigences :s1, 2026-07-13, 7d

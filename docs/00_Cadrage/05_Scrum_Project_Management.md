@@ -1,4 +1,4 @@
-# Scrum Project Management - MSAP Cloud
+# Scrum Project Management - MSAP
 
 ## Product goal
 Livrer une plateforme cloud-native d'audit statique Android et de triage APK, orientee preuves, MASVS, ATT&CK Mobile, MinIO et Kubernetes.

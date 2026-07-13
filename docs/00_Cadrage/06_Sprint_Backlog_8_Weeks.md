@@ -1,4 +1,4 @@
-# Sprint Backlog 8 Weeks - MSAP Cloud
+# Sprint Backlog 8 Weeks - MSAP
 
 | Sprint | Backlog items |
 |---|---|

@@ -1,4 +1,4 @@
-# Risk Register - MSAP Cloud
+# Risk Register - MSAP
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|

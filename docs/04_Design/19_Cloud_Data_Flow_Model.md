@@ -1,4 +1,4 @@
-# Modele de Flux de Donnees Cloud - MSAP Cloud
+# Modele de Flux de Donnees Cloud - MSAP
 
 ## Upload flow
 L'auditeur cree un audit puis transmet un APK via l'API. Deux modeles sont acceptables: upload backend-medie ou URL pre-signee courte. L'objet final est stocke dans `msap-apk-uploads`, et PostgreSQL conserve la reference MinIO, le hash, la taille, le proprietaire, le projet et le statut.
