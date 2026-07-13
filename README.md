@@ -38,6 +38,9 @@ flowchart LR
 ## Deploiement
 Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTTPS, Secrets, ConfigMaps, Services, Deployments, workers, Jobs, PVC, NetworkPolicies et packaging Helm. Docker Compose est conserve uniquement pour le developpement local et les tests rapides.
 
+## Backend status
+The backend foundation has started in [backend](backend/README.md): Django settings, metadata models, `ObjectStorageReference`, YAML rule loaders, the `validate_rules` command and unit tests.
+
 ## Perimetre securite
 - Android APK uniquement pour le MVP.
 - Analyse statique comme coeur fonctionnel.
