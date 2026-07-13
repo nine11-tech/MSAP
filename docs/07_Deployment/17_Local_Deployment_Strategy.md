@@ -1,73 +1,13 @@
-# Strategie de Deploiement Local - MSAP
+# Local Development Deployment Strategy - MSAP Cloud
 
-## Local Deployment Goals
+## Purpose
+Docker Compose is retained only for local development, fast integration checks and developer onboarding. It is not the primary deployment target.
 
-Permettre l'execution de MSAP sur un poste institutionnel, avec stockage local des APK, artefacts, preuves, rapports et base de donnees.
+## Local development stack
+A development Compose file may run API, frontend, PostgreSQL, Redis, MinIO and a worker with reduced resources. This mode helps validate API flows before Kubernetes packaging.
 
-## Docker Compose Architecture
+## Target deployment
+Kubernetes is the target deployment platform for MSAP Cloud. Production-like validation must use kind, K3s, self-hosted Kubernetes or an institutional cluster with Helm.
 
-Services prevus:
-
-- `frontend`
-- `backend`
-- `postgres`
-- volumes locaux pour uploads, artifacts, reports, exports
-
-## Volumes
-
-- `msap_uploads`
-- `msap_artifacts`
-- `msap_reports`
-- `msap_exports`
-- `postgres_data`
-
-## Environment Variables
-
-- `DATABASE_URL`
-- `MSAP_UPLOAD_DIR`
-- `MSAP_ARTIFACT_DIR`
-- `MSAP_REPORT_DIR`
-- `MSAP_EXPORT_DIR`
-- `MSAP_MAX_APK_SIZE`
-- `MSAP_SECRET_KEY`
-
-## Local Storage
-
-Les chemins doivent etre relatifs aux volumes Docker ou a un repertoire institutionnel controle.
-
-## Data Confidentiality
-
-Les APK et preuves restent locaux. Les sauvegardes doivent etre chiffrees ou stockees dans un espace institutionnel controle.
-
-## Backup Considerations
-
-- Sauvegarder PostgreSQL.
-- Sauvegarder rapports et exports.
-- Definir une politique de retention des APK.
-
-## Installation Workflow
-
-1. Verifier Docker Compose.
-2. Configurer `.env`.
-3. Monter volumes locaux.
-4. Demarrer services.
-5. Executer migrations.
-6. Creer utilisateur local.
-7. Lancer analyse de demonstration.
-
-## Institutional Workstation Usage
-
-MSAP doit fonctionner sans service distant et respecter les politiques locales de confidentialite.
-
-## Optional AI External Dependency
-
-Kimi AI is an optional V1.1 external dependency and is disabled by default. The local-first mode remains the default deployment mode, and no-AI mode works offline for APK analysis, evidence, scoring and reporting.
-
-Kimi configuration is allowed only if the institution permits external AI use. When enabled, MSAP must send only redacted post-analysis context and must never send raw APK files or full decompiled source code.
-
-## ARM64 Constraints and Mitigations
-
-- Preferer images multi-arch.
-- Tester outils Java localement.
-- Garder YARA optionnel.
-- Documenter alternatives si un outil n'est pas disponible.
+## Boundaries
+Local Compose must not define the security posture of the product. Ingress TLS, Kubernetes Secrets, NetworkPolicies, PVC, Jobs and Helm rollback are validated in Kubernetes-specific documentation and tests.

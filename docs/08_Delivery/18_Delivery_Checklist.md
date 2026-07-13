@@ -1,66 +1,15 @@
-# Delivery Checklist - MSAP
+# Delivery Checklist - MSAP Cloud
 
-## Code Deliverables
-
-- Backend API.
-- Frontend dashboard.
-- Analyzer plugins.
-- MASVS engine.
-- ATT&CK triage engine.
-- Evidence, scoring and reporting modules.
-
-## Documentation Deliverables
-
-- Cadrage.
-- Requirements.
-- Methodology.
-- Architecture.
-- Design.
-- Development guides.
-- Testing strategy.
-- Deployment strategy.
-
-## Test Deliverables
-
-- Unit tests.
-- Integration tests.
-- Rule validation fixtures.
-- Report validation tests.
-- Security tests.
-
-## Deployment Deliverables
-
-- Docker Compose.
-- `.env.example`.
-- Local volumes documentation.
-- Setup instructions.
-
-## Demo Deliverables
-
-- APK or fixture authorized for demo.
-- Scenario: upload -> analysis -> dashboard -> report.
-- PDF report sample.
-- JSON export sample.
-
-## Final Validation Checklist
-
-- No MobSF dependency.
-- No emulator dependency.
-- No dynamic analysis in V1.
-- No iOS support in V1.
-- No guaranteed malware verdict.
-- APKs stay local.
-- MASVS and ATT&CK mappings present.
-- Evidence and scoring included.
-- Report includes authorized-use disclaimer.
-
-## Optional AI Documentation Checklist
-
-- AI integration decision documented.
-- AI-assisted triage methodology documented.
-- AI assistant architecture documented.
-- AI context and redaction model documented.
-- AI prompt templates documented.
-- Human validation workflow documented.
-- Optional AI configuration documented.
-- AI remains disabled by default and post-V1.0/V1.1.
+- Cloud-native pivot decision documented.
+- Kubernetes architecture and deployment strategy documented.
+- Helm chart strategy documented.
+- MinIO buckets and storage strategy documented.
+- PostgreSQL metadata/reference model documented.
+- Redis/Celery worker pipeline documented.
+- Kubernetes manifests planned: Namespace, Deployments, Services, Ingress, ConfigMaps, Secrets, PVC, Jobs, CronJobs, NetworkPolicies, ServiceAccounts.
+- Tests cover MinIO, workers, Kubernetes and Helm.
+- Demo scenario deploys on Kubernetes/K3s.
+- Reports and exports are stored in MinIO.
+- Docker Compose is development-only.
+- No guaranteed malware classification is promised.
+- Kimi AI remains optional post-analysis with redaction.
