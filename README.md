@@ -34,8 +34,6 @@ flowchart LR
     EVID -. redacted post-analysis only .-> KIMI[Optional Kimi AI Assistant]
 ```
 
-## Role de MinIO
-MinIO est le stockage objet S3-compatible de MSAP. Il stocke les APK, artefacts d'analyse, preuves, rapports et exports. Il n'heberge pas l'application. PostgreSQL conserve les metadonnees, statuts, scores et references vers les objets MinIO.
 
 ## Deploiement
 Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTTPS, Secrets, ConfigMaps, Services, Deployments, workers, Jobs, PVC, NetworkPolicies et packaging Helm. Docker Compose est conserve uniquement pour le developpement local et les tests rapides.
@@ -51,23 +49,23 @@ Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTT
 - MobSF, Frida et analyse dynamique restent des plugins futurs optionnels.
 - Kimi AI reste optionnel, post-analyse, apres redaction, sans acces aux APK bruts.
 
-## Documents cloud-native
-- [Decision de pivot cloud-native](docs/00_Cadrage/11_Cloud_Native_Pivot_Decision.md)
-- [Architecture cloud-native](docs/03_Architecture/14_Cloud_Native_Architecture.md)
-- [Architecture de deploiement Kubernetes](docs/03_Architecture/15_Kubernetes_Deployment_Architecture.md)
-- [Architecture MinIO](docs/03_Architecture/16_Object_Storage_MinIO_Architecture.md)
-- [Implementation boundaries cloud-native](docs/03_Architecture/17_Cloud_Native_Implementation_Boundaries.md)
-- [Modele de flux de donnees cloud](docs/04_Design/19_Cloud_Data_Flow_Model.md)
-- [Modele de ressources Kubernetes](docs/04_Design/20_Kubernetes_Resource_Model.md)
-- [Modele de securite multi-tenant](docs/04_Design/21_Multi_Tenant_Security_Model.md)
-- [Schema ObjectStorageReference](docs/04_Design/22_ObjectStorageReference_Schema.md)
-- [Contrat Helm values.yaml](docs/04_Design/23_Helm_Values_Contract.md)
-- [Freeze MVP cloud-native](docs/04_Design/24_Cloud_Native_MVP_Freeze.md)
-- [Strategie de deploiement Kubernetes](docs/07_Deployment/19_Kubernetes_Deployment_Strategy.md)
-- [Strategie Helm](docs/07_Deployment/20_Helm_Chart_Strategy.md)
-- [Strategie MinIO](docs/07_Deployment/21_MinIO_Storage_Strategy.md)
-- [Strategie Cloud DevSecOps](docs/07_Deployment/22_Cloud_DevSecOps_Strategy.md)
-- [Contrat variables d'environnement](docs/07_Deployment/23_Environment_Variables_Contract.md)
+## Active documentation
+The active implementation baseline is intentionally small:
+
+- [Project brief](docs/00_Project_Brief.md)
+- [Requirements](docs/01_Requirements.md)
+- [Security methodology](docs/02_Methodology.md)
+- [Architecture](docs/03_Architecture.md)
+- [Data and storage model](docs/04_Data_Model.md)
+- [API contract](docs/05_API_Contract.md)
+- [Rules schema](docs/06_Rules_Schema.md)
+- [MVP freeze](docs/07_MVP_Freeze.md)
+- [Environment variables](docs/08_Environment_Variables.md)
+- [Helm values contract](docs/09_Helm_Values.md)
+- [Development guide](docs/10_Development_Guide.md)
+- [Testing](docs/11_Testing.md)
+
+Earlier detailed planning and diagram documents are preserved under [docs/archive](docs/archive/README.md) for reference only.
 
 ## Stack technique prevue
 Frontend React, Backend Django REST Framework, PostgreSQL, Redis/Celery, workers scalables ou Kubernetes Jobs, MinIO object storage, Kubernetes + Helm. Docker Compose est uniquement un mode de developpement local. Options: Argo CD, Prometheus/Grafana, Trivy, Kimi AI post-analysis assistant.
