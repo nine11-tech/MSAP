@@ -37,9 +37,21 @@ class ObjectStorageReference(models.Model):
         WORKER_INTERNAL = "worker_internal", "Worker internal"
         EXPORT = "export", "Export"
 
+    class StorageStatus(models.TextChoices):
+        PENDING_UPLOAD = "PENDING_UPLOAD", "Pending upload"
+        UPLOADED = "UPLOADED", "Uploaded"
+        VERIFIED = "VERIFIED", "Verified"
+        FAILED = "FAILED", "Failed"
+        DELETED = "DELETED", "Deleted"
+
     bucket = models.CharField(max_length=255)
     object_key = models.CharField(max_length=1024)
     object_type = models.CharField(max_length=64, choices=ObjectType.choices)
+    storage_status = models.CharField(
+        max_length=32,
+        choices=StorageStatus.choices,
+        default=StorageStatus.PENDING_UPLOAD,
+    )
     content_type = models.CharField(max_length=255, blank=True)
     size_bytes = models.BigIntegerField(null=True, blank=True)
     sha256 = models.CharField(max_length=64, blank=True)
@@ -96,4 +108,3 @@ class ObjectStorageReference(models.Model):
 
     def __str__(self) -> str:
         return f"{self.bucket}/{self.object_key}"
-
