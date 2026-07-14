@@ -17,8 +17,13 @@ db.sqlite3
 .pytest_cache/
 media/
 staticfiles/
-backend/venv/
+
+# Backend local runtime
+backend/db.sqlite3
+backend/.pytest_cache/
 backend/.venv/
+backend/venv/
+
 # Node / React
 node_modules/
 dist/
