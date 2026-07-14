@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from apps.apk_files.models import APKFile
-from apps.audits.models import Audit
+from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
@@ -118,6 +118,20 @@ class APKUploadConfirmRequestSerializer(serializers.Serializer):
         if value and len(value) != 64:
             raise serializers.ValidationError("sha256 must be 64 characters.")
         return value
+
+
+class AnalysisJobSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AnalysisJob
+        fields = [
+            "id",
+            "task_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "error_message",
+        ]
+        read_only_fields = fields
 
 
 class FindingSerializer(serializers.ModelSerializer):

@@ -1,8 +1,8 @@
 # MSAP Backend
 
-This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, and the first DRF API layer for metadata records.
+This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, and the first asynchronous analysis boundary with Celery.
 
-This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, Celery task execution, full APK analysis, MobSF, Frida, dynamic analysis, iOS analysis or malware sandboxing.
+This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK parsing, MASVS/ATT&CK execution, MobSF, Frida, dynamic analysis, iOS analysis or malware sandboxing.
 
 ## Setup
 ```bash
@@ -32,8 +32,16 @@ python manage.py runserver
 
 The API is available at `http://127.0.0.1:8000/api/`.
 
+Run a local Celery worker in a separate shell when not using eager mode:
+
+```bash
+celery -A msap worker -l info
+```
+
+Celery uses Redis as its broker by default. For local development, run Redis with your preferred package manager or container runtime and point `REDIS_URL` or `CELERY_BROKER_URL` at it, for example `redis://localhost:6379/0`.
+
 ## API Endpoints
-The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, APK parsing, Celery execution, or AI assistance.
+The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, APK parsing, MASVS/ATT&CK execution, or AI assistance.
 
 Writable metadata endpoints:
 - `GET /api/health/`
@@ -42,6 +50,8 @@ Writable metadata endpoints:
 - `GET|POST /api/audits/`
 - `GET|PUT|PATCH|DELETE /api/audits/{id}/`
 - `POST /api/audits/{id}/apk-upload/initiate/`
+- `POST /api/audits/{id}/analysis/start/`
+- `GET /api/audits/{id}/analysis/status/`
 - `GET|POST /api/apk-files/`
 - `GET|PUT|PATCH|DELETE /api/apk-files/{id}/`
 - `POST /api/apk-files/{id}/confirm-upload/`
@@ -140,6 +150,62 @@ Content-Type: application/json
 
 Confirmation updates APK metadata and the linked storage reference status. It does not parse the APK and does not enqueue analysis.
 
+## Async Analysis Boundary
+After an audit has at least one `APKFile`, start placeholder analysis explicitly:
+
+```http
+POST /api/audits/1/analysis/start/
+```
+
+Response:
+
+```json
+{
+  "audit_id": 1,
+  "analysis_job_id": 1,
+  "task_id": "celery-task-id",
+  "status": "ANALYSIS_QUEUED"
+}
+```
+
+Check the latest analysis job:
+
+```http
+GET /api/audits/1/analysis/status/
+```
+
+```json
+{
+  "audit_id": 1,
+  "audit_status": "ANALYSIS_COMPLETED",
+  "latest_job": {
+    "id": 1,
+    "task_id": "celery-task-id",
+    "status": "COMPLETED",
+    "started_at": "2026-07-14T12:00:00Z",
+    "finished_at": "2026-07-14T12:00:01Z",
+    "error_message": ""
+  }
+}
+```
+
+The placeholder task only proves the worker boundary. It marks the audit and `AnalysisJob` as running, then completed. It does not parse APKs and does not execute MASVS or MITRE ATT&CK Mobile rules yet.
+
+## Celery and Redis
+Celery moves analysis work out of the API request path. Django creates an `AnalysisJob`, updates the audit to `ANALYSIS_QUEUED`, enqueues `analyze_audit_placeholder`, and returns the job id plus Celery task id. A Celery worker consumes the task from Redis and updates status fields as the task runs.
+
+Configure Celery with:
+
+```env
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+CELERY_TASK_ALWAYS_EAGER=false
+CELERY_TASK_EAGER_PROPAGATES=true
+```
+
+If `CELERY_BROKER_URL` is unset, it falls back to `REDIS_URL`. Tests set `CELERY_TASK_ALWAYS_EAGER=true`, so no real Redis worker or broker is required for pytest.
+
 ## OpenAPI and Swagger
 The OpenAPI schema and Swagger UI are provided by drf-spectacular:
 
@@ -160,6 +226,8 @@ The command validates:
 pytest
 ```
 
+The test settings run Celery tasks eagerly in-process and mock MinIO/boto3 access, so tests do not require Redis or MinIO.
+
 To run only the API tests:
 
 ```bash
@@ -170,10 +238,10 @@ pytest tests/test_api.py
 Core variables are documented in `.env.example` and include:
 - Django settings: `DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`
 - Database settings: `DATABASE_URL` or `POSTGRES_*`
-- Redis settings: `REDIS_URL`
+- Redis/Celery settings: `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `CELERY_TASK_ALWAYS_EAGER`, `CELERY_TASK_EAGER_PROPAGATES`
 - MinIO settings: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE`, bucket names
 - Upload settings: `MSAP_PRESIGNED_URL_EXPIRES_SECONDS`, `MSAP_MAX_APK_SIZE_BYTES`, `MSAP_VERIFY_UPLOAD_WITH_HEAD`
 - Analyzer settings: `ANALYZER_RULES_PATH`, `ANALYZER_WORKDIR`, `ANALYZER_TIMEOUT_SECONDS`
 
 ## Scope Note
-This is backend cloud foundation only. It establishes metadata models, rule validation, MinIO presigned upload initiation and upload confirmation before asynchronous analysis and reporting workflows are implemented.
+This is backend cloud foundation only. It establishes metadata models, rule validation, MinIO presigned upload initiation, upload confirmation, and the asynchronous worker boundary before real analysis and reporting workflows are implemented.
