@@ -1,6 +1,6 @@
 # MSAP
 
-Cloud-Native Mobile Security Assessment & Triage Platform
+Mobile Security Assessment & Triage Platform
 
 **Positionnement**: Plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
 
