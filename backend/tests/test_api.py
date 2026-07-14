@@ -1,5 +1,10 @@
+from unittest.mock import patch
+
 import pytest
 from rest_framework.test import APIClient
+
+from apps.apk_files.models import APKFile
+from apps.storage.models import ObjectStorageReference
 
 
 @pytest.fixture
@@ -119,6 +124,163 @@ def test_schema_endpoint_returns_ok(api_client):
     assert response.status_code == 200
 
 
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_initiate_apk_upload_creates_metadata_and_returns_contract(
+    mock_storage_service,
+    api_client,
+):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    service = mock_storage_service.return_value
+    service.get_apk_upload_bucket.return_value = "msap-apk-uploads"
+    service.build_object_key.return_value = (
+        f"projects/{project_id}/audits/{audit_id}/apk_upload/sample.apk"
+    )
+    service.generate_presigned_upload_url.return_value = (
+        "http://localhost:9000/msap-apk-uploads/sample.apk?signature=test"
+    )
+
+    response = api_client.post(
+        f"/api/audits/{audit_id}/apk-upload/initiate/",
+        {
+            "filename": "sample.apk",
+            "content_type": "application/vnd.android.package-archive",
+            "size_bytes": 123456,
+            "sha256": "a" * 64,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["upload_url"].startswith("http://localhost:9000/")
+    assert data["bucket"] == "msap-apk-uploads"
+    assert f"projects/{project_id}/audits/{audit_id}" in data["object_key"]
+    assert APKFile.objects.filter(id=data["apk_file_id"], audit_id=audit_id).exists()
+    assert ObjectStorageReference.objects.filter(
+        id=data["storage_reference_id"],
+        project_id=project_id,
+        audit_id=audit_id,
+        object_type=ObjectStorageReference.ObjectType.APK_UPLOAD,
+        storage_status=ObjectStorageReference.StorageStatus.PENDING_UPLOAD,
+    ).exists()
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_initiate_apk_upload_rejects_non_apk_filename(
+    mock_storage_service,
+    api_client,
+):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+
+    response = api_client.post(
+        f"/api/audits/{audit_id}/apk-upload/initiate/",
+        {
+            "filename": "sample.aab",
+            "content_type": "application/vnd.android.package-archive",
+            "size_bytes": 123456,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert mock_storage_service.call_count == 0
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_initiate_apk_upload_rejects_invalid_content_type(
+    mock_storage_service,
+    api_client,
+):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+
+    response = api_client.post(
+        f"/api/audits/{audit_id}/apk-upload/initiate/",
+        {
+            "filename": "sample.apk",
+            "content_type": "application/zip",
+            "size_bytes": 123456,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert mock_storage_service.call_count == 0
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_initiate_apk_upload_rejects_negative_size(
+    mock_storage_service,
+    api_client,
+):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+
+    response = api_client.post(
+        f"/api/audits/{audit_id}/apk-upload/initiate/",
+        {
+            "filename": "sample.apk",
+            "content_type": "application/vnd.android.package-archive",
+            "size_bytes": -1,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+    assert mock_storage_service.call_count == 0
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_initiate_apk_upload_rejects_missing_audit(
+    mock_storage_service,
+    api_client,
+):
+    response = api_client.post(
+        "/api/audits/9999/apk-upload/initiate/",
+        {
+            "filename": "sample.apk",
+            "content_type": "application/vnd.android.package-archive",
+            "size_bytes": 123456,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 404
+    assert mock_storage_service.call_count == 0
+
+
+@pytest.mark.django_db
+def test_confirm_apk_upload_updates_metadata(api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    storage_reference_id = _create_storage_reference(api_client, project_id, audit_id)
+    apk_file_id = _create_apk_file(api_client, audit_id, storage_reference_id)
+
+    response = api_client.post(
+        f"/api/apk-files/{apk_file_id}/confirm-upload/",
+        {"size_bytes": 4096, "sha256": "c" * 64},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["size_bytes"] == 4096
+    assert data["sha256"] == "c" * 64
+    storage_reference = ObjectStorageReference.objects.get(id=storage_reference_id)
+    assert storage_reference.size_bytes == 4096
+    assert storage_reference.sha256 == "c" * 64
+    assert storage_reference.storage_status == (
+        ObjectStorageReference.StorageStatus.UPLOADED
+    )
+
+
 def _create_project(api_client) -> int:
     response = api_client.post(
         "/api/projects/",
@@ -148,6 +310,21 @@ def _create_storage_reference(api_client, project_id: int, audit_id: int) -> int
             "bucket": "msap-apk-uploads",
             "object_key": f"projects/{project_id}/audits/{audit_id}/app.apk",
             "object_type": "APK_UPLOAD",
+        },
+        format="json",
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _create_apk_file(api_client, audit_id: int, storage_reference_id: int) -> int:
+    response = api_client.post(
+        "/api/apk-files/",
+        {
+            "audit": audit_id,
+            "storage_reference": storage_reference_id,
+            "package_name": "com.example.app",
+            "version_name": "1.0.0",
         },
         format="json",
     )

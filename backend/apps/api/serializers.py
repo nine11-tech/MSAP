@@ -11,6 +11,12 @@ from apps.scoring.models import ComplianceScore, RiskScore
 from apps.storage.models import ObjectStorageReference
 
 
+APK_CONTENT_TYPES = {
+    "application/vnd.android.package-archive",
+    "application/octet-stream",
+}
+
+
 class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
@@ -33,6 +39,7 @@ class ObjectStorageReferenceSerializer(serializers.ModelSerializer):
             "bucket",
             "object_key",
             "object_type",
+            "storage_status",
             "content_type",
             "size_bytes",
             "sha256",
@@ -62,6 +69,55 @@ class APKFileSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
+
+
+class APKUploadInitiateRequestSerializer(serializers.Serializer):
+    filename = serializers.CharField()
+    content_type = serializers.CharField()
+    size_bytes = serializers.IntegerField(min_value=1)
+    sha256 = serializers.CharField(required=False, allow_blank=True, max_length=64)
+
+    def validate_filename(self, value):
+        if not value.lower().endswith(".apk"):
+            raise serializers.ValidationError("Only .apk files are accepted in V1.0.")
+        return value
+
+    def validate_content_type(self, value):
+        if value not in APK_CONTENT_TYPES:
+            raise serializers.ValidationError("Unsupported APK content type.")
+        return value
+
+    def validate_size_bytes(self, value):
+        max_size = self.context["max_size_bytes"]
+        if value > max_size:
+            raise serializers.ValidationError(
+                f"APK size exceeds the configured limit of {max_size} bytes."
+            )
+        return value
+
+    def validate_sha256(self, value):
+        if value and len(value) != 64:
+            raise serializers.ValidationError("sha256 must be 64 characters.")
+        return value
+
+
+class APKUploadInitiateResponseSerializer(serializers.Serializer):
+    apk_file_id = serializers.IntegerField()
+    storage_reference_id = serializers.IntegerField()
+    bucket = serializers.CharField()
+    object_key = serializers.CharField()
+    upload_url = serializers.URLField()
+    expires_in = serializers.IntegerField()
+
+
+class APKUploadConfirmRequestSerializer(serializers.Serializer):
+    size_bytes = serializers.IntegerField(required=False, min_value=1)
+    sha256 = serializers.CharField(required=False, allow_blank=True, max_length=64)
+
+    def validate_sha256(self, value):
+        if value and len(value) != 64:
+            raise serializers.ValidationError("sha256 must be 64 characters.")
+        return value
 
 
 class FindingSerializer(serializers.ModelSerializer):
