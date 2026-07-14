@@ -11,6 +11,7 @@ from apps.api.serializers import (
     APKUploadConfirmRequestSerializer,
     APKUploadInitiateRequestSerializer,
     APKUploadInitiateResponseSerializer,
+    AnalysisJobSerializer,
     AuditSerializer,
     ComplianceScoreSerializer,
     EvidenceSerializer,
@@ -22,7 +23,8 @@ from apps.api.serializers import (
     SuspiciousIndicatorSerializer,
 )
 from apps.apk_files.models import APKFile
-from apps.audits.models import Audit
+from apps.audits.models import AnalysisJob, Audit
+from apps.audits.tasks import analyze_audit_placeholder
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
@@ -58,6 +60,10 @@ class ProjectViewSet(viewsets.ModelViewSet):
 class AuditViewSet(viewsets.ModelViewSet):
     queryset = Audit.objects.select_related("project").all()
     serializer_class = AuditSerializer
+    active_analysis_statuses = {
+        Audit.Status.ANALYSIS_QUEUED,
+        Audit.Status.ANALYSIS_RUNNING,
+    }
 
     @extend_schema(
         request=APKUploadInitiateRequestSerializer,
@@ -116,6 +122,94 @@ class AuditViewSet(viewsets.ModelViewSet):
             "expires_in": expires_in,
         }
         return Response(response, status=status.HTTP_201_CREATED)
+
+    @extend_schema(
+        responses=inline_serializer(
+            name="AnalysisStartResponse",
+            fields={
+                "audit_id": serializers.IntegerField(),
+                "analysis_job_id": serializers.IntegerField(),
+                "task_id": serializers.CharField(),
+                "status": serializers.CharField(),
+            },
+        )
+    )
+    @action(detail=True, methods=["post"], url_path="analysis/start")
+    def start_analysis(self, request, pk=None):
+        audit = self.get_object()
+
+        if not audit.apk_files.exists():
+            return Response(
+                {"detail": "Audit must have at least one APK file before analysis."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        latest_job = audit.analysis_jobs.order_by("-created_at").first()
+        active_job_statuses = {AnalysisJob.Status.QUEUED, AnalysisJob.Status.RUNNING}
+        if audit.status in self.active_analysis_statuses or (
+            latest_job is not None and latest_job.status in active_job_statuses
+        ):
+            return Response(
+                {"detail": "Analysis is already queued or running for this audit."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        with transaction.atomic():
+            audit = Audit.objects.select_for_update().get(id=audit.id)
+            latest_job = audit.analysis_jobs.order_by("-created_at").first()
+            if audit.status in self.active_analysis_statuses or (
+                latest_job is not None and latest_job.status in active_job_statuses
+            ):
+                return Response(
+                    {"detail": "Analysis is already queued or running for this audit."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            analysis_job = AnalysisJob.objects.create(
+                audit=audit,
+                status=AnalysisJob.Status.QUEUED,
+            )
+            audit.status = Audit.Status.ANALYSIS_QUEUED
+            audit.save(update_fields=["status", "updated_at"])
+
+        task_result = analyze_audit_placeholder.delay(audit.id)
+        analysis_job.task_id = task_result.id or ""
+        analysis_job.save(update_fields=["task_id", "updated_at"])
+        audit.refresh_from_db(fields=["status"])
+
+        response = {
+            "audit_id": audit.id,
+            "analysis_job_id": analysis_job.id,
+            "task_id": analysis_job.task_id,
+            "status": audit.status,
+        }
+        return Response(response, status=status.HTTP_202_ACCEPTED)
+
+    @extend_schema(
+        responses=inline_serializer(
+            name="AnalysisStatusResponse",
+            fields={
+                "audit_id": serializers.IntegerField(),
+                "audit_status": serializers.CharField(),
+                "latest_job": serializers.DictField(allow_null=True),
+            },
+        )
+    )
+    @action(detail=True, methods=["get"], url_path="analysis/status")
+    def analysis_status(self, request, pk=None):
+        audit = self.get_object()
+        latest_job = audit.analysis_jobs.order_by("-created_at").first()
+
+        response = {
+            "audit_id": audit.id,
+            "audit_status": audit.status,
+            "latest_job": (
+                AnalysisJobSerializer(latest_job).data
+                if latest_job is not None
+                else None
+            ),
+        }
+        return Response(response)
 
 
 class APKFileViewSet(viewsets.ModelViewSet):
