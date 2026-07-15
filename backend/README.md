@@ -59,6 +59,7 @@ Writable metadata endpoints:
 - `GET|PUT|PATCH|DELETE /api/storage-references/{id}/`
 
 Read-only analysis result endpoints:
+- `GET /api/analyzers/`
 - `GET /api/raw-analyzer-results/`
 - `GET /api/raw-analyzer-results/{id}/`
 - `GET /api/normalized-artifacts/`
@@ -209,6 +210,23 @@ This prepares the future pipeline by separating:
 - raw analyzer output into `RawAnalyzerResult`,
 - canonical downstream inputs into `NormalizedArtifact`,
 - job and audit lifecycle management into the Celery task and orchestrator boundary.
+
+## Analyzer Registry and Normalization Contracts
+`AnalyzerRegistry` is the deterministic discovery layer for analysis components. It returns registered analyzer instances, filters them with each analyzer's `supports(context)` method, and exposes read-only analyzer metadata through `GET /api/analyzers/`. The default registry currently registers only `PlaceholderMetadataAnalyzer`.
+
+Analyzers are registered instead of hardcoded in the orchestrator so future APK metadata, manifest, permissions, components, certificate, string, resource, and code reference analyzers can be added without rewriting the orchestration loop. The registry intentionally avoids dynamic imports; analyzers are added explicitly and run in stable order.
+
+`RawAnalyzerResult` stores the analyzer-specific raw summary for each analyzer run. `NormalizedArtifact` stores stable, canonical payloads that future MASVS and ATT&CK engines can consume without depending on individual analyzer output formats.
+
+Normalized artifact schema helpers live in `apps.normalization.services.schemas`. Current contracts include:
+- `APK_METADATA`: populated from existing `APKFile` and storage reference metadata, with `schema_version`, package/version fields, hash, size, and storage location.
+- `MANIFEST`: placeholder contract with package/version, empty permissions/components, and `parsing_status: NOT_IMPLEMENTED`.
+- `PERMISSIONS`: empty placeholder contract for future permission extraction.
+- `COMPONENTS`: empty placeholder contract for future Android component extraction.
+
+`ManifestMetadataAdapter` defines the future manifest analyzer interface and can produce a placeholder `MANIFEST` normalized artifact if explicitly registered. It does not extract `AndroidManifest.xml`, download APK bytes, parse binary XML, run apktool, run jadx, or run Androguard.
+
+The current analyzers are placeholders. Real APK parsing is still deferred to the next sprint, and MASVS/ATT&CK engines are still not executed.
 
 ## Celery and Redis
 Celery moves analysis work out of the API request path. Django creates an `AnalysisJob`, updates the audit to `ANALYSIS_QUEUED`, enqueues `analyze_audit_placeholder`, and returns the job id plus Celery task id. A Celery worker consumes the task from Redis and updates status fields as the task runs.

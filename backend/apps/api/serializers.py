@@ -112,6 +112,13 @@ class APKUploadInitiateResponseSerializer(serializers.Serializer):
     expires_in = serializers.IntegerField()
 
 
+class AnalyzerMetadataSerializer(serializers.Serializer):
+    name = serializers.CharField()
+    version = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    enabled = serializers.BooleanField()
+
+
 class APKUploadConfirmRequestSerializer(serializers.Serializer):
     size_bytes = serializers.IntegerField(required=False, min_value=1)
     sha256 = serializers.CharField(required=False, allow_blank=True, max_length=64)

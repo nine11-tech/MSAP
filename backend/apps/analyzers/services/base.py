@@ -3,6 +3,8 @@ from typing import Protocol
 
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
+from apps.analyzers.models import RawAnalyzerResult
+from apps.normalization.services.schemas import NormalizedArtifactPayload, apk_metadata_payload
 
 
 @dataclass(frozen=True)
@@ -17,13 +19,16 @@ class AnalyzerResult:
     analyzer_name: str
     analyzer_version: str
     status: str
-    summary: dict = field(default_factory=dict)
+    raw_summary: dict = field(default_factory=dict)
+    normalized_artifacts: list[NormalizedArtifactPayload] = field(default_factory=list)
     error_message: str = ""
 
 
 class BaseAnalyzer(Protocol):
     name: str
     version: str
+    description: str
+    enabled: bool
 
     def supports(self, context: AnalyzerContext) -> bool:
         ...
@@ -35,6 +40,8 @@ class BaseAnalyzer(Protocol):
 class PlaceholderMetadataAnalyzer:
     name = "placeholder_metadata"
     version = "0.1.0"
+    description = "Creates placeholder APK metadata from database records only."
+    enabled = True
 
     def supports(self, context: AnalyzerContext) -> bool:
         return context.apk_file.storage_reference_id is not None
@@ -45,8 +52,8 @@ class PlaceholderMetadataAnalyzer:
         return AnalyzerResult(
             analyzer_name=self.name,
             analyzer_version=self.version,
-            status="COMPLETED",
-            summary={
+            status=RawAnalyzerResult.Status.COMPLETED,
+            raw_summary={
                 "analysis_mode": "placeholder",
                 "audit_id": context.audit.id,
                 "apk_file_id": apk_file.id,
@@ -61,5 +68,5 @@ class PlaceholderMetadataAnalyzer:
                 ),
                 "real_apk_parsing": False,
             },
+            normalized_artifacts=[apk_metadata_payload(apk_file=apk_file, source=self.name)],
         )
-

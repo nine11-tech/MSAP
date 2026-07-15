@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from apps.api.views import (
     APKFileViewSet,
+    AnalyzerRegistryView,
     AuditViewSet,
     ComplianceScoreViewSet,
     EvidenceViewSet,
@@ -50,5 +51,6 @@ router.register("reports", ReportViewSet, basename="report")
 
 urlpatterns = [
     path("health/", HealthView.as_view(), name="health"),
+    path("analyzers/", AnalyzerRegistryView.as_view(), name="analyzer-registry"),
     *router.urls,
 ]

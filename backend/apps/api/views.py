@@ -11,6 +11,7 @@ from apps.api.serializers import (
     APKUploadConfirmRequestSerializer,
     APKUploadInitiateRequestSerializer,
     APKUploadInitiateResponseSerializer,
+    AnalyzerMetadataSerializer,
     AnalysisJobSerializer,
     AuditSerializer,
     ComplianceScoreSerializer,
@@ -25,6 +26,7 @@ from apps.api.serializers import (
     SuspiciousIndicatorSerializer,
 )
 from apps.analyzers.models import RawAnalyzerResult
+from apps.analyzers.services.registry import AnalyzerRegistry
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
@@ -54,6 +56,12 @@ class HealthView(APIView):
     )
     def get(self, request):
         return Response({"status": "ok", "service": "msap-backend"})
+
+
+class AnalyzerRegistryView(APIView):
+    @extend_schema(responses=AnalyzerMetadataSerializer(many=True))
+    def get(self, request):
+        return Response(AnalyzerRegistry().get_analyzer_metadata())
 
 
 class ProjectViewSet(viewsets.ModelViewSet):
