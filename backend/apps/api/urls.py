@@ -8,8 +8,10 @@ from apps.api.views import (
     EvidenceViewSet,
     FindingViewSet,
     HealthView,
+    NormalizedArtifactViewSet,
     ObjectStorageReferenceViewSet,
     ProjectViewSet,
+    RawAnalyzerResultViewSet,
     ReportViewSet,
     RiskScoreViewSet,
     SuspiciousIndicatorViewSet,
@@ -26,6 +28,16 @@ router.register(
     basename="storage-reference",
 )
 router.register("findings", FindingViewSet, basename="finding")
+router.register(
+    "raw-analyzer-results",
+    RawAnalyzerResultViewSet,
+    basename="raw-analyzer-result",
+)
+router.register(
+    "normalized-artifacts",
+    NormalizedArtifactViewSet,
+    basename="normalized-artifact",
+)
 router.register("indicators", SuspiciousIndicatorViewSet, basename="indicator")
 router.register("evidence", EvidenceViewSet, basename="evidence")
 router.register("risk-scores", RiskScoreViewSet, basename="risk-score")

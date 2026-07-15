@@ -1,11 +1,16 @@
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from rest_framework.test import APIClient
 
+from apps.analyzers.models import RawAnalyzerResult
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
+from apps.findings.models import Finding
+from apps.indicators.models import SuspiciousIndicator
+from apps.normalization.models import NormalizedArtifact
 from apps.storage.models import ObjectStorageReference
 
 
@@ -106,6 +111,22 @@ def test_create_apk_file_metadata_linked_to_audit_and_storage_reference(api_clie
 @pytest.mark.django_db
 def test_list_findings_endpoint_works(api_client):
     response = api_client.get("/api/findings/")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.django_db
+def test_list_raw_analyzer_results_endpoint_works(api_client):
+    response = api_client.get("/api/raw-analyzer-results/")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+@pytest.mark.django_db
+def test_list_normalized_artifacts_endpoint_works(api_client):
+    response = api_client.get("/api/normalized-artifacts/")
 
     assert response.status_code == 200
     assert response.json() == []
@@ -291,6 +312,31 @@ def test_start_analysis_requires_existing_audit(api_client):
 
 
 @pytest.mark.django_db
+@patch("apps.audits.tasks.AnalysisOrchestrator")
+def test_start_analysis_calls_orchestrator_in_eager_mode(mock_orchestrator, api_client):
+    audit_id = _create_audit_with_apk(api_client)
+    mock_orchestrator.return_value.run.return_value = SimpleNamespace(
+        as_dict=lambda: {
+            "audit_id": audit_id,
+            "created_raw_analyzer_results": 1,
+            "created_normalized_artifacts": 1,
+        }
+    )
+
+    response = api_client.post(f"/api/audits/{audit_id}/analysis/start/", format="json")
+
+    assert response.status_code == 202
+    job_id = response.json()["analysis_job_id"]
+    mock_orchestrator.return_value.run.assert_called_once_with(
+        audit_id=audit_id,
+        job_id=job_id,
+    )
+    job = AnalysisJob.objects.get(id=job_id)
+    assert job.status == AnalysisJob.Status.COMPLETED
+    assert job.result_summary["audit_id"] == audit_id
+
+
+@pytest.mark.django_db
 def test_start_analysis_requires_apk_file(api_client):
     project_id = _create_project(api_client)
     audit_id = _create_audit(api_client, project_id)
@@ -323,6 +369,8 @@ def test_start_analysis_creates_job_and_updates_audit_status(api_client):
         audit_id=audit_id,
         task_id=data["task_id"],
     ).exists()
+    assert RawAnalyzerResult.objects.filter(audit_id=audit_id).count() == 1
+    assert NormalizedArtifact.objects.filter(audit_id=audit_id).count() == 1
 
 
 @pytest.mark.django_db
@@ -341,7 +389,77 @@ def test_placeholder_task_transitions_job_to_completed(api_client):
     assert job.started_at is not None
     assert job.finished_at is not None
     assert job.error_message == ""
+    assert job.result_summary["summary"]["created_raw_analyzer_results"] == 1
+    assert job.result_summary["summary"]["created_normalized_artifacts"] == 1
     assert audit.status == Audit.Status.ANALYSIS_COMPLETED
+
+
+@pytest.mark.django_db
+def test_analysis_creates_raw_result_and_normalized_artifact_only(api_client):
+    audit_id = _create_audit_with_apk(api_client)
+    job = AnalysisJob.objects.create(
+        audit_id=audit_id,
+        status=AnalysisJob.Status.QUEUED,
+    )
+
+    analyze_audit_placeholder.delay(audit_id)
+
+    raw_result = RawAnalyzerResult.objects.get(audit_id=audit_id)
+    artifact = NormalizedArtifact.objects.get(audit_id=audit_id)
+    assert raw_result.apk_file.audit_id == audit_id
+    assert raw_result.status == RawAnalyzerResult.Status.COMPLETED
+    assert raw_result.result_summary["real_apk_parsing"] is False
+    assert artifact.apk_file.audit_id == audit_id
+    assert artifact.artifact_type == NormalizedArtifact.ArtifactType.APK_METADATA
+    assert artifact.normalized_data["real_apk_parsing"] is False
+    assert Finding.objects.filter(audit_id=audit_id).count() == 0
+    assert SuspiciousIndicator.objects.filter(audit_id=audit_id).count() == 0
+    job.refresh_from_db()
+    assert job.status == AnalysisJob.Status.COMPLETED
+
+
+@pytest.mark.django_db
+def test_analysis_fails_cleanly_if_audit_has_no_apk_file(api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    job = AnalysisJob.objects.create(
+        audit_id=audit_id,
+        status=AnalysisJob.Status.QUEUED,
+    )
+
+    with pytest.raises(ValueError, match="Audit has no APK file"):
+        analyze_audit_placeholder.delay(audit_id)
+
+    job.refresh_from_db()
+    audit = Audit.objects.get(id=audit_id)
+    assert job.status == AnalysisJob.Status.FAILED
+    assert job.error_message == "Audit has no APK file to analyze."
+    assert job.result_summary == {}
+    assert audit.status == Audit.Status.ANALYSIS_FAILED
+    assert RawAnalyzerResult.objects.filter(audit_id=audit_id).count() == 0
+    assert NormalizedArtifact.objects.filter(audit_id=audit_id).count() == 0
+
+
+@pytest.mark.django_db
+def test_analysis_fails_cleanly_if_latest_apk_has_no_storage_reference(api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    APKFile.objects.create(audit_id=audit_id, package_name="com.example.app")
+    job = AnalysisJob.objects.create(
+        audit_id=audit_id,
+        status=AnalysisJob.Status.QUEUED,
+    )
+
+    with pytest.raises(ValueError, match="storage reference"):
+        analyze_audit_placeholder.delay(audit_id)
+
+    job.refresh_from_db()
+    audit = Audit.objects.get(id=audit_id)
+    assert job.status == AnalysisJob.Status.FAILED
+    assert job.error_message == "Latest APK file has no storage reference."
+    assert audit.status == Audit.Status.ANALYSIS_FAILED
+    assert RawAnalyzerResult.objects.filter(audit_id=audit_id).count() == 0
+    assert NormalizedArtifact.objects.filter(audit_id=audit_id).count() == 0
 
 
 @pytest.mark.django_db

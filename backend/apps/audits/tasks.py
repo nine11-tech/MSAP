@@ -3,6 +3,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.audits.models import AnalysisJob, Audit
+from apps.audits.services.analysis_orchestrator import AnalysisOrchestrator
 
 
 @shared_task(bind=True)
@@ -49,6 +50,8 @@ def analyze_audit_placeholder(self, audit_id):
             audit.status = Audit.Status.ANALYSIS_RUNNING
             audit.save(update_fields=["status", "updated_at"])
 
+        result_summary = AnalysisOrchestrator().run(audit_id=audit_id, job_id=job.id)
+
         with transaction.atomic():
             audit = Audit.objects.select_for_update().get(id=audit_id)
             job = AnalysisJob.objects.select_for_update().get(id=job.id)
@@ -56,12 +59,25 @@ def analyze_audit_placeholder(self, audit_id):
             job.status = AnalysisJob.Status.COMPLETED
             job.finished_at = now
             job.error_message = ""
-            job.save(update_fields=["status", "finished_at", "error_message", "updated_at"])
+            job.result_summary = result_summary.as_dict()
+            job.save(
+                update_fields=[
+                    "status",
+                    "finished_at",
+                    "error_message",
+                    "result_summary",
+                    "updated_at",
+                ]
+            )
 
             audit.status = Audit.Status.ANALYSIS_COMPLETED
             audit.save(update_fields=["status", "updated_at"])
 
-        return {"audit_id": audit_id, "status": AnalysisJob.Status.COMPLETED}
+        return {
+            "audit_id": audit_id,
+            "status": AnalysisJob.Status.COMPLETED,
+            "result_summary": result_summary.as_dict(),
+        }
     except Exception as exc:
         error_message = str(exc)
         with transaction.atomic():
@@ -84,11 +100,13 @@ def analyze_audit_placeholder(self, audit_id):
                 job.status = AnalysisJob.Status.FAILED
                 job.finished_at = timezone.now()
                 job.error_message = error_message
+                job.result_summary = {}
                 job.save(
                     update_fields=[
                         "status",
                         "finished_at",
                         "error_message",
+                        "result_summary",
                         "updated_at",
                     ]
                 )

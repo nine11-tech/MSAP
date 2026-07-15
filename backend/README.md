@@ -59,6 +59,10 @@ Writable metadata endpoints:
 - `GET|PUT|PATCH|DELETE /api/storage-references/{id}/`
 
 Read-only analysis result endpoints:
+- `GET /api/raw-analyzer-results/`
+- `GET /api/raw-analyzer-results/{id}/`
+- `GET /api/normalized-artifacts/`
+- `GET /api/normalized-artifacts/{id}/`
 - `GET /api/findings/`
 - `GET /api/findings/{id}/`
 - `GET /api/indicators/`
@@ -189,7 +193,22 @@ GET /api/audits/1/analysis/status/
 }
 ```
 
-The placeholder task only proves the worker boundary. It marks the audit and `AnalysisJob` as running, then completed. It does not parse APKs and does not execute MASVS or MITRE ATT&CK Mobile rules yet.
+The placeholder task proves the worker boundary and calls the internal `AnalysisOrchestrator`. It marks the audit and `AnalysisJob` as running, creates placeholder raw and normalized records, then marks the job completed. It does not parse APKs and does not execute MASVS or MITRE ATT&CK Mobile rules yet.
+
+## Analysis Orchestration Skeleton
+The Celery analysis task now delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, claims the latest linked `APKFile` metadata, verifies that the APK file has an object storage reference, runs a placeholder metadata analyzer, creates one raw analyzer result, creates one normalized artifact, and returns a structured summary to the `AnalysisJob`.
+
+`RawAnalyzerResult` represents raw output from future analyzer plugins. In this sprint it stores only placeholder metadata from the `APKFile` and its storage reference. It does not contain parsed manifest data, decompiled code, rule matches, evidence, or external tool output.
+
+`NormalizedArtifact` represents canonical data that future MASVS and ATT&CK engines can consume after analyzer-specific output is normalized. In this sprint the orchestrator creates a placeholder `APK_METADATA` artifact only. The normalized payload records known database metadata such as APK id, package name, version name, hash, size, and storage reference id.
+
+No real APK parsing is implemented yet. The orchestrator does not download APK bytes, run apktool, run jadx, run Androguard, execute MASVS rules, execute ATT&CK Mobile indicators, create findings, create suspicious indicators, or calculate risk scores. This keeps V1.0 focused on the durable worker and data-flow boundary before analyzer engines are introduced.
+
+This prepares the future pipeline by separating:
+- analyzer plugin execution into the `apps.analyzers` contract,
+- raw analyzer output into `RawAnalyzerResult`,
+- canonical downstream inputs into `NormalizedArtifact`,
+- job and audit lifecycle management into the Celery task and orchestrator boundary.
 
 ## Celery and Redis
 Celery moves analysis work out of the API request path. Django creates an `AnalysisJob`, updates the audit to `ANALYSIS_QUEUED`, enqueues `analyze_audit_placeholder`, and returns the job id plus Celery task id. A Celery worker consumes the task from Redis and updates status fields as the task runs.
