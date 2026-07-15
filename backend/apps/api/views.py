@@ -17,17 +17,21 @@ from apps.api.serializers import (
     EvidenceSerializer,
     FindingSerializer,
     ObjectStorageReferenceSerializer,
+    NormalizedArtifactSerializer,
     ProjectSerializer,
+    RawAnalyzerResultSerializer,
     ReportSerializer,
     RiskScoreSerializer,
     SuspiciousIndicatorSerializer,
 )
+from apps.analyzers.models import RawAnalyzerResult
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
+from apps.normalization.models import NormalizedArtifact
 from apps.projects.models import Project
 from apps.reports.models import Report
 from apps.scoring.models import ComplianceScore, RiskScore
@@ -270,6 +274,24 @@ class ObjectStorageReferenceViewSet(viewsets.ModelViewSet):
 class FindingViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Finding.objects.select_related("audit").all()
     serializer_class = FindingSerializer
+
+
+class RawAnalyzerResultViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = RawAnalyzerResult.objects.select_related(
+        "audit",
+        "apk_file",
+        "storage_reference",
+    ).all()
+    serializer_class = RawAnalyzerResultSerializer
+
+
+class NormalizedArtifactViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = NormalizedArtifact.objects.select_related(
+        "audit",
+        "apk_file",
+        "storage_reference",
+    ).all()
+    serializer_class = NormalizedArtifactSerializer
 
 
 class SuspiciousIndicatorViewSet(viewsets.ReadOnlyModelViewSet):

@@ -82,6 +82,8 @@ INSTALLED_APPS = [
     "apps.audits",
     "apps.storage",
     "apps.apk_files",
+    "apps.analyzers",
+    "apps.normalization",
     "apps.appsec_rules",
     "apps.triage_rules",
     "apps.findings",

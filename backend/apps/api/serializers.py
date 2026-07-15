@@ -1,10 +1,12 @@
 from rest_framework import serializers
 
+from apps.analyzers.models import RawAnalyzerResult
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
+from apps.normalization.models import NormalizedArtifact
 from apps.projects.models import Project
 from apps.reports.models import Report
 from apps.scoring.models import ComplianceScore, RiskScore
@@ -130,6 +132,43 @@ class AnalysisJobSerializer(serializers.ModelSerializer):
             "started_at",
             "finished_at",
             "error_message",
+            "result_summary",
+        ]
+        read_only_fields = fields
+
+
+class RawAnalyzerResultSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RawAnalyzerResult
+        fields = [
+            "id",
+            "audit",
+            "apk_file",
+            "analyzer_name",
+            "analyzer_version",
+            "status",
+            "storage_reference",
+            "result_summary",
+            "error_message",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class NormalizedArtifactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NormalizedArtifact
+        fields = [
+            "id",
+            "audit",
+            "apk_file",
+            "artifact_type",
+            "source",
+            "normalized_data",
+            "storage_reference",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = fields
 
