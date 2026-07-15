@@ -1,16 +1,21 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from rest_framework.test import APIClient
 
 from apps.analyzers.models import RawAnalyzerResult
+from apps.analyzers.services.base import AnalyzerContext, AnalyzerResult, PlaceholderMetadataAnalyzer
+from apps.analyzers.services.manifest_metadata_adapter import ManifestMetadataAdapter
+from apps.analyzers.services.registry import AnalyzerRegistry
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
+from apps.audits.services.analysis_orchestrator import AnalysisOrchestrator
 from apps.audits.tasks import analyze_audit_placeholder
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
+from apps.normalization.services.schemas import NormalizedArtifactPayload
 from apps.storage.models import ObjectStorageReference
 
 
@@ -130,6 +135,22 @@ def test_list_normalized_artifacts_endpoint_works(api_client):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+@pytest.mark.django_db
+def test_analyzer_registry_endpoint_returns_registered_analyzers(api_client):
+    response = api_client.get("/api/analyzers/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data == [
+        {
+            "name": "placeholder_metadata",
+            "version": "0.1.0",
+            "description": "Creates placeholder APK metadata from database records only.",
+            "enabled": True,
+        }
+    ]
 
 
 @pytest.mark.django_db
@@ -312,6 +333,46 @@ def test_start_analysis_requires_existing_audit(api_client):
 
 
 @pytest.mark.django_db
+def test_analyzer_registry_returns_placeholder_metadata_analyzer(api_client):
+    analyzers = AnalyzerRegistry().get_registered_analyzers()
+
+    assert len(analyzers) == 1
+    assert isinstance(analyzers[0], PlaceholderMetadataAnalyzer)
+    assert analyzers[0].name == "placeholder_metadata"
+
+
+@pytest.mark.django_db
+def test_registry_returns_supported_analyzers_for_valid_context(api_client):
+    audit_id = _create_audit_with_apk(api_client)
+    audit = Audit.objects.get(id=audit_id)
+    apk_file = APKFile.objects.select_related("storage_reference").get(audit_id=audit_id)
+    context = AnalyzerContext(audit=audit, apk_file=apk_file, job_id=None)
+
+    supported = AnalyzerRegistry().get_supported_analyzers(context)
+
+    assert [analyzer.name for analyzer in supported] == ["placeholder_metadata"]
+
+
+@pytest.mark.django_db
+def test_orchestrator_uses_registry(api_client):
+    audit_id = _create_audit_with_apk(api_client)
+    fake_analyzer = _FakeAnalyzer()
+    registry = Mock()
+    registry.get_registered_analyzers.return_value = [fake_analyzer]
+    registry.get_supported_analyzers.return_value = [fake_analyzer]
+
+    result = AnalysisOrchestrator(registry=registry).run(audit_id)
+
+    registry.get_registered_analyzers.assert_called_once()
+    registry.get_supported_analyzers.assert_called_once()
+    assert result.summary["analyzers_run"] == ["fake_analyzer"]
+    assert RawAnalyzerResult.objects.filter(
+        audit_id=audit_id,
+        analyzer_name="fake_analyzer",
+    ).exists()
+
+
+@pytest.mark.django_db
 @patch("apps.audits.tasks.AnalysisOrchestrator")
 def test_start_analysis_calls_orchestrator_in_eager_mode(mock_orchestrator, api_client):
     audit_id = _create_audit_with_apk(api_client)
@@ -411,11 +472,36 @@ def test_analysis_creates_raw_result_and_normalized_artifact_only(api_client):
     assert raw_result.result_summary["real_apk_parsing"] is False
     assert artifact.apk_file.audit_id == audit_id
     assert artifact.artifact_type == NormalizedArtifact.ArtifactType.APK_METADATA
+    assert artifact.normalized_data["schema_version"] == "1.0"
+    assert artifact.normalized_data["storage"]["bucket"] == "msap-apk-uploads"
+    assert artifact.normalized_data["storage"]["object_key"].endswith("/app.apk")
     assert artifact.normalized_data["real_apk_parsing"] is False
     assert Finding.objects.filter(audit_id=audit_id).count() == 0
     assert SuspiciousIndicator.objects.filter(audit_id=audit_id).count() == 0
     job.refresh_from_db()
     assert job.status == AnalysisJob.Status.COMPLETED
+
+
+@pytest.mark.django_db
+def test_manifest_metadata_adapter_creates_manifest_placeholder_if_registered(api_client):
+    audit_id = _create_audit_with_apk(api_client)
+    registry = AnalyzerRegistry(analyzers=[ManifestMetadataAdapter()])
+
+    result = AnalysisOrchestrator(registry=registry).run(audit_id)
+
+    artifact = NormalizedArtifact.objects.get(
+        audit_id=audit_id,
+        artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
+    )
+    assert result.summary["analyzers_run"] == ["manifest_metadata_adapter"]
+    assert artifact.normalized_data == {
+        "schema_version": "1.0",
+        "package_name": "com.example.app",
+        "version_name": "1.0.0",
+        "permissions": [],
+        "components": [],
+        "parsing_status": "NOT_IMPLEMENTED",
+    }
 
 
 @pytest.mark.django_db
@@ -573,3 +659,32 @@ def _create_audit_with_apk(api_client) -> int:
     storage_reference_id = _create_storage_reference(api_client, project_id, audit_id)
     _create_apk_file(api_client, audit_id, storage_reference_id)
     return audit_id
+
+
+class _FakeAnalyzer:
+    name = "fake_analyzer"
+    version = "0.1.0"
+    description = "Fake analyzer for orchestrator registry tests."
+    enabled = True
+
+    def supports(self, context):
+        return True
+
+    def run(self, context):
+        return AnalyzerResult(
+            analyzer_name=self.name,
+            analyzer_version=self.version,
+            status=RawAnalyzerResult.Status.COMPLETED,
+            raw_summary={"fake": True},
+            normalized_artifacts=[
+                NormalizedArtifactPayload(
+                    artifact_type=NormalizedArtifact.ArtifactType.COMPONENTS,
+                    source=self.name,
+                    normalized_data={
+                        "schema_version": "1.0",
+                        "components": [],
+                        "parsing_status": "NOT_IMPLEMENTED",
+                    },
+                )
+            ],
+        )
