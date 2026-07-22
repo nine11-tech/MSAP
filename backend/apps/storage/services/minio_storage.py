@@ -54,6 +54,13 @@ class MinIOStorageService:
     def head_object(self, bucket, object_key):
         return self.client.head_object(Bucket=bucket, Key=object_key)
 
+    def download_file(self, bucket, object_key, destination):
+        return self.client.download_file(
+            Bucket=bucket,
+            Key=object_key,
+            Filename=str(destination),
+        )
+
     def get_apk_upload_bucket(self):
         return settings.MINIO_BUCKET_APK_UPLOADS
 

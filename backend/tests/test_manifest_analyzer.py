@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import Mock
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -20,7 +22,7 @@ from apps.normalization.models import NormalizedArtifact
 from apps.normalization.services.schemas import build_manifest_artifact
 from apps.projects.models import Project
 from apps.storage.models import ObjectStorageReference
-from apps.storage.services.file_provider import DevelopmentFileProvider
+from apps.storage.services.file_provider import APKFileProvider, DevelopmentFileProvider
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -78,7 +80,7 @@ def test_manifest_normalized_schema_has_stable_fields():
 
 @pytest.mark.django_db
 def test_manifest_analyzer_skips_when_no_local_apk_path(analyzer_context):
-    file_provider = Mock()
+    file_provider = Mock(spec=["get_local_path_for_apk"])
     file_provider.get_local_path_for_apk.return_value = None
     analyzer = ManifestMetadataAnalyzer(file_provider=file_provider)
 
@@ -87,7 +89,7 @@ def test_manifest_analyzer_skips_when_no_local_apk_path(analyzer_context):
     assert result.status == RawAnalyzerResult.Status.SKIPPED
     assert result.normalized_artifacts == []
     assert result.raw_summary["parsing_status"] == "SKIPPED_NO_LOCAL_PATH"
-    assert "No local APK path" in result.error_message
+    assert result.error_message == "No local APK path is available."
 
 
 @pytest.mark.django_db
@@ -113,7 +115,7 @@ def test_orchestrator_completes_and_records_skipped_manifest(analyzer_context):
 def test_manifest_analyzer_updates_apk_metadata(analyzer_context, tmp_path):
     local_apk_path = tmp_path / "mocked.apk"
     file_provider = Mock()
-    file_provider.get_local_path_for_apk.return_value = local_apk_path
+    file_provider.open_apk_local_copy.return_value = nullcontext(local_apk_path)
     adapter = Mock()
     adapter.parse.return_value = ManifestMetadata(
         package_name="com.example.parsed",
@@ -134,6 +136,9 @@ def test_manifest_analyzer_updates_apk_metadata(analyzer_context, tmp_path):
     assert analyzer_context.apk_file.package_name == "com.example.parsed"
     assert analyzer_context.apk_file.version_name == "9.8.7"
     assert result.normalized_artifacts[0].normalized_data["version_code"] == "98"
+    file_provider.open_apk_local_copy.assert_called_once_with(
+        analyzer_context.apk_file
+    )
 
 
 @pytest.mark.django_db
@@ -142,7 +147,7 @@ def test_valid_fixture_creates_parsed_manifest_artifact(
     tiny_apk,
 ):
     file_provider = Mock()
-    file_provider.get_local_path_for_apk.return_value = tiny_apk
+    file_provider.open_apk_local_copy.return_value = nullcontext(tiny_apk)
     registry = AnalyzerRegistry(
         analyzers=[ManifestMetadataAnalyzer(file_provider=file_provider)]
     )
@@ -201,11 +206,51 @@ def test_valid_fixture_creates_parsed_manifest_artifact(
 
 
 @pytest.mark.django_db
+def test_manifest_analyzer_parses_checksum_verified_temporary_download(
+    analyzer_context,
+    tiny_apk,
+    tmp_path,
+):
+    downloaded_bytes = tiny_apk.read_bytes()
+    downloaded_path = None
+    storage_service = Mock()
+
+    def download_file(bucket, object_key, destination):
+        nonlocal downloaded_path
+        downloaded_path = Path(destination)
+        downloaded_path.write_bytes(downloaded_bytes)
+
+    storage_service.download_file.side_effect = download_file
+    storage_reference = analyzer_context.apk_file.storage_reference
+    storage_reference.storage_status = ObjectStorageReference.StorageStatus.UPLOADED
+    storage_reference.sha256 = sha256(downloaded_bytes).hexdigest()
+    provider = APKFileProvider(
+        local_root=None,
+        environment="production",
+        storage_service=storage_service,
+        temp_dir=tmp_path,
+    )
+
+    result = ManifestMetadataAnalyzer(file_provider=provider).run(analyzer_context)
+
+    assert result.status == RawAnalyzerResult.Status.COMPLETED
+    assert result.raw_summary["package_name"] == "com.example.fixture"
+    assert result.normalized_artifacts[0].normalized_data["parsing_status"] == "PARSED"
+    assert downloaded_path is not None
+    assert not downloaded_path.exists()
+    assert Finding.objects.filter(audit=analyzer_context.audit).count() == 0
+    assert (
+        SuspiciousIndicator.objects.filter(audit=analyzer_context.audit).count()
+        == 0
+    )
+
+
+@pytest.mark.django_db
 def test_invalid_apk_fails_cleanly(analyzer_context, tmp_path):
     invalid_apk = tmp_path / "invalid.apk"
     invalid_apk.write_bytes(b"not an APK")
     file_provider = Mock()
-    file_provider.get_local_path_for_apk.return_value = invalid_apk
+    file_provider.open_apk_local_copy.return_value = nullcontext(invalid_apk)
     analyzer = ManifestMetadataAnalyzer(file_provider=file_provider)
 
     result = analyzer.run(analyzer_context)
@@ -214,6 +259,125 @@ def test_invalid_apk_fails_cleanly(analyzer_context, tmp_path):
     assert result.normalized_artifacts == []
     assert result.raw_summary["parsing_status"] == "FAILED"
     assert result.error_message == "Local APK is not a readable ZIP archive."
+
+
+@pytest.mark.django_db
+def test_manifest_analyzer_cleans_download_when_parser_fails(
+    analyzer_context,
+    tmp_path,
+):
+    downloaded_bytes = b"controlled test bytes"
+    downloaded_path = None
+    storage_service = Mock()
+
+    def download_file(bucket, object_key, destination):
+        nonlocal downloaded_path
+        downloaded_path = Path(destination)
+        downloaded_path.write_bytes(downloaded_bytes)
+
+    storage_service.download_file.side_effect = download_file
+    storage_reference = analyzer_context.apk_file.storage_reference
+    storage_reference.storage_status = ObjectStorageReference.StorageStatus.UPLOADED
+    storage_reference.sha256 = sha256(downloaded_bytes).hexdigest()
+    adapter = Mock()
+
+    def fail_while_path_exists(apk_path):
+        assert Path(apk_path).is_file()
+        raise ValueError("parser exploded")
+
+    adapter.parse.side_effect = fail_while_path_exists
+    provider = APKFileProvider(
+        local_root=None,
+        environment="production",
+        storage_service=storage_service,
+        temp_dir=tmp_path,
+    )
+    analyzer = ManifestMetadataAnalyzer(
+        file_provider=provider,
+        manifest_adapter=adapter,
+    )
+
+    result = analyzer.run(analyzer_context)
+
+    assert result.status == RawAnalyzerResult.Status.FAILED
+    assert result.error_message == "AndroidManifest.xml parsing failed unexpectedly."
+    assert downloaded_path is not None
+    assert not downloaded_path.exists()
+
+
+@pytest.mark.django_db
+def test_manifest_analyzer_fails_cleanly_on_checksum_mismatch(
+    analyzer_context,
+    tmp_path,
+):
+    storage_service = Mock()
+    storage_service.download_file.side_effect = (
+        lambda bucket, object_key, destination: Path(destination).write_bytes(
+            b"unexpected bytes"
+        )
+    )
+    storage_reference = analyzer_context.apk_file.storage_reference
+    storage_reference.storage_status = ObjectStorageReference.StorageStatus.UPLOADED
+    analyzer_context.apk_file.sha256 = "0" * 64
+    provider = APKFileProvider(
+        local_root=None,
+        environment="production",
+        storage_service=storage_service,
+        temp_dir=tmp_path,
+    )
+
+    result = ManifestMetadataAnalyzer(file_provider=provider).run(analyzer_context)
+
+    assert result.status == RawAnalyzerResult.Status.FAILED
+    assert result.normalized_artifacts == []
+    assert result.error_message == (
+        "Downloaded APK checksum does not match expected SHA-256."
+    )
+
+
+@pytest.mark.django_db
+def test_manifest_analyzer_skips_missing_object_reference(analyzer_context):
+    analyzer_context.apk_file.storage_reference = None
+    storage_service = Mock()
+    provider = APKFileProvider(
+        local_root=None,
+        environment="production",
+        storage_service=storage_service,
+    )
+
+    result = ManifestMetadataAnalyzer(file_provider=provider).run(analyzer_context)
+
+    assert result.status == RawAnalyzerResult.Status.SKIPPED
+    assert result.raw_summary["parsing_status"] == "SKIPPED_NO_LOCAL_PATH"
+    assert result.error_message == (
+        "APK file has no downloadable object storage reference."
+    )
+    storage_service.download_file.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_manifest_analyzer_fails_cleanly_when_minio_download_fails(
+    analyzer_context,
+    tmp_path,
+):
+    storage_service = Mock()
+    storage_service.download_file.side_effect = RuntimeError("MinIO unavailable")
+    storage_reference = analyzer_context.apk_file.storage_reference
+    storage_reference.storage_status = ObjectStorageReference.StorageStatus.UPLOADED
+    provider = APKFileProvider(
+        local_root=None,
+        environment="production",
+        storage_service=storage_service,
+        temp_dir=tmp_path,
+    )
+
+    result = ManifestMetadataAnalyzer(file_provider=provider).run(analyzer_context)
+
+    assert result.status == RawAnalyzerResult.Status.FAILED
+    assert result.normalized_artifacts == []
+    assert result.error_message == (
+        "APK could not be downloaded from object storage."
+    )
 
 
 @pytest.mark.django_db
