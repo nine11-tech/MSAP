@@ -36,6 +36,7 @@ from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
 from apps.projects.models import Project
 from apps.reports.models import Report
+from apps.reports.services.json_report import generate_json_report
 from apps.scoring.models import ComplianceScore, RiskScore
 from apps.storage.models import ObjectStorageReference
 from apps.storage.services.minio_storage import MinIOStorageService
@@ -222,6 +223,12 @@ class AuditViewSet(viewsets.ModelViewSet):
             ),
         }
         return Response(response)
+
+    @extend_schema(responses=serializers.DictField())
+    @action(detail=True, methods=["get"], url_path="report/json")
+    def json_report(self, request, pk=None):
+        audit = self.get_object()
+        return Response(generate_json_report(audit.id))
 
 
 class APKFileViewSet(viewsets.ModelViewSet):

@@ -9,6 +9,11 @@ from apps.appsec_rules.services.masvs_evaluator import evaluate_masvs_rules
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.normalization.models import NormalizedArtifact
+from apps.scoring.services.compliance_scoring import (
+    calculate_masvs_compliance,
+    summarize_attck_triage,
+)
+from apps.scoring.services.risk_scoring import calculate_risk_score
 from apps.triage_rules.services.attck_evaluator import evaluate_attck_indicators
 
 
@@ -118,6 +123,11 @@ class AnalysisOrchestrator:
 
             masvs_evaluation = evaluate_masvs_rules(audit)
             attck_evaluation = evaluate_attck_indicators(audit)
+            scoring = {
+                "risk": calculate_risk_score(audit.id),
+                "masvs_compliance": calculate_masvs_compliance(audit.id),
+                "attack_mobile_triage": summarize_attck_triage(audit.id),
+            }
 
             return AnalysisOrchestratorResult(
                 audit_id=audit.id,
@@ -130,6 +140,7 @@ class AnalysisOrchestrator:
                     "errors": errors,
                     "masvs_evaluation": masvs_evaluation,
                     "attck_evaluation": attck_evaluation,
+                    "scoring": scoring,
                     "created_raw_analyzer_results": raw_results_created,
                     "created_normalized_artifacts": normalized_artifacts_created,
                     "created_findings": masvs_evaluation["findings_created"],
