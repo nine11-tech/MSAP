@@ -107,6 +107,43 @@ MSAP_MAX_APK_SIZE_BYTES=524288000
 
 Tests mock the MinIO/boto3 service and do not require a running MinIO server.
 
+## MinIO Download-to-Temporary-File Provider
+
+APK binaries remain in MinIO-compatible object storage so application workers
+do not rely on permanent shared disks and PostgreSQL remains limited to metadata.
+Manifest parsers still require a seekable local APK path, so `APKFileProvider`
+first checks the optional development/test mirror and otherwise downloads a
+confirmed object into a secure temporary directory. Set `MSAP_TEMP_DIR` to use a
+dedicated worker scratch location; when it is empty, the operating system's
+temporary directory is used.
+
+Analyzers obtain the path through a scoped context manager:
+
+```python
+with file_provider.open_apk_local_copy(apk_file) as apk_path:
+    metadata = manifest_adapter.parse(apk_path)
+```
+
+The downloaded filename retains an `.apk` suffix. When
+`MSAP_VERIFY_DOWNLOADED_APK_SHA256=true`, the provider calculates SHA-256 and
+checks every available expected digest from `APKFile` and its
+`ObjectStorageReference`. A mismatch fails analysis before parsing, protecting
+the metadata-to-object trust boundary. If neither record contains a digest,
+there is no expected value to compare; upload policy should normally ensure one
+is recorded.
+
+The context manager removes its entire temporary directory on normal return,
+checksum failure, parser failure, or another exception. A configured local
+development mirror is not provider-owned and is therefore not deleted. MinIO
+exceptions are converted to clean provider errors without logging credentials or
+raw client error details.
+
+Tests generate tiny ZIP fixtures from repository-owned XML and mock MinIO
+downloads. They require no MinIO server, never persist downloaded APKs, and do
+not add third-party or malware binaries. This provider only supplies bytes to
+the manifest metadata analyzer: it does not execute MASVS or ATT&CK rules, create
+findings or indicators, or calculate risk scores.
+
 ## APK Upload Contract
 Start an APK upload by creating metadata and receiving a presigned MinIO PUT URL:
 
@@ -203,7 +240,7 @@ Every invoked analyzer produces a `RawAnalyzerResult`, including `SKIPPED` and `
 
 `NormalizedArtifact` represents canonical data that future MASVS and ATT&CK engines can consume without depending on parser-specific output. The placeholder analyzer creates `APK_METADATA`; successful manifest parsing creates `MANIFEST`. Analyzer summaries contain counts and status, not raw XML.
 
-The current file provider does not download from MinIO. The orchestrator also does not run apktool, jadx, MobSF, Frida, MASVS rules, ATT&CK Mobile indicators, finding creation, indicator creation, or risk scoring.
+The orchestrator does not run apktool, jadx, MobSF, Frida, MASVS rules, ATT&CK Mobile indicators, finding creation, indicator creation, or risk scoring.
 
 This prepares the future pipeline by separating:
 - analyzer plugin execution into the `apps.analyzers` contract,
@@ -230,7 +267,7 @@ Normalized artifact schema helpers live in `apps.normalization.services.schemas`
 
 An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Android binary XML rather than plain text XML. `ManifestMetadataAdapter` reads only a bounded manifest member from the archive. It accepts tiny plain-XML development fixtures and uses Androguard's AXML parser for compiled manifests. Archive size, manifest size, ZIP entry count, encryption, malformed XML, and missing manifest conditions are handled without persisting raw XML.
 
-`ManifestMetadataAnalyzer` implements the existing analyzer contract with name `manifest_metadata_analyzer` and version `0.1.0`. It asks the file-provider interface for a local path, delegates parsing to the adapter, updates `APKFile.package_name` and `APKFile.version_name` when present, and emits a normalized `MANIFEST` artifact with:
+`ManifestMetadataAnalyzer` implements the existing analyzer contract with name `manifest_metadata_analyzer` and version `0.1.0`. It opens a scoped local copy through the file-provider interface, delegates parsing to the adapter, updates `APKFile.package_name` and `APKFile.version_name` when present, and emits a normalized `MANIFEST` artifact with:
 
 - package name, version name, and version code;
 - minimum and target SDK values;
@@ -239,7 +276,7 @@ An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Andr
 - nullable `debuggable`, `allow_backup`, and `uses_cleartext_traffic` flags;
 - `parsing_status: PARSED`.
 
-`DevelopmentFileProvider` is enabled only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing` and `MSAP_LOCAL_APK_ROOT` is configured. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no local file exists, the analyzer records `SKIPPED` with `SKIPPED_NO_LOCAL_PATH`, emits no manifest artifact, and the remaining analysis completes. A later provider can replace this implementation with MinIO download-to-temporary-file behavior without changing the analyzer.
+`APKFileProvider` uses `MSAP_LOCAL_APK_ROOT` only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing`. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no mirror file exists, an uploaded or verified MinIO object is downloaded to a checksum-verified temporary `.apk` path and deleted when parsing ends. Pending, failed, deleted, or missing object references are recorded as `SKIPPED`; download, checksum, and parsing failures are recorded as `FAILED`. No manifest artifact is emitted for either outcome.
 
 The analyzer does not execute catalogs, infer vulnerabilities, create findings, create suspicious indicators, score risk, decompile code, classify malware, or generate reports. MASVS and ATT&CK Mobile execution remains deferred until a later sprint consumes normalized artifacts.
 

@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from pathlib import Path
 
 from apps.analyzers.models import RawAnalyzerResult
@@ -7,7 +8,13 @@ from apps.analyzers.services.manifest_metadata_adapter import (
     ManifestParsingError,
 )
 from apps.normalization.services.schemas import manifest_payload
-from apps.storage.services.file_provider import DevelopmentFileProvider, FileProvider
+from apps.storage.services.file_provider import (
+    APKChecksumMismatchError,
+    APKDownloadError,
+    APKFileProvider,
+    APKFileUnavailableError,
+    FileProvider,
+)
 
 
 class ManifestMetadataAnalyzer:
@@ -23,7 +30,7 @@ class ManifestMetadataAnalyzer:
         file_provider: FileProvider | None = None,
         manifest_adapter: ManifestMetadataAdapter | None = None,
     ):
-        self.file_provider = file_provider or DevelopmentFileProvider()
+        self.file_provider = file_provider or APKFileProvider()
         self.manifest_adapter = manifest_adapter or ManifestMetadataAdapter()
 
     def supports(self, context: AnalyzerContext) -> bool:
@@ -31,26 +38,15 @@ class ManifestMetadataAnalyzer:
 
     def run(self, context: AnalyzerContext) -> AnalyzerResult:
         apk_file = context.apk_file
-        local_path = self.file_provider.get_local_path_for_apk(apk_file)
-        if local_path is None:
-            message = (
-                "No local APK path is available; object-storage download is not "
-                "implemented by the current file provider."
-            )
-            return AnalyzerResult(
-                analyzer_name=self.name,
-                analyzer_version=self.version,
-                status=RawAnalyzerResult.Status.SKIPPED,
-                raw_summary={
-                    "apk_file_id": apk_file.id,
-                    "parsing_status": "SKIPPED_NO_LOCAL_PATH",
-                    "real_apk_parsing": False,
-                },
-                error_message=message,
-            )
-
         try:
-            metadata = self.manifest_adapter.parse(Path(local_path))
+            with self._open_local_copy(apk_file) as local_path:
+                metadata = self.manifest_adapter.parse(Path(local_path))
+        except APKFileUnavailableError as exc:
+            return self._skipped_result(apk_file.id, str(exc))
+        except APKChecksumMismatchError as exc:
+            return self._failed_result(apk_file.id, str(exc))
+        except APKDownloadError as exc:
+            return self._failed_result(apk_file.id, str(exc))
         except ManifestParsingError as exc:
             return self._failed_result(apk_file.id, str(exc))
         except Exception:
@@ -96,6 +92,29 @@ class ManifestMetadataAnalyzer:
                     parsing_status="PARSED",
                 )
             ],
+        )
+
+    def _open_local_copy(self, apk_file):
+        open_local_copy = getattr(self.file_provider, "open_apk_local_copy", None)
+        if callable(open_local_copy):
+            return open_local_copy(apk_file)
+
+        local_path = self.file_provider.get_local_path_for_apk(apk_file)
+        if local_path is None:
+            raise APKFileUnavailableError("No local APK path is available.")
+        return nullcontext(local_path)
+
+    def _skipped_result(self, apk_file_id: int, message: str) -> AnalyzerResult:
+        return AnalyzerResult(
+            analyzer_name=self.name,
+            analyzer_version=self.version,
+            status=RawAnalyzerResult.Status.SKIPPED,
+            raw_summary={
+                "apk_file_id": apk_file_id,
+                "parsing_status": "SKIPPED_NO_LOCAL_PATH",
+                "real_apk_parsing": False,
+            },
+            error_message=message,
         )
 
     def _failed_result(self, apk_file_id: int, message: str) -> AnalyzerResult:
