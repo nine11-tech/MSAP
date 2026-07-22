@@ -2,6 +2,7 @@ from .base import *  # noqa: F403
 
 
 DEBUG = False
+MSAP_ENVIRONMENT = "testing"
 PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 DATABASES = {
     "default": {

@@ -57,6 +57,7 @@ class AnalysisOrchestrator:
             raw_results_created = 0
             normalized_artifacts_created = 0
             errors = []
+            real_apk_parsing = False
 
             for analyzer in supported_analyzers:
                 try:
@@ -88,6 +89,20 @@ class AnalysisOrchestrator:
                 raw_results_created += 1
                 analyzers_run.append(analyzer_result.analyzer_name)
 
+                if analyzer_result.status == RawAnalyzerResult.Status.SKIPPED:
+                    skipped_analyzers.append(analyzer_result.analyzer_name)
+                elif analyzer_result.status == RawAnalyzerResult.Status.FAILED:
+                    errors.append(
+                        {
+                            "analyzer": analyzer_result.analyzer_name,
+                            "error": analyzer_result.error_message
+                            or "Analyzer returned FAILED.",
+                        }
+                    )
+                real_apk_parsing = real_apk_parsing or bool(
+                    analyzer_result.raw_summary.get("real_apk_parsing", False)
+                )
+
                 for artifact_payload in analyzer_result.normalized_artifacts:
                     NormalizedArtifact.objects.create(
                         audit=audit,
@@ -112,7 +127,7 @@ class AnalysisOrchestrator:
                     "created_normalized_artifacts": normalized_artifacts_created,
                     "created_findings": 0,
                     "created_suspicious_indicators": 0,
-                    "real_apk_parsing": False,
+                    "real_apk_parsing": real_apk_parsing,
                     "external_tools_executed": [],
                 },
             )
