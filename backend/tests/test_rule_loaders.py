@@ -33,10 +33,10 @@ def test_selected_masvs_rules_are_present():
 
 def test_selected_attck_indicators_are_present():
     rules = load_attck_triage_rules(RULES_DIR / "attck_mobile_triage_rules.yaml")
-    rule_ids = {rule["id"] for rule in rules}
+    rules_by_id = {rule["id"]: rule for rule in rules}
 
-    assert "MSAP-MOB-001" in rule_ids
-    assert "MSAP-MOB-002" in rule_ids
+    assert "MSAP-MOB-001" in rules_by_id
+    assert rules_by_id["MSAP-MOB-002"]["title"] == "Accessibility service usage"
 
 
 def test_invalid_masvs_severity_fails(tmp_path):
@@ -104,4 +104,3 @@ def _valid_attck_rule(**overrides) -> dict:
     }
     rule.update(overrides)
     return rule
-
