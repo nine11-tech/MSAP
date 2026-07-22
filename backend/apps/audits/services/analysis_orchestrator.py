@@ -5,9 +5,11 @@ from django.db import transaction
 from apps.analyzers.models import RawAnalyzerResult
 from apps.analyzers.services.base import AnalyzerContext
 from apps.analyzers.services.registry import AnalyzerRegistry
+from apps.appsec_rules.services.masvs_evaluator import evaluate_masvs_rules
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.normalization.models import NormalizedArtifact
+from apps.triage_rules.services.attck_evaluator import evaluate_attck_indicators
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,9 @@ class AnalysisOrchestrator:
                     )
                     normalized_artifacts_created += 1
 
+            masvs_evaluation = evaluate_masvs_rules(audit)
+            attck_evaluation = evaluate_attck_indicators(audit)
+
             return AnalysisOrchestratorResult(
                 audit_id=audit.id,
                 apk_file_id=apk_file.id,
@@ -123,10 +128,18 @@ class AnalysisOrchestrator:
                     "normalized_artifacts_created": normalized_artifacts_created,
                     "skipped_analyzers": skipped_analyzers,
                     "errors": errors,
+                    "masvs_evaluation": masvs_evaluation,
+                    "attck_evaluation": attck_evaluation,
                     "created_raw_analyzer_results": raw_results_created,
                     "created_normalized_artifacts": normalized_artifacts_created,
-                    "created_findings": 0,
-                    "created_suspicious_indicators": 0,
+                    "created_findings": masvs_evaluation["findings_created"],
+                    "created_suspicious_indicators": attck_evaluation[
+                        "indicators_created"
+                    ],
+                    "created_evidence": (
+                        masvs_evaluation["evidence_created"]
+                        + attck_evaluation["evidence_created"]
+                    ),
                     "real_apk_parsing": real_apk_parsing,
                     "external_tools_executed": [],
                 },

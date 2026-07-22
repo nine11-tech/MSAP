@@ -16,7 +16,7 @@ rules:
     analyst_recommendation: Review declared app purpose, permission justification and related code paths.
     evidence_example: "<uses-permission android:name=\"android.permission.READ_SMS\" />"
 
-  - id: MSAP-MOB-002
+  - id: MSAP-MOB-004
     title: Contact access permissions
     description: The APK requests access to contacts.
     standard: MITRE ATT&CK Mobile
@@ -50,7 +50,7 @@ rules:
     analyst_recommendation: Check consent, foreground/background use and privacy documentation.
     evidence_example: "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />"
 
-  - id: MSAP-MOB-004
+  - id: MSAP-MOB-002
     title: Accessibility service usage
     description: The APK declares an accessibility service.
     standard: MITRE ATT&CK Mobile

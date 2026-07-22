@@ -198,7 +198,11 @@ def test_valid_fixture_creates_parsed_manifest_artifact(
     analyzer_context.apk_file.refresh_from_db()
     assert analyzer_context.apk_file.package_name == "com.example.fixture"
     assert analyzer_context.apk_file.version_name == "2.3.4"
-    assert Finding.objects.filter(audit=analyzer_context.audit).count() == 0
+    assert Finding.objects.filter(audit=analyzer_context.audit).count() == 1
+    assert Finding.objects.filter(
+        audit=analyzer_context.audit,
+        rule_id="MSAP-AND-001",
+    ).exists()
     assert (
         SuspiciousIndicator.objects.filter(audit=analyzer_context.audit).count()
         == 0

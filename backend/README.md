@@ -1,8 +1,8 @@
 # MSAP Backend
 
-This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, and constrained APK manifest metadata extraction.
+This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, constrained APK manifest metadata extraction, and the first deterministic manifest rule execution layer.
 
-This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK/code analysis, MASVS/ATT&CK execution, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
+This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK/code analysis, full MASVS/ATT&CK catalog execution, scoring, report generation, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
 
 ## Setup
 ```bash
@@ -41,7 +41,7 @@ celery -A msap worker -l info
 Celery uses Redis as its broker by default. For local development, run Redis with your preferred package manager or container runtime and point `REDIS_URL` or `CELERY_BROKER_URL` at it, for example `redis://localhost:6379/0`.
 
 ## API Endpoints
-The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, MASVS/ATT&CK execution, or AI assistance.
+The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, full MASVS/ATT&CK catalog execution, scoring, reporting, or AI assistance.
 
 Writable metadata endpoints:
 - `GET /api/health/`
@@ -231,16 +231,16 @@ GET /api/audits/1/analysis/status/
 }
 ```
 
-The Celery task calls the internal `AnalysisOrchestrator` and runs the registered analyzers in deterministic order. It marks the audit and `AnalysisJob` as running, persists raw analyzer statuses and any normalized artifacts, then marks the job completed. The manifest analyzer parses only when the file provider can supply a local APK path. No MASVS or MITRE ATT&CK Mobile rule is executed.
+The Celery task calls the internal `AnalysisOrchestrator` and runs the registered analyzers in deterministic order. It marks the audit and `AnalysisJob` as running, persists raw analyzer statuses and any normalized artifacts, evaluates the implemented MASVS and ATT&CK Mobile manifest rules, then marks the job completed. The manifest analyzer parses only when the file provider can supply a local APK path.
 
 ## Analysis Orchestration
 The Celery analysis task delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, selects the latest linked `APKFile`, verifies its object storage reference, and asks `AnalyzerRegistry` for supported analyzers. The default order is `PlaceholderMetadataAnalyzer` followed by `ManifestMetadataAnalyzer`.
 
 Every invoked analyzer produces a `RawAnalyzerResult`, including `SKIPPED` and `FAILED` analyzers. A skipped manifest analyzer does not fail the audit or job. `NormalizedArtifact` rows are created only when an analyzer result contains normalized artifacts.
 
-`NormalizedArtifact` represents canonical data that future MASVS and ATT&CK engines can consume without depending on parser-specific output. The placeholder analyzer creates `APK_METADATA`; successful manifest parsing creates `MANIFEST`. Analyzer summaries contain counts and status, not raw XML.
+`NormalizedArtifact` represents canonical data that rule evaluators can consume without depending on parser-specific output. The placeholder analyzer creates `APK_METADATA`; successful manifest parsing creates `MANIFEST`. Analyzer summaries contain counts and status, not raw XML.
 
-The orchestrator does not run apktool, jadx, MobSF, Frida, MASVS rules, ATT&CK Mobile indicators, finding creation, indicator creation, or risk scoring.
+After analyzer execution, the orchestrator runs the focused MASVS and ATT&CK evaluators against the latest `MANIFEST` artifact for the audit. Evaluator summaries and aggregate finding, indicator, and evidence creation counts are included in `AnalysisJob.result_summary`. The orchestrator does not run apktool, jadx, MobSF, Frida, unimplemented catalog rules, or risk scoring.
 
 This prepares the future pipeline by separating:
 - analyzer plugin execution into the `apps.analyzers` contract,
@@ -253,7 +253,7 @@ This prepares the future pipeline by separating:
 
 Analyzers are registered instead of hardcoded in the orchestrator so future APK metadata, manifest, permissions, components, certificate, string, resource, and code reference analyzers can be added without rewriting the orchestration loop. The registry intentionally avoids dynamic imports; analyzers are added explicitly and run in stable order.
 
-`RawAnalyzerResult` stores the analyzer-specific raw summary for each analyzer run. `NormalizedArtifact` stores stable, canonical payloads that future MASVS and ATT&CK engines can consume without depending on individual analyzer output formats.
+`RawAnalyzerResult` stores the analyzer-specific raw summary for each analyzer run. `NormalizedArtifact` stores stable, canonical payloads that MASVS and ATT&CK evaluators consume without depending on individual analyzer output formats.
 
 Normalized artifact schema helpers live in `apps.normalization.services.schemas`. Current contracts include:
 - `APK_METADATA`: populated from existing `APKFile` and storage reference metadata, with `schema_version`, package/version fields, hash, size, and storage location.
@@ -263,7 +263,7 @@ Normalized artifact schema helpers live in `apps.normalization.services.schemas`
 
 ## Manifest Metadata Analyzer
 
-`AndroidManifest.xml` declares an Android application's identity and runtime-facing configuration. Package and version identifiers, SDK compatibility, requested permissions, application security flags, and registered activities, services, receivers, and providers all originate there. These fields are useful canonical inputs for later assessment and triage, but their presence alone is not a finding or suspicious indicator.
+`AndroidManifest.xml` declares an Android application's identity and runtime-facing configuration. Package and version identifiers, SDK compatibility, requested permissions, application security flags, and registered activities, services, receivers, and providers all originate there. The normalized fields are canonical inputs for the focused assessment and triage rules described below; other manifest fields do not become findings or indicators automatically.
 
 An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Android binary XML rather than plain text XML. `ManifestMetadataAdapter` reads only a bounded manifest member from the archive. It accepts tiny plain-XML development fixtures and uses Androguard's AXML parser for compiled manifests. Archive size, manifest size, ZIP entry count, encryption, malformed XML, and missing manifest conditions are handled without persisting raw XML.
 
@@ -278,7 +278,33 @@ An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Andr
 
 `APKFileProvider` uses `MSAP_LOCAL_APK_ROOT` only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing`. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no mirror file exists, an uploaded or verified MinIO object is downloaded to a checksum-verified temporary `.apk` path and deleted when parsing ends. Pending, failed, deleted, or missing object references are recorded as `SKIPPED`; download, checksum, and parsing failures are recorded as `FAILED`. No manifest artifact is emitted for either outcome.
 
-The analyzer does not execute catalogs, infer vulnerabilities, create findings, create suspicious indicators, score risk, decompile code, classify malware, or generate reports. MASVS and ATT&CK Mobile execution remains deferred until a later sprint consumes normalized artifacts.
+The manifest analyzer itself only parses and normalizes metadata. The orchestrator invokes the separate rule evaluators after analyzer execution. Neither layer scores risk, decompiles code, classifies malware, or generates reports.
+
+## First Rule Execution Foundation
+
+This is deterministic rule execution over the latest `MANIFEST` `NormalizedArtifact` for an audit. It does not use Kimi AI or any other AI model.
+
+`apps.appsec_rules.services.masvs_evaluator` loads the validated MASVS YAML catalog and currently evaluates only:
+
+- `MSAP-AND-001`: creates a finding when `application.debuggable` is `true`;
+- `MSAP-AND-002`: creates a finding when `application.allow_backup` is `true`.
+
+`apps.triage_rules.services.attck_evaluator` loads the validated ATT&CK Mobile triage catalog and currently evaluates only:
+
+- `MSAP-MOB-001`: creates a triage indicator for `READ_SMS`, `RECEIVE_SMS`, or `SEND_SMS` permissions;
+- `MSAP-MOB-002`: creates a triage indicator for an accessibility service permission, name, or metadata signal.
+
+Matched results receive a linked `Evidence` row with the audit, finding or indicator, catalog detection type and source, a short normalized snippet, and `redacted=false`. Full manifest XML is never stored as evidence. Reruns reuse existing findings and indicators for the same audit and rule identifier, and do not duplicate identical evidence.
+
+ATT&CK indicators are cautious triage signals only. They require analyst context and do not classify an APK as malware. The remaining 12 MASVS rules and 13 ATT&CK indicators are validated catalog entries but are not executed. Scoring, PDF reports, frontend work, dynamic analysis, malware sandboxing, and Kimi AI remain unimplemented.
+
+Run the complete test suite from this directory with:
+
+```bash
+.venv/bin/pytest
+```
+
+The evaluator tests create `NormalizedArtifact` rows directly and require no real APK parsing, MinIO service, Redis broker, or Celery worker.
 
 ## Celery and Redis
 Celery moves analysis work out of the API request path. Django creates an `AnalysisJob`, updates the audit to `ANALYSIS_QUEUED`, enqueues `analyze_audit_placeholder`, and returns the job id plus Celery task id. A Celery worker consumes the task from Redis and updates status fields as the task runs.
@@ -334,4 +360,4 @@ Core variables are documented in `.env.example` and include:
 - Analyzer settings: `ANALYZER_RULES_PATH`, `ANALYZER_WORKDIR`, `ANALYZER_TIMEOUT_SECONDS`
 
 ## Scope Note
-This is a constrained backend analysis increment. It establishes safe manifest metadata extraction and normalization behind the existing worker and analyzer boundaries; assessment, triage, scoring, reporting, and broader application analysis remain out of scope.
+This is a constrained backend analysis increment. It establishes safe manifest metadata extraction, normalization, and the first four deterministic assessment and triage detections behind the existing worker boundary. Broader rule execution, scoring, reporting, and broader application analysis remain out of scope.
