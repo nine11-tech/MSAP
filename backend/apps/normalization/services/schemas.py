@@ -33,19 +33,47 @@ def build_apk_metadata_schema(apk_file: APKFile) -> dict:
     }
 
 
+def build_manifest_artifact(
+    package_name: str | None = None,
+    version_name: str | None = None,
+    version_code: str | None = None,
+    min_sdk: str | None = None,
+    target_sdk: str | None = None,
+    permissions: list[str] | None = None,
+    components: list[dict] | None = None,
+    application: dict | None = None,
+    parsing_status: str = "NOT_STARTED",
+) -> dict:
+    application = application or {}
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "package_name": package_name,
+        "version_name": version_name,
+        "version_code": version_code,
+        "min_sdk": min_sdk,
+        "target_sdk": target_sdk,
+        "permissions": list(permissions or []),
+        "components": list(components or []),
+        "application": {
+            "debuggable": application.get("debuggable"),
+            "allow_backup": application.get("allow_backup"),
+            "uses_cleartext_traffic": application.get("uses_cleartext_traffic"),
+        },
+        "parsing_status": parsing_status,
+    }
+
+
 def build_manifest_schema(
     package_name: str | None = None,
     version_name: str | None = None,
     parsing_status: str = "NOT_IMPLEMENTED",
 ) -> dict:
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "package_name": package_name,
-        "version_name": version_name,
-        "permissions": [],
-        "components": [],
-        "parsing_status": parsing_status,
-    }
+    """Backward-compatible wrapper for the original placeholder contract."""
+    return build_manifest_artifact(
+        package_name=package_name,
+        version_name=version_name,
+        parsing_status=parsing_status,
+    )
 
 
 def build_permissions_schema(permissions: list[dict] | None = None) -> dict:
@@ -76,12 +104,26 @@ def manifest_payload(
     source: str,
     package_name: str | None = None,
     version_name: str | None = None,
+    version_code: str | None = None,
+    min_sdk: str | None = None,
+    target_sdk: str | None = None,
+    permissions: list[str] | None = None,
+    components: list[dict] | None = None,
+    application: dict | None = None,
+    parsing_status: str = "NOT_IMPLEMENTED",
 ) -> NormalizedArtifactPayload:
     return NormalizedArtifactPayload(
         artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
         source=source,
-        normalized_data=build_manifest_schema(
+        normalized_data=build_manifest_artifact(
             package_name=package_name,
             version_name=version_name,
+            version_code=version_code,
+            min_sdk=min_sdk,
+            target_sdk=target_sdk,
+            permissions=permissions,
+            components=components,
+            application=application,
+            parsing_status=parsing_status,
         ),
     )

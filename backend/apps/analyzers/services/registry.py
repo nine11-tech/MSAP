@@ -1,10 +1,12 @@
 from apps.analyzers.services.base import AnalyzerContext, BaseAnalyzer, PlaceholderMetadataAnalyzer
+from apps.analyzers.services.manifest_analyzer import ManifestMetadataAnalyzer
 
 
 class AnalyzerRegistry:
     def __init__(self, analyzers: list[BaseAnalyzer] | None = None):
         self._analyzers = list(analyzers) if analyzers is not None else [
-            PlaceholderMetadataAnalyzer()
+            PlaceholderMetadataAnalyzer(),
+            ManifestMetadataAnalyzer(),
         ]
 
     def get_registered_analyzers(self) -> list[BaseAnalyzer]:

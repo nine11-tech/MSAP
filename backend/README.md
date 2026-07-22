@@ -1,8 +1,8 @@
 # MSAP Backend
 
-This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, and the first asynchronous analysis boundary with Celery.
+This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, and constrained APK manifest metadata extraction.
 
-This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK parsing, MASVS/ATT&CK execution, MobSF, Frida, dynamic analysis, iOS analysis or malware sandboxing.
+This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK/code analysis, MASVS/ATT&CK execution, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
 
 ## Setup
 ```bash
@@ -41,7 +41,7 @@ celery -A msap worker -l info
 Celery uses Redis as its broker by default. For local development, run Redis with your preferred package manager or container runtime and point `REDIS_URL` or `CELERY_BROKER_URL` at it, for example `redis://localhost:6379/0`.
 
 ## API Endpoints
-The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, APK parsing, MASVS/ATT&CK execution, or AI assistance.
+The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, MASVS/ATT&CK execution, or AI assistance.
 
 Writable metadata endpoints:
 - `GET /api/health/`
@@ -137,7 +137,7 @@ Response:
 }
 ```
 
-The client uploads the APK bytes directly to `upload_url` with the same `Content-Type`. V1.0 accepts `.apk` files only; `.aab` and `.ipa` are rejected. Real APK parsing is not implemented yet, and this endpoint does not start analysis.
+The client uploads the APK bytes directly to `upload_url` with the same `Content-Type`. V1.0 accepts `.apk` files only; `.aab` and `.ipa` are rejected. This endpoint does not parse the APK or start analysis.
 
 After the object upload succeeds, confirm metadata:
 
@@ -156,7 +156,7 @@ Content-Type: application/json
 Confirmation updates APK metadata and the linked storage reference status. It does not parse the APK and does not enqueue analysis.
 
 ## Async Analysis Boundary
-After an audit has at least one `APKFile`, start placeholder analysis explicitly:
+After an audit has at least one `APKFile`, start analysis explicitly:
 
 ```http
 POST /api/audits/1/analysis/start/
@@ -194,16 +194,16 @@ GET /api/audits/1/analysis/status/
 }
 ```
 
-The placeholder task proves the worker boundary and calls the internal `AnalysisOrchestrator`. It marks the audit and `AnalysisJob` as running, creates placeholder raw and normalized records, then marks the job completed. It does not parse APKs and does not execute MASVS or MITRE ATT&CK Mobile rules yet.
+The Celery task calls the internal `AnalysisOrchestrator` and runs the registered analyzers in deterministic order. It marks the audit and `AnalysisJob` as running, persists raw analyzer statuses and any normalized artifacts, then marks the job completed. The manifest analyzer parses only when the file provider can supply a local APK path. No MASVS or MITRE ATT&CK Mobile rule is executed.
 
-## Analysis Orchestration Skeleton
-The Celery analysis task now delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, claims the latest linked `APKFile` metadata, verifies that the APK file has an object storage reference, runs a placeholder metadata analyzer, creates one raw analyzer result, creates one normalized artifact, and returns a structured summary to the `AnalysisJob`.
+## Analysis Orchestration
+The Celery analysis task delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, selects the latest linked `APKFile`, verifies its object storage reference, and asks `AnalyzerRegistry` for supported analyzers. The default order is `PlaceholderMetadataAnalyzer` followed by `ManifestMetadataAnalyzer`.
 
-`RawAnalyzerResult` represents raw output from future analyzer plugins. In this sprint it stores only placeholder metadata from the `APKFile` and its storage reference. It does not contain parsed manifest data, decompiled code, rule matches, evidence, or external tool output.
+Every invoked analyzer produces a `RawAnalyzerResult`, including `SKIPPED` and `FAILED` analyzers. A skipped manifest analyzer does not fail the audit or job. `NormalizedArtifact` rows are created only when an analyzer result contains normalized artifacts.
 
-`NormalizedArtifact` represents canonical data that future MASVS and ATT&CK engines can consume after analyzer-specific output is normalized. In this sprint the orchestrator creates a placeholder `APK_METADATA` artifact only. The normalized payload records known database metadata such as APK id, package name, version name, hash, size, and storage reference id.
+`NormalizedArtifact` represents canonical data that future MASVS and ATT&CK engines can consume without depending on parser-specific output. The placeholder analyzer creates `APK_METADATA`; successful manifest parsing creates `MANIFEST`. Analyzer summaries contain counts and status, not raw XML.
 
-No real APK parsing is implemented yet. The orchestrator does not download APK bytes, run apktool, run jadx, run Androguard, execute MASVS rules, execute ATT&CK Mobile indicators, create findings, create suspicious indicators, or calculate risk scores. This keeps V1.0 focused on the durable worker and data-flow boundary before analyzer engines are introduced.
+The current file provider does not download from MinIO. The orchestrator also does not run apktool, jadx, MobSF, Frida, MASVS rules, ATT&CK Mobile indicators, finding creation, indicator creation, or risk scoring.
 
 This prepares the future pipeline by separating:
 - analyzer plugin execution into the `apps.analyzers` contract,
@@ -212,7 +212,7 @@ This prepares the future pipeline by separating:
 - job and audit lifecycle management into the Celery task and orchestrator boundary.
 
 ## Analyzer Registry and Normalization Contracts
-`AnalyzerRegistry` is the deterministic discovery layer for analysis components. It returns registered analyzer instances, filters them with each analyzer's `supports(context)` method, and exposes read-only analyzer metadata through `GET /api/analyzers/`. The default registry currently registers only `PlaceholderMetadataAnalyzer`.
+`AnalyzerRegistry` is the deterministic discovery layer for analysis components. It returns registered analyzer instances, filters them with each analyzer's `supports(context)` method, and exposes read-only analyzer metadata through `GET /api/analyzers/`. The default registry registers `PlaceholderMetadataAnalyzer` and `ManifestMetadataAnalyzer` in that order.
 
 Analyzers are registered instead of hardcoded in the orchestrator so future APK metadata, manifest, permissions, components, certificate, string, resource, and code reference analyzers can be added without rewriting the orchestration loop. The registry intentionally avoids dynamic imports; analyzers are added explicitly and run in stable order.
 
@@ -220,13 +220,28 @@ Analyzers are registered instead of hardcoded in the orchestrator so future APK 
 
 Normalized artifact schema helpers live in `apps.normalization.services.schemas`. Current contracts include:
 - `APK_METADATA`: populated from existing `APKFile` and storage reference metadata, with `schema_version`, package/version fields, hash, size, and storage location.
-- `MANIFEST`: placeholder contract with package/version, empty permissions/components, and `parsing_status: NOT_IMPLEMENTED`.
+- `MANIFEST`: package/version fields, SDK levels, permissions, components, application flags, and `parsing_status` with stable empty-list/null defaults.
 - `PERMISSIONS`: empty placeholder contract for future permission extraction.
 - `COMPONENTS`: empty placeholder contract for future Android component extraction.
 
-`ManifestMetadataAdapter` defines the future manifest analyzer interface and can produce a placeholder `MANIFEST` normalized artifact if explicitly registered. It does not extract `AndroidManifest.xml`, download APK bytes, parse binary XML, run apktool, run jadx, or run Androguard.
+## Manifest Metadata Analyzer
 
-The current analyzers are placeholders. Real APK parsing is still deferred to the next sprint, and MASVS/ATT&CK engines are still not executed.
+`AndroidManifest.xml` declares an Android application's identity and runtime-facing configuration. Package and version identifiers, SDK compatibility, requested permissions, application security flags, and registered activities, services, receivers, and providers all originate there. These fields are useful canonical inputs for later assessment and triage, but their presence alone is not a finding or suspicious indicator.
+
+An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Android binary XML rather than plain text XML. `ManifestMetadataAdapter` reads only a bounded manifest member from the archive. It accepts tiny plain-XML development fixtures and uses Androguard's AXML parser for compiled manifests. Archive size, manifest size, ZIP entry count, encryption, malformed XML, and missing manifest conditions are handled without persisting raw XML.
+
+`ManifestMetadataAnalyzer` implements the existing analyzer contract with name `manifest_metadata_analyzer` and version `0.1.0`. It asks the file-provider interface for a local path, delegates parsing to the adapter, updates `APKFile.package_name` and `APKFile.version_name` when present, and emits a normalized `MANIFEST` artifact with:
+
+- package name, version name, and version code;
+- minimum and target SDK values;
+- requested permission names;
+- activity, activity-alias, service, receiver, and provider names;
+- nullable `debuggable`, `allow_backup`, and `uses_cleartext_traffic` flags;
+- `parsing_status: PARSED`.
+
+`DevelopmentFileProvider` is enabled only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing` and `MSAP_LOCAL_APK_ROOT` is configured. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no local file exists, the analyzer records `SKIPPED` with `SKIPPED_NO_LOCAL_PATH`, emits no manifest artifact, and the remaining analysis completes. A later provider can replace this implementation with MinIO download-to-temporary-file behavior without changing the analyzer.
+
+The analyzer does not execute catalogs, infer vulnerabilities, create findings, create suspicious indicators, score risk, decompile code, classify malware, or generate reports. MASVS and ATT&CK Mobile execution remains deferred until a later sprint consumes normalized artifacts.
 
 ## Celery and Redis
 Celery moves analysis work out of the API request path. Django creates an `AnalysisJob`, updates the audit to `ANALYSIS_QUEUED`, enqueues `analyze_audit_placeholder`, and returns the job id plus Celery task id. A Celery worker consumes the task from Redis and updates status fields as the task runs.
@@ -263,7 +278,7 @@ The command validates:
 pytest
 ```
 
-The test settings run Celery tasks eagerly in-process and mock MinIO/boto3 access, so tests do not require Redis or MinIO.
+The test settings run Celery tasks eagerly in-process and mock MinIO/boto3 access, so tests do not require Redis or MinIO. Manifest tests assemble a tiny synthetic ZIP from a repository-owned XML fixture; no third-party APK or malware sample is used.
 
 To run only the API tests:
 
@@ -278,7 +293,8 @@ Core variables are documented in `.env.example` and include:
 - Redis/Celery settings: `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `CELERY_TASK_ALWAYS_EAGER`, `CELERY_TASK_EAGER_PROPAGATES`
 - MinIO settings: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE`, bucket names
 - Upload settings: `MSAP_PRESIGNED_URL_EXPIRES_SECONDS`, `MSAP_MAX_APK_SIZE_BYTES`, `MSAP_VERIFY_UPLOAD_WITH_HEAD`
+- Manifest settings: `MSAP_LOCAL_APK_ROOT`, `MSAP_MAX_MANIFEST_SIZE_BYTES`, `MSAP_MAX_APK_ZIP_ENTRIES`
 - Analyzer settings: `ANALYZER_RULES_PATH`, `ANALYZER_WORKDIR`, `ANALYZER_TIMEOUT_SECONDS`
 
 ## Scope Note
-This is backend cloud foundation only. It establishes metadata models, rule validation, MinIO presigned upload initiation, upload confirmation, and the asynchronous worker boundary before real analysis and reporting workflows are implemented.
+This is a constrained backend analysis increment. It establishes safe manifest metadata extraction and normalization behind the existing worker and analyzer boundaries; assessment, triage, scoring, reporting, and broader application analysis remain out of scope.
