@@ -145,6 +145,11 @@ REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+CORS_ALLOWED_ORIGINS = env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+)
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "MSAP API",
     "DESCRIPTION": "Backend API foundation for MSAP.",
