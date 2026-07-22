@@ -41,6 +41,21 @@ Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTT
 ## Backend status
 The backend foundation has started in [backend](backend/README.md): Django settings, metadata models, `ObjectStorageReference`, YAML rule loaders, the `validate_rules` command and unit tests.
 
+## Frontend MVP
+
+A minimal React, TypeScript, and Vite dashboard is available in [frontend](frontend/README.md). It supports the project-to-audit workflow, APK upload-contract initiation, analysis controls, findings and triage review, scores, evidence, and JSON reports.
+
+Run the backend separately, then start the dashboard:
+
+```bash
+cd frontend
+cp .env.example .env
+npm install
+npm run dev
+```
+
+The default API base URL is `http://127.0.0.1:8000/api` and can be changed with `VITE_API_BASE_URL`.
+
 ## Perimetre securite
 - Android APK uniquement pour le MVP.
 - Analyse statique comme coeur fonctionnel.
