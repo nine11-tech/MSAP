@@ -16,6 +16,7 @@ from apps.normalization.services.schemas import (
     build_manifest_artifact,
 )
 from apps.projects.models import Project
+from apps.scoring.models import ComplianceScore, RiskScore
 from apps.storage.models import ObjectStorageReference
 from apps.triage_rules.services.attck_evaluator import evaluate_attck_indicators
 
@@ -165,6 +166,32 @@ def test_orchestrator_evaluates_created_manifest_artifact(audit_and_apk):
     assert result.summary["created_findings"] == 2
     assert result.summary["created_suspicious_indicators"] == 2
     assert result.summary["created_evidence"] == 4
+    assert result.summary["scoring"] == {
+        "risk": {
+            "score": 100,
+            "severity": "Critical",
+            "finding_count": 2,
+            "indicator_count": 2,
+            "raw_weight": 22,
+        },
+        "masvs_compliance": {
+            "standard": "MASVS",
+            "score": 0.0,
+            "evaluated_rules": 2,
+            "failed_rules": 2,
+            "passed_rules": 0,
+        },
+        "attack_mobile_triage": {
+            "triage_indicators": 2,
+            "triage_level": "High",
+            "note": (
+                "ATT&CK Mobile indicators are triage signals, "
+                "not malware verdicts."
+            ),
+        },
+    }
+    assert RiskScore.objects.filter(audit=audit).count() == 1
+    assert ComplianceScore.objects.filter(audit=audit, standard="MASVS").count() == 1
 
 
 def _create_manifest(
