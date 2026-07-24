@@ -12,6 +12,7 @@ import {
   listIndicators,
   listRiskScores,
   startAnalysis,
+  uploadApkFile,
 } from "../api/msap";
 import type {
   AnalysisStatusResponse,
@@ -38,6 +39,25 @@ import {
 } from "../components/Common";
 
 const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
+type UploadState =
+  | "idle"
+  | "initiating"
+  | "uploading"
+  | "confirming"
+  | "uploaded"
+  | "failed";
+
+const UPLOAD_STATE_LABELS: Record<UploadState, string> = {
+  idle: "Select an APK to begin",
+  initiating: "Requesting upload contract…",
+  uploading: "Uploading APK to MinIO…",
+  confirming: "Confirming upload metadata…",
+  uploaded: "APK uploaded and confirmed",
+  failed: "Upload failed",
+};
+
+const ACTIVE_JOB_STATUSES = ["QUEUED", "RUNNING"];
+const TERMINAL_JOB_STATUSES = ["COMPLETED", "FAILED"];
 
 export function AuditDetailPage() {
   const { auditId } = useParams();
@@ -53,13 +73,12 @@ export function AuditDetailPage() {
     useState<AnalysisStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
-  const [filename, setFilename] = useState("");
-  const [contentType, setContentType] = useState(APK_CONTENT_TYPE);
-  const [sizeBytes, setSizeBytes] = useState("");
-  const [sha256, setSha256] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [uploadContract, setUploadContract] = useState<UploadContract | null>(null);
 
   async function loadAuditData(showLoading = true) {
@@ -69,32 +88,33 @@ export function AuditDetailPage() {
       const [
         auditData,
         allApkFiles,
-        allFindings,
-        allIndicators,
-        allEvidence,
-        allRiskScores,
-        allComplianceScores,
+        auditFindings,
+        auditIndicators,
+        auditEvidence,
+        auditRiskScores,
+        auditComplianceScores,
         statusData,
       ] = await Promise.all([
         getAudit(id),
         listApkFiles(),
-        listFindings(),
-        listIndicators(),
-        listEvidence(),
-        listRiskScores(),
-        listComplianceScores(),
+        listFindings(id),
+        listIndicators(id),
+        listEvidence(id),
+        listRiskScores(id),
+        listComplianceScores(id),
         getAnalysisStatus(id),
       ]);
       setAudit(auditData);
       setApkFiles(allApkFiles.filter((item) => item.audit === id));
-      setFindings(allFindings.filter((item) => item.audit === id));
-      setIndicators(allIndicators.filter((item) => item.audit === id));
-      setEvidence(allEvidence.filter((item) => item.audit === id));
-      setRiskScores(allRiskScores.filter((item) => item.audit === id));
-      setComplianceScores(
-        allComplianceScores.filter((item) => item.audit === id),
-      );
+      setFindings(auditFindings);
+      setIndicators(auditIndicators);
+      setEvidence(auditEvidence);
+      setRiskScores(auditRiskScores);
+      setComplianceScores(auditComplianceScores);
       setAnalysisStatus(statusData);
+      if (ACTIVE_JOB_STATUSES.includes(statusData.latest_job?.status || "")) {
+        setIsPolling(true);
+      }
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -106,43 +126,83 @@ export function AuditDetailPage() {
     void loadAuditData();
   }, [id]);
 
-  async function handleInitiateUpload(event: FormEvent) {
-    event.preventDefault();
-    setWorking(true);
+  useEffect(() => {
+    if (!isPolling) return;
+
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getAnalysisStatus(id)
+        .then(async (statusData) => {
+          if (cancelled) return;
+          setAnalysisStatus(statusData);
+          setAudit((current) =>
+            current ? { ...current, status: statusData.audit_status } : current,
+          );
+
+          const jobStatus = statusData.latest_job?.status || "";
+          if (TERMINAL_JOB_STATUSES.includes(jobStatus)) {
+            setIsPolling(false);
+            await loadAuditData(false);
+            if (!cancelled) {
+              setNotice(
+                jobStatus === "COMPLETED"
+                  ? "Analysis completed. Results and scores were refreshed."
+                  : "Analysis failed. Review the latest job error below.",
+              );
+            }
+          }
+        })
+        .catch((requestError: unknown) => {
+          if (!cancelled) {
+            setIsPolling(false);
+            setError(errorMessage(requestError));
+          }
+        });
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [id, isPolling]);
+
+  function handleFileSelection(file: File | null) {
+    setSelectedFile(file);
+    setUploadContract(null);
+    setUploadState("idle");
     setError("");
     setNotice("");
-    try {
-      const contract = await initiateApkUpload(id, {
-        filename,
-        content_type: contentType,
-        size_bytes: Number(sizeBytes),
-        ...(sha256 ? { sha256 } : {}),
-      });
-      setUploadContract(contract);
-      setNotice("Upload contract created. The browser PUT step is deferred.");
-      await loadAuditData(false);
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setWorking(false);
-    }
   }
 
-  async function handleConfirmUpload() {
-    if (!uploadContract) return;
+  async function handleUpload(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedFile) return;
+
     setWorking(true);
+    setUploadState("initiating");
     setError("");
     setNotice("");
     try {
-      await confirmApkUpload(uploadContract.apk_file_id, {
-        size_bytes: Number(sizeBytes),
-        ...(sha256 ? { sha256 } : {}),
+      const contentType = selectedFile.type || APK_CONTENT_TYPE;
+      const contract = await initiateApkUpload(id, {
+        filename: selectedFile.name,
+        content_type: contentType,
+        size_bytes: selectedFile.size,
       });
+      setUploadContract(contract);
+      setUploadState("uploading");
+      await uploadApkFile(contract, selectedFile);
+      setUploadState("confirming");
+      const confirmedApk = await confirmApkUpload(contract.apk_file_id, {
+        size_bytes: selectedFile.size,
+      });
+      setUploadState("uploaded");
       setNotice(
-        "Upload metadata confirmed. Ensure the APK object exists in MinIO before analysis.",
+        `APK #${confirmedApk.id} uploaded and confirmed. Analysis can now start.`,
       );
       await loadAuditData(false);
     } catch (requestError) {
+      setUploadState("failed");
       setError(errorMessage(requestError));
     } finally {
       setWorking(false);
@@ -155,8 +215,22 @@ export function AuditDetailPage() {
     setNotice("");
     try {
       const response = await startAnalysis(id);
-      setNotice(`Analysis job #${response.analysis_job_id} was submitted.`);
-      await loadAuditData(false);
+      const statusData = await getAnalysisStatus(id);
+      setAnalysisStatus(statusData);
+      const jobStatus = statusData.latest_job?.status || "";
+      if (TERMINAL_JOB_STATUSES.includes(jobStatus)) {
+        await loadAuditData(false);
+        setNotice(
+          jobStatus === "COMPLETED"
+            ? `Analysis job #${response.analysis_job_id} completed. Results were refreshed.`
+            : `Analysis job #${response.analysis_job_id} failed.`,
+        );
+      } else {
+        setIsPolling(true);
+        setNotice(
+          `Analysis job #${response.analysis_job_id} was submitted. Polling every 2 seconds.`,
+        );
+      }
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -169,8 +243,11 @@ export function AuditDetailPage() {
 
   const riskScore = riskScores[0];
   const masvsScore = complianceScores.find((score) => score.standard === "MASVS");
-  const analysisIsActive = ["QUEUED", "RUNNING"].includes(
+  const analysisIsActive = ACTIVE_JOB_STATUSES.includes(
     analysisStatus?.latest_job?.status || "",
+  );
+  const hasConfirmedApk = apkFiles.some((apk) =>
+    ["UPLOADED", "VERIFIED"].includes(apk.storage_status || ""),
   );
 
   return (
@@ -224,94 +301,87 @@ export function AuditDetailPage() {
         </Card>
       </div>
 
-      <Card title="APK upload contract">
+      <Card title="APK upload">
         <div className="upload-layout">
-          <form className="form-grid" onSubmit={handleInitiateUpload}>
+          <form className="form-stack" onSubmit={handleUpload}>
             <label>
-              Filename
+              APK file
               <input
-                value={filename}
-                onChange={(event) => setFilename(event.target.value)}
-                placeholder="application.apk"
+                type="file"
+                accept=".apk,application/vnd.android.package-archive,application/octet-stream"
+                onChange={(event) =>
+                  handleFileSelection(event.target.files?.[0] || null)
+                }
+                disabled={working}
                 required
               />
             </label>
-            <label>
-              Content type
-              <input
-                value={contentType}
-                onChange={(event) => setContentType(event.target.value)}
-                required
-              />
-            </label>
-            <label>
-              Size in bytes
-              <input
-                type="number"
-                min="1"
-                value={sizeBytes}
-                onChange={(event) => setSizeBytes(event.target.value)}
-                required
-              />
-            </label>
-            <label>
-              SHA-256 (optional)
-              <input
-                value={sha256}
-                onChange={(event) => setSha256(event.target.value)}
-                placeholder="64 hexadecimal characters"
-                maxLength={64}
-              />
-            </label>
-            <button className="button button-primary" disabled={working}>
-              Initiate upload
+            {selectedFile ? (
+              <dl className="details-list file-details">
+                <div>
+                  <dt>Name</dt>
+                  <dd>{selectedFile.name}</dd>
+                </div>
+                <div>
+                  <dt>Size</dt>
+                  <dd>{formatBytes(selectedFile.size)}</dd>
+                </div>
+                <div>
+                  <dt>Content type</dt>
+                  <dd>{selectedFile.type || APK_CONTENT_TYPE}</dd>
+                </div>
+              </dl>
+            ) : null}
+            <button
+              className="button button-primary"
+              disabled={working || !selectedFile}
+            >
+              Upload and confirm APK
             </button>
           </form>
 
           <div className="contract-panel">
+            <span className={`upload-state upload-${uploadState}`}>
+              {UPLOAD_STATE_LABELS[uploadState]}
+            </span>
             {uploadContract ? (
-              <>
-                <dl className="details-list">
-                  <div>
-                    <dt>Bucket</dt>
-                    <dd>{uploadContract.bucket}</dd>
-                  </div>
-                  <div>
-                    <dt>Object key</dt>
-                    <dd className="break-text">{uploadContract.object_key}</dd>
-                  </div>
-                  <div>
-                    <dt>Expires</dt>
-                    <dd>{uploadContract.expires_in} seconds</dd>
-                  </div>
-                </dl>
-                <a
-                  className="break-text contract-url"
-                  href={uploadContract.upload_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  View presigned upload URL ↗
-                </a>
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => void handleConfirmUpload()}
-                  disabled={working}
-                >
-                  Confirm upload metadata
-                </button>
-              </>
+              <dl className="details-list upload-contract-details">
+                <div>
+                  <dt>APK record</dt>
+                  <dd>#{uploadContract.apk_file_id}</dd>
+                </div>
+                <div>
+                  <dt>Bucket</dt>
+                  <dd>{uploadContract.bucket}</dd>
+                </div>
+                <div>
+                  <dt>Object key</dt>
+                  <dd className="break-text">{uploadContract.object_key}</dd>
+                </div>
+                <div>
+                  <dt>Expires</dt>
+                  <dd>{uploadContract.expires_in} seconds</dd>
+                </div>
+                {Object.entries(uploadContract.required_headers).map(
+                  ([header, value]) => (
+                    <div key={header}>
+                      <dt>{header}</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  ),
+                )}
+              </dl>
             ) : (
               <p className="empty-state">
-                Initiate the contract to display its MinIO destination and URL.
+                The MinIO destination will appear after upload initiation.
               </p>
             )}
           </div>
         </div>
         <p className="notice">
-          The dashboard does not PUT APK bytes to MinIO yet. Confirmation only
-          updates backend metadata; use the presigned URL externally when needed.
+          Upload uses the backend-signed Content-Type header and confirms metadata
+          automatically after a successful MinIO PUT. Browser SHA-256 calculation
+          is deferred.
         </p>
       </Card>
 
@@ -320,7 +390,7 @@ export function AuditDetailPage() {
           <button
             className="button button-primary"
             onClick={() => void handleStartAnalysis()}
-            disabled={working || analysisIsActive || apkFiles.length === 0}
+            disabled={working || analysisIsActive || !hasConfirmedApk}
           >
             {analysisIsActive ? "Analysis active" : "Start analysis"}
           </button>
@@ -331,8 +401,11 @@ export function AuditDetailPage() {
           >
             Refresh status and results
           </button>
-          {apkFiles.length === 0 ? (
-            <span className="muted">Initiate an APK upload first.</span>
+          {isPolling ? (
+            <span className="polling-indicator">Polling every 2 seconds…</span>
+          ) : null}
+          {!hasConfirmedApk ? (
+            <span className="muted">Upload and confirm an APK first.</span>
           ) : null}
         </div>
         {analysisStatus?.latest_job?.error_message ? (
@@ -347,6 +420,7 @@ export function AuditDetailPage() {
               <thead>
                 <tr>
                   <th>ID</th>
+                  <th>Storage</th>
                   <th>Package</th>
                   <th>Version</th>
                   <th>Size</th>
@@ -357,6 +431,9 @@ export function AuditDetailPage() {
                 {apkFiles.map((apk) => (
                   <tr key={apk.id}>
                     <td>#{apk.id}</td>
+                    <td>
+                      <StatusBadge value={apk.storage_status || "unknown"} />
+                    </td>
                     <td>{apk.package_name || "Pending analysis"}</td>
                     <td>{apk.version_name || "—"}</td>
                     <td>{formatBytes(apk.size_bytes)}</td>
