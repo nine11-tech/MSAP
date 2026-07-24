@@ -38,6 +38,71 @@ flowchart LR
 ## Deploiement
 Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTTPS, Secrets, ConfigMaps, Services, Deployments, workers, Jobs, PVC, NetworkPolicies et packaging Helm. Docker Compose est conserve uniquement pour le developpement local et les tests rapides.
 
+## Docker Compose development stack
+
+The repository includes a development/demo stack with PostgreSQL, Redis, MinIO,
+automatic MinIO initialization, Django, a Celery worker, and the Vite frontend.
+Kubernetes remains the production deployment target.
+
+Create the local environment file and start the full stack:
+
+```bash
+cp .env.compose.example .env
+docker compose up --build
+```
+
+The example values are intentionally development-only. Change them if the stack
+is reachable by other machines, and never reuse them in production.
+
+Service URLs:
+
+- Frontend: `http://localhost:5173`
+- Backend: `http://localhost:8000`
+- API documentation: `http://localhost:8000/api/docs/`
+- Backend health: `http://localhost:8000/api/health/`
+- MinIO API: `http://localhost:9000`
+- MinIO console: `http://localhost:9001`
+
+Compose uses one private default network. Containers address PostgreSQL, Redis,
+and MinIO by their service names (`postgres`, `redis`, and `minio`). The backend
+therefore uses `MINIO_ENDPOINT=http://minio:9000` for object metadata and
+downloads. Presigned URLs are generated with
+`MINIO_PUBLIC_ENDPOINT=http://localhost:9000`, which is reachable from the host
+browser. Outside Compose, the public endpoint falls back to `MINIO_ENDPOINT`.
+
+The one-shot `minio-init` service waits for MinIO and creates the five configured
+buckets when absent. It is idempotent and does not enable anonymous access.
+Community MinIO does not implement the S3 per-bucket CORS API, so Compose uses
+its supported cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` setting with only the
+two Vite development origins—never `*`. The intended narrow APK-bucket policy,
+including its required methods and headers, is retained in
+`docker/minio/cors.xml` for compatible S3 deployments. The backend waits for
+healthy dependencies, runs migrations and rule validation, then starts Django.
+The worker starts after the backend is healthy.
+
+Useful lifecycle commands:
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f worker
+docker compose down
+```
+
+To completely reset the development databases and object storage:
+
+```bash
+docker compose down -v
+```
+
+`down -v` permanently deletes the Compose PostgreSQL, Redis, MinIO, and frontend
+dependency volumes.
+
+For the first end-to-end check, open the frontend, create a project and audit,
+upload an authorized APK, start analysis, wait for status polling to complete,
+then review findings, ATT&CK triage indicators, evidence, scores, and the JSON
+report.
+
 ## Backend status
 The backend foundation has started in [backend](backend/README.md): Django settings, metadata models, `ObjectStorageReference`, YAML rule loaders, the `validate_rules` command and unit tests.
 

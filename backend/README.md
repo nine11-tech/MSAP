@@ -96,6 +96,8 @@ Configure MinIO with:
 
 ```env
 MINIO_ENDPOINT=http://localhost:9000
+# Optional browser-visible signing endpoint; defaults to MINIO_ENDPOINT.
+MINIO_PUBLIC_ENDPOINT=http://localhost:9000
 MINIO_ACCESS_KEY=your-access-key
 MINIO_SECRET_KEY=your-secret-key
 MINIO_SECURE=false
@@ -109,6 +111,10 @@ MSAP_MAX_APK_SIZE_BYTES=524288000
 ```
 
 Tests mock the MinIO/boto3 service and do not require a running MinIO server.
+Server-side `head_object` and download calls always use `MINIO_ENDPOINT`.
+Presigned upload and download URLs use `MINIO_PUBLIC_ENDPOINT`, allowing the
+Compose backend to access `http://minio:9000` while returning
+`http://localhost:9000` URLs to the browser.
 
 ## MinIO Download-to-Temporary-File Provider
 
@@ -182,13 +188,24 @@ Response:
 
 The client uploads the APK bytes directly to `upload_url` with every header in `required_headers`. The signed `Content-Type` value must match exactly. V1.0 accepts `.apk` files only; `.aab` and `.ipa` are rejected. This endpoint does not parse the APK or start analysis.
 
-For browser uploads, configure bucket CORS on the APK upload bucket. A minimal development rule must allow the exact Vite origin, `PUT` and `HEAD`, and the `Content-Type` header. MinIO Client applies an XML configuration with:
+For browser uploads, CORS must allow the exact Vite origin, `PUT` and `HEAD`,
+and the `Content-Type` header. On an S3-compatible deployment that implements
+bucket CORS, MinIO Client can apply the policy in `docker/minio/cors.xml` with:
 
 ```bash
 mc cors set local/msap-apk-uploads cors.xml
 ```
 
-The configured `MINIO_ENDPOINT` must be browser-reachable because the backend embeds it in the presigned URL. See `../frontend/README.md` for a complete development CORS example. A full Docker Compose environment is intentionally deferred to the next sprint.
+Community MinIO does not implement that per-bucket API; configure its
+`MINIO_API_CORS_ALLOW_ORIGIN` setting with the exact frontend origins instead.
+
+The configured `MINIO_PUBLIC_ENDPOINT` must be browser-reachable because the
+backend embeds it in the presigned URL. The root Compose stack configures this
+as `http://localhost:9000` and sets Community MinIO's cluster-wide CORS origin
+allowlist to the two exact Vite development origins. Community MinIO does not
+implement the S3 per-bucket CORS API; `docker/minio/cors.xml` records the
+intended narrower policy for compatible S3 deployments. See
+`../frontend/README.md` for manual and Compose workflows.
 
 After the object upload succeeds, confirm metadata:
 

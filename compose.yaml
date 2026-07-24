@@ -1,0 +1,169 @@
+x-backend-environment: &backend-environment
+  DJANGO_SETTINGS_MODULE: msap.settings.development
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-unsafe-compose-development-key}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-true}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,backend}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:8000}
+  DJANGO_CORS_ALLOWED_ORIGINS: ${DJANGO_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+  MSAP_ENVIRONMENT: development
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:-msap}
+  POSTGRES_USER: ${POSTGRES_USER:-msap_app}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-msap-dev-password}
+  POSTGRES_SSLMODE: disable
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  CELERY_TASK_ALWAYS_EAGER: "false"
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-msap-dev}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-msap-dev-password}
+  MINIO_SECURE: "false"
+  MINIO_BUCKET_APK_UPLOADS: ${MINIO_BUCKET_APK_UPLOADS:-msap-apk-uploads}
+  MINIO_BUCKET_ARTIFACTS: ${MINIO_BUCKET_ARTIFACTS:-msap-artifacts}
+  MINIO_BUCKET_EVIDENCE: ${MINIO_BUCKET_EVIDENCE:-msap-evidence}
+  MINIO_BUCKET_REPORTS: ${MINIO_BUCKET_REPORTS:-msap-reports}
+  MINIO_BUCKET_EXPORTS: ${MINIO_BUCKET_EXPORTS:-msap-exports}
+  MSAP_VERIFY_UPLOAD_WITH_HEAD: "true"
+  MSAP_UPLOAD_REQUIRE_SHA256: "false"
+  ANALYZER_RULES_PATH: /app/rules
+  MSAP_VALIDATE_RULES_ON_STARTUP: ${MSAP_VALIDATE_RULES_ON_STARTUP:-true}
+
+services:
+  postgres:
+    image: postgres:17.10-alpine3.23
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-msap}
+      POSTGRES_USER: ${POSTGRES_USER:-msap_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-msap-dev-password}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  redis:
+    image: redis:7.4.9-alpine3.21
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-msap-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-msap-dev-password}
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      # The bundled client probes MinIO's readiness endpoint.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    entrypoint: ["/bin/sh", "/opt/msap/init.sh"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-msap-dev}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-msap-dev-password}
+      MINIO_BUCKET_APK_UPLOADS: ${MINIO_BUCKET_APK_UPLOADS:-msap-apk-uploads}
+      MINIO_BUCKET_ARTIFACTS: ${MINIO_BUCKET_ARTIFACTS:-msap-artifacts}
+      MINIO_BUCKET_EVIDENCE: ${MINIO_BUCKET_EVIDENCE:-msap-evidence}
+      MINIO_BUCKET_REPORTS: ${MINIO_BUCKET_REPORTS:-msap-reports}
+      MINIO_BUCKET_EXPORTS: ${MINIO_BUCKET_EXPORTS:-msap-exports}
+    volumes:
+      - ./docker/minio/init.sh:/opt/msap/init.sh:ro
+      - ./docker/minio/cors.xml:/opt/msap/cors.xml:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    image: msap-backend:dev
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.dev
+    environment: *backend-environment
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./rules:/app/rules:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  worker:
+    image: msap-backend:dev
+    command: ["celery", "-A", "msap", "worker", "-l", "info"]
+    environment: *backend-environment
+    volumes:
+      - ./backend:/app/backend
+      - ./rules:/app/rules:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile.dev
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000/api}
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  frontend_node_modules:
