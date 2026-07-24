@@ -37,6 +37,7 @@
 | Variable | Required | Secret |
 |---|---|---|
 | `MINIO_ENDPOINT` | Yes | No |
+| `MINIO_PUBLIC_ENDPOINT` | Browser presigned URLs | No |
 | `MINIO_ACCESS_KEY` | Yes | Yes |
 | `MINIO_SECRET_KEY` | Yes | Yes |
 | `MINIO_REGION` | Optional | No |
@@ -80,4 +81,3 @@ AI variables are reserved for V1.1 or later and must default to disabled:
 - `AI_REDACTION_ENABLED=true`
 - `AI_MAX_FINDINGS_CONTEXT`
 - `AI_TIMEOUT_SECONDS`
-

@@ -1,0 +1,209 @@
+# MSAP Helm defaults are intended for a small demonstration installation.
+# Replace every CHANGE-ME value and use externally managed stateful services for
+# serious production workloads.
+
+global:
+  environment: production
+  imagePullSecrets: []
+  djangoAllowedHosts: "msap.example.com"
+  csrfTrustedOrigins: "https://msap.example.com"
+  corsAllowedOrigins: "https://msap.example.com"
+
+backend:
+  replicaCount: 1
+  image:
+    repository: msap-backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  gunicorn:
+    workers: 3
+    timeout: 120
+  serviceAccount:
+    create: true
+    name: ""
+  podAnnotations: {}
+
+worker:
+  replicaCount: 1
+  image:
+    repository: msap-backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  concurrency: 2
+  queue: analysis
+  terminationGracePeriodSeconds: 60
+  serviceAccount:
+    create: true
+    name: ""
+  podAnnotations: {}
+
+frontend:
+  replicaCount: 1
+  image:
+    repository: msap-frontend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  serviceAccount:
+    create: true
+    name: ""
+  podAnnotations: {}
+
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "17.10-alpine3.23"
+    pullPolicy: IfNotPresent
+  database: msap
+  port: 5432
+  sslMode: disable
+  # Used only when enabled=false. Store credentials in this URL carefully.
+  externalDatabaseUrl: ""
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: "7.4.9-alpine3.21"
+    pullPolicy: IfNotPresent
+  port: 6379
+  externalBrokerUrl: ""
+  externalResultBackend: ""
+
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: "RELEASE.2025-09-07T16-13-09Z"
+    pullPolicy: IfNotPresent
+  clientImage:
+    repository: minio/mc
+    tag: "RELEASE.2025-08-13T08-35-41Z"
+    pullPolicy: IfNotPresent
+  apiPort: 9000
+  consolePort: 9001
+  externalEndpoint: ""
+  # Must be resolvable and reachable by the user's browser.
+  publicEndpoint: "https://storage.msap.example.com"
+  secure: false
+  init:
+    enabled: true
+    applyBucketCors: false
+    maxAttempts: 30
+  buckets:
+    apkUploads: msap-apk-uploads
+    artifacts: msap-artifacts
+    evidence: msap-evidence
+    reports: msap-reports
+    exports: msap-exports
+
+secrets:
+  # When set, the chart does not create a Secret. See README for required keys.
+  existingSecret: ""
+  djangoSecretKey: "CHANGE-ME-DEMO-ONLY"
+  postgresqlUsername: msap_app
+  postgresqlPassword: "CHANGE-ME-DEMO-ONLY"
+  minioAccessKey: msap
+  minioSecretKey: "CHANGE-ME-DEMO-ONLY"
+
+application:
+  maxApkSizeBytes: 524288000
+  presignedUrlExpiresSeconds: 900
+  uploadRequireSha256: false
+  verifyUploadWithHead: true
+  analyzerTimeoutSeconds: 600
+  celeryTaskTimeLimit: 900
+
+persistence:
+  postgresql:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 8Gi
+  redis:
+    enabled: false
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+  minio:
+    enabled: true
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 20Gi
+
+resources:
+  backend:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  worker:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  frontend:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+  postgresql:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  redis:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  minio:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+securityContext:
+  applicationUser: 10001
+  frontendUser: 101
+  postgresqlUser: 999
+  redisUser: 999
+  minioUser: 1000
+
+migrations:
+  enabled: true
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: msap.example.com
+  tls: []
+  storage:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: storage.msap.example.com
+    tls: []

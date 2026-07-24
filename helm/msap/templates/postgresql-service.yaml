@@ -1,0 +1,17 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "msap.componentName" (dict "root" . "component" "postgresql") }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgresql
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "msap.selectorLabels" (dict "root" . "component" "postgresql") | nindent 4 }}
+  ports:
+    - name: postgresql
+      port: {{ .Values.postgresql.port }}
+      targetPort: postgresql
+{{- end }}

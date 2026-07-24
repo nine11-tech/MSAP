@@ -1,0 +1,20 @@
+MSAP has been installed in namespace {{ .Release.Namespace }}.
+
+{{- if .Values.ingress.enabled }}
+Application hosts:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+{{- else }}
+Port-forward the frontend:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "msap.componentName" (dict "root" . "component" "frontend") }} 8080:{{ .Values.frontend.service.port }}
+
+Port-forward MinIO for local browser uploads:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "msap.componentName" (dict "root" . "component" "minio") }} 9000:{{ .Values.minio.apiPort }}
+{{- end }}
+
+Check workloads:
+  kubectl -n {{ .Release.Namespace }} get pods,jobs
+
+The configured browser-facing MinIO endpoint is:
+  {{ .Values.minio.publicEndpoint }}

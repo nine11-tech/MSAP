@@ -1,0 +1,66 @@
+global:
+  environment: local
+  djangoAllowedHosts: "localhost,127.0.0.1"
+  csrfTrustedOrigins: "http://localhost:8080"
+  corsAllowedOrigins: "http://localhost:8080"
+
+backend:
+  image:
+    repository: msap-backend
+    tag: local
+    pullPolicy: Never
+
+worker:
+  image:
+    repository: msap-backend
+    tag: local
+    pullPolicy: Never
+  concurrency: 1
+
+frontend:
+  image:
+    repository: msap-frontend
+    tag: local
+    pullPolicy: Never
+
+minio:
+  publicEndpoint: "http://localhost:9000"
+
+persistence:
+  postgresql:
+    size: 2Gi
+  minio:
+    size: 4Gi
+
+resources:
+  backend:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  worker:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  postgresql:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  minio:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+ingress:
+  enabled: false

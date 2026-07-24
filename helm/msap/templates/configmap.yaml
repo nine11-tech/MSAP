@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "msap.configMapName" . }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+data:
+  DJANGO_SETTINGS_MODULE: msap.settings.production
+  DJANGO_DEBUG: "false"
+  DJANGO_ALLOWED_HOSTS: {{ .Values.global.djangoAllowedHosts | quote }}
+  DJANGO_CSRF_TRUSTED_ORIGINS: {{ .Values.global.csrfTrustedOrigins | quote }}
+  DJANGO_CORS_ALLOWED_ORIGINS: {{ .Values.global.corsAllowedOrigins | quote }}
+  CORS_ALLOWED_ORIGINS: {{ .Values.global.corsAllowedOrigins | quote }}
+  MSAP_ENVIRONMENT: {{ .Values.global.environment | quote }}
+  POSTGRES_HOST: {{ include "msap.postgresqlHost" . | quote }}
+  POSTGRES_PORT: {{ .Values.postgresql.port | quote }}
+  POSTGRES_DB: {{ .Values.postgresql.database | quote }}
+  POSTGRES_SSLMODE: {{ .Values.postgresql.sslMode | quote }}
+  {{- if .Values.redis.enabled }}
+  REDIS_URL: {{ include "msap.redisBrokerUrl" . | quote }}
+  CELERY_BROKER_URL: {{ include "msap.redisBrokerUrl" . | quote }}
+  CELERY_RESULT_BACKEND: {{ include "msap.redisResultBackend" . | quote }}
+  {{- end }}
+  CELERY_TASK_ALWAYS_EAGER: "false"
+  CELERY_TASK_DEFAULT_QUEUE: {{ .Values.worker.queue | quote }}
+  CELERY_TASK_TIME_LIMIT: {{ .Values.application.celeryTaskTimeLimit | quote }}
+  MINIO_ENDPOINT: {{ include "msap.minioEndpoint" . | quote }}
+  MINIO_PUBLIC_ENDPOINT: {{ required "minio.publicEndpoint is required" .Values.minio.publicEndpoint | quote }}
+  MINIO_SECURE: {{ .Values.minio.secure | quote }}
+  MINIO_BUCKET_APK_UPLOADS: {{ .Values.minio.buckets.apkUploads | quote }}
+  MINIO_BUCKET_ARTIFACTS: {{ .Values.minio.buckets.artifacts | quote }}
+  MINIO_BUCKET_EVIDENCE: {{ .Values.minio.buckets.evidence | quote }}
+  MINIO_BUCKET_REPORTS: {{ .Values.minio.buckets.reports | quote }}
+  MINIO_BUCKET_EXPORTS: {{ .Values.minio.buckets.exports | quote }}
+  MSAP_MAX_APK_SIZE_BYTES: {{ printf "%.0f" .Values.application.maxApkSizeBytes | quote }}
+  MSAP_PRESIGNED_URL_EXPIRES_SECONDS: {{ .Values.application.presignedUrlExpiresSeconds | quote }}
+  MSAP_UPLOAD_REQUIRE_SHA256: {{ .Values.application.uploadRequireSha256 | quote }}
+  MSAP_VERIFY_UPLOAD_WITH_HEAD: {{ .Values.application.verifyUploadWithHead | quote }}
+  MSAP_VERIFY_DOWNLOADED_APK_SHA256: "true"
+  MSAP_REDACTION_ENABLED: "true"
+  ANALYZER_RULES_PATH: /app/rules
+  ANALYZER_WORKDIR: /tmp/msap-analysis
+  ANALYZER_TIMEOUT_SECONDS: {{ .Values.application.analyzerTimeoutSeconds | quote }}
+  REPORT_DEFAULT_FORMAT: json
+  REPORT_BUCKET: {{ .Values.minio.buckets.reports | quote }}
+  EXPORT_BUCKET: {{ .Values.minio.buckets.exports | quote }}
+  REPORT_INCLUDE_EVIDENCE: "true"
+  REPORT_REDACTION_REQUIRED: "true"
+  AI_ASSISTANT_ENABLED: "false"

@@ -1,0 +1,50 @@
+{{- if .Values.minio.init.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "msap.componentName" (dict "root" . "component" "minio-init") }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+data:
+  init.sh: |
+    #!/bin/sh
+    set -eu
+    alias_name=msap
+    attempt=1
+    until mc --config-dir /tmp/mc alias set "$alias_name" "$MINIO_ENDPOINT" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null 2>&1 \
+      && mc --config-dir /tmp/mc ready "$alias_name" >/dev/null 2>&1
+    do
+      if [ "$attempt" -ge "$MINIO_INIT_MAX_ATTEMPTS" ]; then
+        echo "MinIO was not ready after ${MINIO_INIT_MAX_ATTEMPTS} attempts." >&2
+        exit 1
+      fi
+      echo "Waiting for MinIO (${attempt}/${MINIO_INIT_MAX_ATTEMPTS})..."
+      attempt=$((attempt + 1))
+      sleep 2
+    done
+    for bucket in "$MINIO_BUCKET_APK_UPLOADS" "$MINIO_BUCKET_ARTIFACTS" "$MINIO_BUCKET_EVIDENCE" "$MINIO_BUCKET_REPORTS" "$MINIO_BUCKET_EXPORTS"
+    do
+      mc --config-dir /tmp/mc mb --ignore-existing "$alias_name/$bucket"
+    done
+    if [ "$MINIO_APPLY_BUCKET_CORS" = "true" ]; then
+      mc --config-dir /tmp/mc cors set "$alias_name/$MINIO_BUCKET_APK_UPLOADS" /opt/msap/cors.xml
+    fi
+    echo "MinIO buckets are ready."
+  cors.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <CORSRule>
+        {{- range (splitList "," .Values.global.corsAllowedOrigins) }}
+        <AllowedOrigin>{{ trim . }}</AllowedOrigin>
+        {{- end }}
+        <AllowedMethod>PUT</AllowedMethod>
+        <AllowedMethod>GET</AllowedMethod>
+        <AllowedMethod>HEAD</AllowedMethod>
+        <AllowedHeader>Content-Type</AllowedHeader>
+        <AllowedHeader>x-amz-*</AllowedHeader>
+        <ExposeHeader>ETag</ExposeHeader>
+        <MaxAgeSeconds>3600</MaxAgeSeconds>
+      </CORSRule>
+    </CORSConfiguration>
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if and .Values.redis.enabled .Values.persistence.redis.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "msap.componentName" (dict "root" . "component" "redis-data") }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.redis.accessModes | nindent 4 }}
+  {{- with .Values.persistence.redis.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.redis.size }}
+{{- end }}

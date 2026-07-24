@@ -1,0 +1,60 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "msap.componentName" (dict "root" . "component" "migrate") }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "msap.selectorLabels" (dict "root" . "component" "migration") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "msap.backendServiceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.applicationUser }}
+        runAsGroup: {{ .Values.securityContext.applicationUser }}
+        fsGroup: {{ .Values.securityContext.applicationUser }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - python manage.py migrate --noinput && python manage.py validate_rules
+          envFrom:
+            - configMapRef:
+                name: {{ include "msap.configMapName" . }}
+            - secretRef:
+                name: {{ include "msap.secretName" . }}
+          resources:
+            {{- toYaml .Values.resources.backend | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

@@ -1,7 +1,10 @@
 # Helm Values Contract - MSAP
 
 ## Purpose
-This is the expected shape of the future `values.yaml`. It is a contract, not a chart implementation.
+This contract is implemented by the baseline chart in `helm/msap/`. The chart
+intentionally covers the current application, worker, stateful-service,
+persistence, ingress, migration, and MinIO initialization needs; advanced
+autoscaling, AI, and optional analyzers remain deferred.
 
 ## Sections
 - `global`
@@ -75,4 +78,3 @@ aiAssistant:
 - Enable TLS for production ingress.
 - Prefer non-root containers and no privilege escalation.
 - Keep AI disabled by default.
-

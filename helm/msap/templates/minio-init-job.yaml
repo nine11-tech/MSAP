@@ -1,0 +1,87 @@
+{{- if .Values.minio.init.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "msap.componentName" (dict "root" . "component" "minio-init") }}
+  labels:
+    {{- include "msap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "msap.selectorLabels" (dict "root" . "component" "minio-init") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.minioUser }}
+        runAsGroup: {{ .Values.securityContext.minioUser }}
+        fsGroup: {{ .Values.securityContext.minioUser }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: initialize
+          image: "{{ .Values.minio.clientImage.repository }}:{{ .Values.minio.clientImage.tag }}"
+          imagePullPolicy: {{ .Values.minio.clientImage.pullPolicy }}
+          command: ["/bin/sh", "/opt/msap/init.sh"]
+          env:
+            - name: MINIO_ENDPOINT
+              value: {{ include "msap.minioEndpoint" . | quote }}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "msap.secretName" . }}
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "msap.secretName" . }}
+                  key: MINIO_SECRET_KEY
+            - name: MINIO_BUCKET_APK_UPLOADS
+              value: {{ .Values.minio.buckets.apkUploads | quote }}
+            - name: MINIO_BUCKET_ARTIFACTS
+              value: {{ .Values.minio.buckets.artifacts | quote }}
+            - name: MINIO_BUCKET_EVIDENCE
+              value: {{ .Values.minio.buckets.evidence | quote }}
+            - name: MINIO_BUCKET_REPORTS
+              value: {{ .Values.minio.buckets.reports | quote }}
+            - name: MINIO_BUCKET_EXPORTS
+              value: {{ .Values.minio.buckets.exports | quote }}
+            - name: MINIO_INIT_MAX_ATTEMPTS
+              value: {{ .Values.minio.init.maxAttempts | quote }}
+            - name: MINIO_APPLY_BUCKET_CORS
+              value: {{ .Values.minio.init.applyBucketCors | quote }}
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/msap
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "msap.componentName" (dict "root" . "component" "minio-init") }}
+            defaultMode: 0555
+        - name: tmp
+          emptyDir: {}
+{{- end }}
