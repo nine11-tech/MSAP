@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "backend": {
+      "type": "object",
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1}
+      }
+    },
+    "worker": {
+      "type": "object",
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1},
+        "concurrency": {"type": "integer", "minimum": 1}
+      }
+    },
+    "frontend": {
+      "type": "object",
+      "properties": {
+        "replicaCount": {"type": "integer", "minimum": 1}
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "properties": {"enabled": {"type": "boolean"}}
+    },
+    "redis": {
+      "type": "object",
+      "properties": {"enabled": {"type": "boolean"}}
+    },
+    "minio": {
+      "type": "object",
+      "properties": {"enabled": {"type": "boolean"}}
+    },
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "postgresql": {"$ref": "#/$defs/persistence"},
+        "redis": {"$ref": "#/$defs/persistence"},
+        "minio": {"$ref": "#/$defs/persistence"}
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["host"],
+            "properties": {"host": {"type": "string", "minLength": 1}}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "persistence": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "size": {"type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$"},
+        "storageClass": {"type": "string"},
+        "accessModes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}

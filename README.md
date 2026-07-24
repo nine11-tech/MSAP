@@ -103,6 +103,43 @@ upload an authorized APK, start analysis, wait for status polling to complete,
 then review findings, ATT&CK triage indicators, evidence, scores, and the JSON
 report.
 
+## Kubernetes and Helm deployment
+
+Docker Compose remains the local development/demo workflow. Kubernetes is the
+deployment target, packaged by the baseline chart in
+[helm/msap](helm/msap/README.md).
+
+Build and publish the production backend and frontend images to a registry that
+your cluster can pull from, provide production credentials outside Git, then
+install or upgrade:
+
+```bash
+helm upgrade --install msap ./helm/msap \
+  --namespace msap \
+  --create-namespace
+```
+
+The chart deploys the Django API, Celery worker, nginx-served React frontend,
+optional single-instance PostgreSQL, Redis and MinIO, persistent storage,
+health probes, migration and MinIO initialization Jobs, and optional Ingress.
+The worker reuses the backend image. Embedded stateful services suit a
+demonstration or small installation; production should prefer separately
+operated stateful services and externally managed Secrets.
+
+The backend uses the internal Kubernetes MinIO Service for object operations.
+`minio.publicEndpoint` must be externally reachable because it is embedded in
+browser-facing presigned URLs. The chart never exposes the MinIO administrative
+console through Ingress.
+
+Uninstall application resources with:
+
+```bash
+helm uninstall msap --namespace msap
+```
+
+PVCs may be retained by the cluster and should be reviewed separately before
+deletion.
+
 ## Backend status
 The backend foundation has started in [backend](backend/README.md): Django settings, metadata models, `ObjectStorageReference`, YAML rule loaders, the `validate_rules` command and unit tests.
 

@@ -11,3 +11,4 @@ drf-spectacular
 androguard
 pytest
 pytest-django
+gunicorn
