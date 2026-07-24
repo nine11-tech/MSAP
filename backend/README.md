@@ -78,6 +78,8 @@ Read-only analysis result endpoints:
 - `GET /api/reports/`
 - `GET /api/reports/{id}/`
 
+Finding, indicator, evidence, score, report, raw-result, and normalized-artifact list endpoints accept `?audit=<audit_id>` for audit-scoped retrieval.
+
 Health response:
 
 ```json
@@ -171,11 +173,22 @@ Response:
   "bucket": "msap-apk-uploads",
   "object_key": "projects/1/audits/1/apk_upload/uuid-sample.apk",
   "upload_url": "http://localhost:9000/...",
-  "expires_in": 900
+  "expires_in": 900,
+  "required_headers": {
+    "Content-Type": "application/vnd.android.package-archive"
+  }
 }
 ```
 
-The client uploads the APK bytes directly to `upload_url` with the same `Content-Type`. V1.0 accepts `.apk` files only; `.aab` and `.ipa` are rejected. This endpoint does not parse the APK or start analysis.
+The client uploads the APK bytes directly to `upload_url` with every header in `required_headers`. The signed `Content-Type` value must match exactly. V1.0 accepts `.apk` files only; `.aab` and `.ipa` are rejected. This endpoint does not parse the APK or start analysis.
+
+For browser uploads, configure bucket CORS on the APK upload bucket. A minimal development rule must allow the exact Vite origin, `PUT` and `HEAD`, and the `Content-Type` header. MinIO Client applies an XML configuration with:
+
+```bash
+mc cors set local/msap-apk-uploads cors.xml
+```
+
+The configured `MINIO_ENDPOINT` must be browser-reachable because the backend embeds it in the presigned URL. See `../frontend/README.md` for a complete development CORS example. A full Docker Compose environment is intentionally deferred to the next sprint.
 
 After the object upload succeeds, confirm metadata:
 

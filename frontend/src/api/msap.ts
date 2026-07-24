@@ -36,6 +36,22 @@ export const initiateApkUpload = (
     `audits/${auditId}/apk-upload/initiate/`,
     data,
   );
+export async function uploadApkFile(
+  contract: UploadContract,
+  file: File,
+): Promise<void> {
+  const response = await fetch(contract.upload_url, {
+    method: "PUT",
+    headers: contract.required_headers,
+    body: file,
+  });
+  if (!response.ok) {
+    throw new Error(
+      `MinIO upload failed with HTTP ${response.status}. ` +
+        "Check the presigned URL and MinIO CORS policy.",
+    );
+  }
+}
 export const confirmApkUpload = (
   apkFileId: number,
   data: { size_bytes?: number; sha256?: string },
@@ -50,12 +66,19 @@ export const startAnalysis = (auditId: number) =>
 export const getAnalysisStatus = (auditId: number) =>
   apiGet<AnalysisStatusResponse>(`audits/${auditId}/analysis/status/`);
 
-export const listFindings = () => apiGet<Finding[]>("findings/");
-export const listIndicators = () => apiGet<Indicator[]>("indicators/");
-export const listEvidence = () => apiGet<Evidence[]>("evidence/");
-export const listRiskScores = () => apiGet<RiskScore[]>("risk-scores/");
-export const listComplianceScores = () =>
-  apiGet<ComplianceScore[]>("compliance-scores/");
+const auditQuery = (auditId?: number) =>
+  auditId === undefined ? "" : `?audit=${encodeURIComponent(auditId)}`;
+
+export const listFindings = (auditId?: number) =>
+  apiGet<Finding[]>(`findings/${auditQuery(auditId)}`);
+export const listIndicators = (auditId?: number) =>
+  apiGet<Indicator[]>(`indicators/${auditQuery(auditId)}`);
+export const listEvidence = (auditId?: number) =>
+  apiGet<Evidence[]>(`evidence/${auditQuery(auditId)}`);
+export const listRiskScores = (auditId?: number) =>
+  apiGet<RiskScore[]>(`risk-scores/${auditQuery(auditId)}`);
+export const listComplianceScores = (auditId?: number) =>
+  apiGet<ComplianceScore[]>(`compliance-scores/${auditQuery(auditId)}`);
 
 export const getJsonReport = (auditId: number) =>
   apiGet<JsonReport>(`audits/${auditId}/report/json/`);

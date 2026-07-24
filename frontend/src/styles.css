@@ -532,6 +532,45 @@ tbody tr:last-child td {
   border-radius: 9px;
 }
 
+.upload-state {
+  margin-bottom: 1rem;
+  padding: 0.45rem 0.7rem;
+  display: inline-flex;
+  color: #334155;
+  background: #e2e8f0;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.upload-initiating,
+.upload-uploading,
+.upload-confirming {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.upload-uploaded {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.upload-failed {
+  color: #991b1b;
+  background: #fee2e2;
+}
+
+.file-details,
+.upload-contract-details {
+  margin-bottom: 1rem;
+}
+
+.polling-indicator {
+  color: #0369a1;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
 .contract-url {
   margin: 0.8rem 0 1rem;
   display: block;

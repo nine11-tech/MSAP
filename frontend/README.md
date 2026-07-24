@@ -1,6 +1,6 @@
 # MSAP Frontend
 
-Minimal React and TypeScript dashboard for the MSAP backend MVP. It supports project and audit creation, APK upload-contract initiation, manual upload confirmation, analysis controls, result review, scoring, and on-demand JSON reports.
+Minimal React and TypeScript dashboard for the MSAP backend MVP. It supports project and audit creation, direct browser-to-MinIO APK upload, automatic upload confirmation, analysis status polling, result review, scoring, and on-demand JSON reports.
 
 ## Requirements
 
@@ -49,6 +49,35 @@ celery -A msap worker -l info
 
 The backend allows the default Vite origins. Override `DJANGO_CORS_ALLOWED_ORIGINS` when using a different frontend origin.
 
+## MinIO browser CORS
+
+The browser uploads APK bytes directly to the presigned MinIO URL, so the APK bucket must allow `PUT` requests from the Vite origin and accept the signed `Content-Type` header. Example `cors.xml`:
+
+```xml
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>http://127.0.0.1:5173</AllowedOrigin>
+    <AllowedOrigin>http://localhost:5173</AllowedOrigin>
+    <AllowedMethod>PUT</AllowedMethod>
+    <AllowedMethod>HEAD</AllowedMethod>
+    <AllowedHeader>Content-Type</AllowedHeader>
+    <AllowedHeader>x-amz-*</AllowedHeader>
+    <ExposeHeader>ETag</ExposeHeader>
+    <MaxAgeSeconds>3600</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>
+```
+
+Apply it with a configured MinIO Client alias:
+
+```bash
+mc cors set local/msap-apk-uploads cors.xml
+```
+
+Replace `local` and the bucket name for your environment. This follows MinIO's documented [`mc cors set`](https://docs.min.io/aistor/reference/cli/mc-cors/mc-cors-set/) bucket configuration flow. It configures CORS only; the presigned URL still authorizes each upload.
+
+`MINIO_ENDPOINT` must also be reachable from the user's browser because it is embedded in the presigned URL. For local development, prefer a browser-visible endpoint such as `http://127.0.0.1:9000` instead of a Docker-only service hostname. A reproducible Docker Compose development stack is deferred to the next infrastructure sprint.
+
 ## Production build check
 
 ```bash
@@ -62,18 +91,18 @@ The generated `dist/` directory and `node_modules/` are ignored by Git.
 1. Start the Django backend, Redis/Celery if required, and the Vite frontend.
 2. Open **Projects** and create a project with a name and description.
 3. Open the project and create an audit.
-4. Open the audit, enter APK filename, content type, size, and optional SHA-256, then select **Initiate upload**.
-5. Review the returned MinIO bucket, object key, and presigned URL.
-6. Upload the APK to the presigned URL externally if MinIO and CORS are configured, then use **Confirm upload metadata**.
-7. Select **Start analysis**, then use **Refresh status and results**.
+4. Ensure the MinIO APK bucket has a CORS rule for the exact frontend origin.
+5. Open the audit, choose an `.apk` file, then select **Upload and confirm APK**.
+6. Observe the `initiating`, `uploading`, `confirming`, and `uploaded` states. The UI sends the file with the headers returned by the backend and confirms metadata automatically.
+7. Select **Start analysis** and observe the job status. The page polls every two seconds until the job completes or fails; **Refresh status and results** remains available.
 8. Review APK metadata, findings, ATT&CK indicators, evidence, risk, and MASVS compliance.
 9. Open **View JSON report** and review the structured sections or formatted raw response.
 
 ## Known limitations
 
-- Browser PUT of APK bytes to the MinIO presigned URL is deferred. The UI displays the contract and provides manual backend confirmation only.
-- Analysis status refresh is manual; there is no polling or live task stream.
-- The backend result list endpoints do not currently filter by audit, so the MVP client retrieves each list and filters it locally.
+- Native Fetch does not expose portable upload progress events, so the UI shows upload phases rather than a percentage.
+- Browser SHA-256 calculation is deferred; server-side download verification still uses a digest when one is available.
+- MinIO and its bucket CORS policy must be configured separately; Docker Compose automation is deferred.
 - Authentication and role-based access control are not implemented.
 - There is no PDF report, dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
 - ATT&CK Mobile indicators are triage signals, not malware verdicts.

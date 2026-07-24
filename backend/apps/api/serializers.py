@@ -58,6 +58,12 @@ class ObjectStorageReferenceSerializer(serializers.ModelSerializer):
 
 
 class APKFileSerializer(serializers.ModelSerializer):
+    storage_status = serializers.CharField(
+        source="storage_reference.storage_status",
+        read_only=True,
+        allow_null=True,
+    )
+
     class Meta:
         model = APKFile
         fields = [
@@ -68,6 +74,7 @@ class APKFileSerializer(serializers.ModelSerializer):
             "sha256",
             "size_bytes",
             "storage_reference",
+            "storage_status",
             "created_at",
         ]
         read_only_fields = ["id", "created_at"]
@@ -110,6 +117,7 @@ class APKUploadInitiateResponseSerializer(serializers.Serializer):
     object_key = serializers.CharField()
     upload_url = serializers.URLField()
     expires_in = serializers.IntegerField()
+    required_headers = serializers.DictField(child=serializers.CharField())
 
 
 class AnalyzerMetadataSerializer(serializers.Serializer):

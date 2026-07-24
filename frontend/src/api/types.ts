@@ -23,6 +23,7 @@ export interface ApkFile {
   sha256: string;
   size_bytes: number | null;
   storage_reference: number | null;
+  storage_status: string | null;
   created_at: string;
 }
 
@@ -96,6 +97,7 @@ export interface UploadContract {
   object_key: string;
   upload_url: string;
   expires_in: number;
+  required_headers: Record<string, string>;
 }
 
 export interface AnalysisStartResponse {

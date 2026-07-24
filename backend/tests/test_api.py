@@ -126,6 +126,34 @@ def test_list_findings_endpoint_works(api_client):
 
 
 @pytest.mark.django_db
+def test_findings_endpoint_filters_by_audit(api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    other_audit_id = _create_audit(api_client, project_id)
+    Finding.objects.create(
+        audit_id=audit_id,
+        rule_id="MSAP-AND-001",
+        title="Selected finding",
+        severity="High",
+        confidence="High",
+        standard="OWASP MASVS",
+    )
+    Finding.objects.create(
+        audit_id=other_audit_id,
+        rule_id="MSAP-AND-002",
+        title="Other finding",
+        severity="Medium",
+        confidence="High",
+        standard="OWASP MASVS",
+    )
+
+    response = api_client.get(f"/api/findings/?audit={audit_id}")
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()] == ["Selected finding"]
+
+
+@pytest.mark.django_db
 def test_list_raw_analyzer_results_endpoint_works(api_client):
     response = api_client.get("/api/raw-analyzer-results/")
 
@@ -175,6 +203,34 @@ def test_list_indicators_endpoint_works(api_client):
 
 
 @pytest.mark.django_db
+def test_indicators_endpoint_filters_by_audit(api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    other_audit_id = _create_audit(api_client, project_id)
+    SuspiciousIndicator.objects.create(
+        audit_id=audit_id,
+        indicator_id="MSAP-MOB-001",
+        title="Selected indicator",
+        severity="Medium",
+        confidence="Medium",
+    )
+    SuspiciousIndicator.objects.create(
+        audit_id=other_audit_id,
+        indicator_id="MSAP-MOB-002",
+        title="Other indicator",
+        severity="High",
+        confidence="High",
+    )
+
+    response = api_client.get(f"/api/indicators/?audit={audit_id}")
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()] == [
+        "Selected indicator"
+    ]
+
+
+@pytest.mark.django_db
 def test_schema_endpoint_returns_ok(api_client):
     response = api_client.get("/api/schema/")
 
@@ -212,6 +268,9 @@ def test_initiate_apk_upload_creates_metadata_and_returns_contract(
     assert response.status_code == 201
     data = response.json()
     assert data["upload_url"].startswith("http://localhost:9000/")
+    assert data["required_headers"] == {
+        "Content-Type": "application/vnd.android.package-archive"
+    }
     assert data["bucket"] == "msap-apk-uploads"
     assert f"projects/{project_id}/audits/{audit_id}" in data["object_key"]
     assert APKFile.objects.filter(id=data["apk_file_id"], audit_id=audit_id).exists()

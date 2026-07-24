@@ -133,6 +133,9 @@ class AuditViewSet(viewsets.ModelViewSet):
             "object_key": object_key,
             "upload_url": upload_url,
             "expires_in": expires_in,
+            "required_headers": {
+                "Content-Type": serializer.validated_data["content_type"],
+            },
         }
         return Response(response, status=status.HTTP_201_CREATED)
 
@@ -286,12 +289,24 @@ class ObjectStorageReferenceViewSet(viewsets.ModelViewSet):
     serializer_class = ObjectStorageReferenceSerializer
 
 
-class FindingViewSet(viewsets.ReadOnlyModelViewSet):
+class AuditScopedQuerysetMixin:
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        audit_id = self.request.query_params.get("audit")
+        if audit_id:
+            queryset = queryset.filter(audit_id=audit_id)
+        return queryset
+
+
+class FindingViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Finding.objects.select_related("audit").all()
     serializer_class = FindingSerializer
 
 
-class RawAnalyzerResultViewSet(viewsets.ReadOnlyModelViewSet):
+class RawAnalyzerResultViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
     queryset = RawAnalyzerResult.objects.select_related(
         "audit",
         "apk_file",
@@ -300,7 +315,10 @@ class RawAnalyzerResultViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RawAnalyzerResultSerializer
 
 
-class NormalizedArtifactViewSet(viewsets.ReadOnlyModelViewSet):
+class NormalizedArtifactViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
     queryset = NormalizedArtifact.objects.select_related(
         "audit",
         "apk_file",
@@ -309,12 +327,15 @@ class NormalizedArtifactViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NormalizedArtifactSerializer
 
 
-class SuspiciousIndicatorViewSet(viewsets.ReadOnlyModelViewSet):
+class SuspiciousIndicatorViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
     queryset = SuspiciousIndicator.objects.select_related("audit").all()
     serializer_class = SuspiciousIndicatorSerializer
 
 
-class EvidenceViewSet(viewsets.ReadOnlyModelViewSet):
+class EvidenceViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Evidence.objects.select_related(
         "audit",
         "finding",
@@ -324,16 +345,19 @@ class EvidenceViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = EvidenceSerializer
 
 
-class RiskScoreViewSet(viewsets.ReadOnlyModelViewSet):
+class RiskScoreViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = RiskScore.objects.select_related("audit").all()
     serializer_class = RiskScoreSerializer
 
 
-class ComplianceScoreViewSet(viewsets.ReadOnlyModelViewSet):
+class ComplianceScoreViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
     queryset = ComplianceScore.objects.select_related("audit").all()
     serializer_class = ComplianceScoreSerializer
 
 
-class ReportViewSet(viewsets.ReadOnlyModelViewSet):
+class ReportViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Report.objects.select_related("audit", "storage_reference").all()
     serializer_class = ReportSerializer
