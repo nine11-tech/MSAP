@@ -9,6 +9,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.compose.example
 
 # Django
 *.log

@@ -7,11 +7,21 @@ from django.conf import settings
 
 class MinIOStorageService:
     def __init__(self):
+        internal_endpoint = self._endpoint_url(settings.MINIO_ENDPOINT)
+        public_endpoint = self._endpoint_url(settings.MINIO_PUBLIC_ENDPOINT)
+        client_options = {
+            "aws_access_key_id": settings.MINIO_ACCESS_KEY,
+            "aws_secret_access_key": settings.MINIO_SECRET_KEY,
+        }
         self.client = boto3.client(
             "s3",
-            endpoint_url=self._endpoint_url(),
-            aws_access_key_id=settings.MINIO_ACCESS_KEY,
-            aws_secret_access_key=settings.MINIO_SECRET_KEY,
+            endpoint_url=internal_endpoint,
+            **client_options,
+        )
+        self.presign_client = boto3.client(
+            "s3",
+            endpoint_url=public_endpoint,
+            **client_options,
         )
 
     def build_object_key(self, project_id, audit_id, object_type, filename):
@@ -34,7 +44,7 @@ class MinIOStorageService:
         content_type,
         expires_in=900,
     ):
-        return self.client.generate_presigned_url(
+        return self.presign_client.generate_presigned_url(
             "put_object",
             Params={
                 "Bucket": bucket,
@@ -45,7 +55,7 @@ class MinIOStorageService:
         )
 
     def generate_presigned_download_url(self, bucket, object_key, expires_in=900):
-        return self.client.generate_presigned_url(
+        return self.presign_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": bucket, "Key": object_key},
             ExpiresIn=expires_in,
@@ -64,8 +74,7 @@ class MinIOStorageService:
     def get_apk_upload_bucket(self):
         return settings.MINIO_BUCKET_APK_UPLOADS
 
-    def _endpoint_url(self):
-        endpoint = settings.MINIO_ENDPOINT
+    def _endpoint_url(self, endpoint):
         if endpoint.startswith(("http://", "https://")):
             return endpoint
         scheme = "https" if settings.MINIO_SECURE else "http"

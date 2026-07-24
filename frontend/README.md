@@ -28,6 +28,20 @@ VITE_API_BASE_URL=http://127.0.0.1:8000/api
 
 Restart the Vite development server after changing environment variables.
 
+## Run with the full development stack
+
+From the repository root:
+
+```bash
+cp .env.compose.example .env
+docker compose up --build
+```
+
+This starts the frontend at `http://localhost:5173` and provisions the backend,
+worker, PostgreSQL, Redis, MinIO, required buckets, and APK upload CORS policy.
+It is a development/demo environment only; Kubernetes remains the target
+deployment platform.
+
 ## Run the backend
 
 In another shell:
@@ -51,7 +65,9 @@ The backend allows the default Vite origins. Override `DJANGO_CORS_ALLOWED_ORIGI
 
 ## MinIO browser CORS
 
-The browser uploads APK bytes directly to the presigned MinIO URL, so the APK bucket must allow `PUT` requests from the Vite origin and accept the signed `Content-Type` header. Example `cors.xml`:
+The browser uploads APK bytes directly to the presigned MinIO URL, so CORS must
+allow `PUT` requests from the Vite origin and accept the signed `Content-Type`
+header. The repository's controlled policy is:
 
 ```xml
 <CORSConfiguration>
@@ -68,15 +84,26 @@ The browser uploads APK bytes directly to the presigned MinIO URL, so the APK bu
 </CORSConfiguration>
 ```
 
-Apply it with a configured MinIO Client alias:
+On an S3-compatible deployment that implements bucket CORS, apply it with a
+configured MinIO Client alias:
 
 ```bash
 mc cors set local/msap-apk-uploads cors.xml
 ```
 
-Replace `local` and the bucket name for your environment. This follows MinIO's documented [`mc cors set`](https://docs.min.io/aistor/reference/cli/mc-cors/mc-cors-set/) bucket configuration flow. It configures CORS only; the presigned URL still authorizes each upload.
+Replace `local` and the bucket name for your environment. It configures CORS
+only; the presigned URL still authorizes each upload. Community MinIO does not
+implement this per-bucket API, so use `MINIO_API_CORS_ALLOW_ORIGIN` with exact
+origins as the root Compose stack does.
 
-`MINIO_ENDPOINT` must also be reachable from the user's browser because it is embedded in the presigned URL. For local development, prefer a browser-visible endpoint such as `http://127.0.0.1:9000` instead of a Docker-only service hostname. A reproducible Docker Compose development stack is deferred to the next infrastructure sprint.
+`MINIO_PUBLIC_ENDPOINT` must be reachable from the user's browser because it is
+embedded in the presigned URL. The Compose backend uses
+`MINIO_ENDPOINT=http://minio:9000` internally and
+`MINIO_PUBLIC_ENDPOINT=http://localhost:9000` for browser-facing signatures.
+Community MinIO does not implement the S3 per-bucket CORS API, so Compose sets
+its cluster-wide origin allowlist to exactly `http://localhost:5173` and
+`http://127.0.0.1:5173`; it does not use a wildcard. The `minio-init` container
+creates all required buckets without making them anonymous.
 
 ## Production build check
 
@@ -102,7 +129,8 @@ The generated `dist/` directory and `node_modules/` are ignored by Git.
 
 - Native Fetch does not expose portable upload progress events, so the UI shows upload phases rather than a percentage.
 - Browser SHA-256 calculation is deferred; server-side download verification still uses a digest when one is available.
-- MinIO and its bucket CORS policy must be configured separately; Docker Compose automation is deferred.
+- When running services manually, MinIO buckets and CORS must still be configured
+  separately; the root Compose workflow automates both.
 - Authentication and role-based access control are not implemented.
 - There is no PDF report, dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
 - ATT&CK Mobile indicators are triage signals, not malware verdicts.
