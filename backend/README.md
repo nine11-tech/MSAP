@@ -1,8 +1,8 @@
 # MSAP Backend
 
-This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, constrained APK manifest metadata extraction, deterministic manifest rule execution, scoring, and JSON audit reporting.
+This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, constrained APK manifest metadata extraction, deterministic manifest rule execution, scoring, and JSON/PDF audit reporting.
 
-This sprint does not implement React, Kubernetes manifests, Helm charts, Kimi AI, full APK/code analysis, full MASVS/ATT&CK catalog execution, PDF generation, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
+The backend does not implement Kimi AI, full APK/code analysis, full MASVS/ATT&CK catalog execution, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
 
 ## Setup
 ```bash
@@ -41,7 +41,7 @@ celery -A msap worker -l info
 Celery uses Redis as its broker by default. For local development, run Redis with your preferred package manager or container runtime and point `REDIS_URL` or `CELERY_BROKER_URL` at it, for example `redis://localhost:6379/0`.
 
 ## API Endpoints
-The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, full MASVS/ATT&CK catalog execution, PDF reporting, or AI assistance.
+The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, full MASVS/ATT&CK catalog execution, or AI assistance.
 
 Writable metadata endpoints:
 - `GET /api/health/`
@@ -53,6 +53,7 @@ Writable metadata endpoints:
 - `POST /api/audits/{id}/analysis/start/`
 - `GET /api/audits/{id}/analysis/status/`
 - `GET /api/audits/{id}/report/json/`
+- `GET /api/audits/{id}/report/pdf/`
 - `GET|POST /api/apk-files/`
 - `GET|PUT|PATCH|DELETE /api/apk-files/{id}/`
 - `POST /api/apk-files/{id}/confirm-upload/`
@@ -309,7 +310,7 @@ An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Andr
 
 `APKFileProvider` uses `MSAP_LOCAL_APK_ROOT` only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing`. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no mirror file exists, an uploaded or verified MinIO object is downloaded to a checksum-verified temporary `.apk` path and deleted when parsing ends. Pending, failed, deleted, or missing object references are recorded as `SKIPPED`; download, checksum, and parsing failures are recorded as `FAILED`. No manifest artifact is emitted for either outcome.
 
-The manifest analyzer itself only parses and normalizes metadata. The orchestrator invokes the separate rule evaluators and scoring services after analyzer execution. The pipeline does not decompile code, classify malware, or generate PDF reports.
+The manifest analyzer itself only parses and normalizes metadata. The orchestrator invokes the separate rule evaluators and scoring services after analyzer execution. The analysis pipeline does not decompile code, classify malware, or generate reports; reports are requested separately from the API.
 
 ## First Rule Execution Foundation
 
@@ -327,7 +328,7 @@ This is deterministic rule execution over the latest `MANIFEST` `NormalizedArtif
 
 Matched results receive a linked `Evidence` row with the audit, finding or indicator, catalog detection type and source, a short normalized snippet, and `redacted=false`. Full manifest XML is never stored as evidence. Reruns reuse existing findings and indicators for the same audit and rule identifier, and do not duplicate identical evidence.
 
-ATT&CK indicators are cautious triage signals only. They require analyst context and do not classify an APK as malware. The remaining 12 MASVS rules and 13 ATT&CK indicators are validated catalog entries but are not executed. PDF reports, frontend work, dynamic analysis, malware sandboxing, and Kimi AI remain unimplemented.
+ATT&CK indicators are cautious triage signals only. They require analyst context and do not classify an APK as malware. The remaining 12 MASVS rules and 13 ATT&CK indicators are validated catalog entries but are not executed. Dynamic analysis, malware sandboxing, and Kimi AI remain unimplemented.
 
 Run the complete test suite from this directory with:
 
@@ -337,7 +338,7 @@ Run the complete test suite from this directory with:
 
 The evaluator tests create `NormalizedArtifact` rows directly and require no real APK parsing, MinIO service, Redis broker, or Celery worker.
 
-## Scoring and JSON Report Foundation
+## Scoring and Security Reports
 
 The risk scoring service reads findings and suspicious indicators for an audit. `Critical`, `High`, `Medium`, and `Low` records contribute weights of 10, 7, 4, and 1. The weights are summed, multiplied by 10, and capped at 100. The resulting severity is `Low` through 30, `Medium` through 60, `High` through 80, and `Critical` above 80. Each run creates or updates the audit's `RiskScore`.
 
@@ -351,9 +352,29 @@ Generate the current JSON report with:
 GET /api/audits/{audit_id}/report/json/
 ```
 
-The response contains audit, project, latest APK metadata, scoring summaries, findings, indicators, evidence, normalized artifact counts, a bounded analysis-job summary, and explicit limitations. Normalized artifact payloads and raw manifest XML are excluded. A small idempotent `Report` row records the JSON report type; the current model has no content field, so the response is assembled from database metadata on demand rather than stored in PostgreSQL or MinIO.
+Download the current PDF report with:
 
-Current reports are JSON only. PDF output remains deferred, dynamic behavior is not observed, and no malware verdict is produced. Tests run without real MinIO or Redis:
+```http
+GET /api/audits/{audit_id}/report/pdf/
+```
+
+Both formats are assembled on demand from persisted audit results. The JSON
+response contains audit, project, latest APK metadata, scoring summaries,
+findings, indicators, evidence, normalized artifact counts, a bounded
+analysis-job summary, and explicit limitations. The professional A4 PDF adds a
+cover, executive summary, scope/methodology, APK metadata, risk and compliance,
+structured findings and indicators, bounded evidence snippets, limitations, and
+a concise technical appendix. Raw manifest XML, storage keys, presigned URLs,
+credentials, and unbounded strings are excluded.
+
+ReportLab builds PDF bytes entirely in memory with `BytesIO`; no browser,
+Cairo, external report service, temporary file, or writable root filesystem is
+required. An idempotent `Report` row records each generated format, but report
+bytes are not stored in PostgreSQL or MinIO. Report content is deterministic
+application logic based on persisted MSAP data: there is no AI-generated
+content. Static analysis observes no runtime behavior, and ATT&CK mappings are
+investigative signals rather than a malware verdict. Tests run without real
+MinIO or Redis:
 
 ```bash
 .venv/bin/pytest
@@ -411,6 +432,7 @@ Core variables are documented in `.env.example` and include:
 - Upload settings: `MSAP_PRESIGNED_URL_EXPIRES_SECONDS`, `MSAP_MAX_APK_SIZE_BYTES`, `MSAP_VERIFY_UPLOAD_WITH_HEAD`
 - Manifest settings: `MSAP_LOCAL_APK_ROOT`, `MSAP_MAX_MANIFEST_SIZE_BYTES`, `MSAP_MAX_APK_ZIP_ENTRIES`
 - Analyzer settings: `ANALYZER_RULES_PATH`, `ANALYZER_WORKDIR`, `ANALYZER_TIMEOUT_SECONDS`
+- PDF metadata: `MSAP_REPORT_AUTHOR`, `MSAP_REPORT_ORGANIZATION`, `MSAP_REPORT_CLASSIFICATION`, `MSAP_REPORT_VERSION`
 
 ## Scope Note
-This is a constrained backend analysis increment. It establishes safe manifest metadata extraction, four deterministic assessment and triage detections, simple scoring, and on-demand JSON reporting behind the existing worker boundary. Broader rule execution, PDF reporting, and broader application analysis remain out of scope.
+This is a constrained backend analysis increment. It establishes safe manifest metadata extraction, four deterministic assessment and triage detections, simple scoring, and on-demand JSON/PDF reporting behind the existing worker boundary. Broader rule execution and broader application analysis remain out of scope.

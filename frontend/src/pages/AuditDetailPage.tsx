@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   confirmApkUpload,
+  downloadPdfReport,
   getAnalysisStatus,
   getAudit,
   initiateApkUpload,
@@ -73,6 +74,7 @@ export function AuditDetailPage() {
     useState<AnalysisStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -238,6 +240,26 @@ export function AuditDetailPage() {
     }
   }
 
+  async function handlePdfDownload() {
+    setDownloadingPdf(true);
+    setError("");
+    try {
+      const { blob, filename } = await downloadPdfReport(id);
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename || `MSAP_Audit_${id}_Security_Report.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setDownloadingPdf(false);
+    }
+  }
+
   if (loading) return <LoadingState label="Loading audit workspace…" />;
   if (!audit) return <ErrorMessage message={error || "Audit not found."} />;
 
@@ -268,6 +290,13 @@ export function AuditDetailPage() {
             <Link className="button button-primary" to={`/audits/${id}/report`}>
               View JSON report
             </Link>
+            <button
+              className="button button-primary"
+              onClick={() => void handlePdfDownload()}
+              disabled={downloadingPdf}
+            >
+              {downloadingPdf ? "Generating PDF…" : "Download PDF Report"}
+            </button>
           </>
         }
       />

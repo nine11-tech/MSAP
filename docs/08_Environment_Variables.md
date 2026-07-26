@@ -71,6 +71,15 @@
 | `EXPORT_BUCKET` | Yes | No |
 | `REPORT_INCLUDE_EVIDENCE` | Yes | No |
 | `REPORT_REDACTION_REQUIRED` | Yes | No |
+| `MSAP_REPORT_AUTHOR` | Optional (`MSAP Analyst`) | No |
+| `MSAP_REPORT_ORGANIZATION` | Optional (`MSAP`) | No |
+| `MSAP_REPORT_CLASSIFICATION` | Optional (`Security Assessment Report`) | No |
+| `MSAP_REPORT_VERSION` | Optional (`1.0`) | No |
+
+The `MSAP_REPORT_*` values populate the deterministic PDF cover, metadata, and
+header/footer. They are presentation metadata, not secrets. PDF content is
+assembled in memory from persisted audit results and does not require a
+temporary directory or external report service.
 
 ## Optional AI
 AI variables are reserved for V1.1 or later and must default to disabled:

@@ -12,3 +12,4 @@ androguard
 pytest
 pytest-django
 gunicorn
+reportlab==5.0.0

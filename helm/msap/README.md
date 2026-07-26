@@ -208,5 +208,5 @@ helm template msap helm/msap --namespace msap -f helm/msap/values-local.yaml
 - No authentication or application RBAC
 - No HA PostgreSQL, Redis Sentinel/Cluster, or distributed MinIO
 - No autoscaling controller or NetworkPolicy baseline yet
-- No PDF reporting, AI, dynamic analysis, service mesh, or operator
+- No AI, dynamic analysis, service mesh, or operator
 - Presigned storage URLs require a separately reachable public MinIO endpoint

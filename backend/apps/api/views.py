@@ -1,6 +1,10 @@
+import logging
+
 from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.types import OpenApiTypes
 from django.conf import settings
 from django.db import transaction
+from django.http import HttpResponse
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -37,9 +41,13 @@ from apps.normalization.models import NormalizedArtifact
 from apps.projects.models import Project
 from apps.reports.models import Report
 from apps.reports.services.json_report import generate_json_report
+from apps.reports.services.pdf_report import build_pdf_filename, generate_pdf_report
 from apps.scoring.models import ComplianceScore, RiskScore
 from apps.storage.models import ObjectStorageReference
 from apps.storage.services.minio_storage import MinIOStorageService
+
+
+logger = logging.getLogger(__name__)
 
 
 class HealthView(APIView):
@@ -232,6 +240,32 @@ class AuditViewSet(viewsets.ModelViewSet):
     def json_report(self, request, pk=None):
         audit = self.get_object()
         return Response(generate_json_report(audit.id))
+
+    @extend_schema(
+        responses={
+            (200, "application/pdf"): OpenApiTypes.BINARY,
+            500: inline_serializer(
+                name="PdfReportError",
+                fields={"detail": serializers.CharField()},
+            ),
+        }
+    )
+    @action(detail=True, methods=["get"], url_path="report/pdf")
+    def pdf_report(self, request, pk=None):
+        audit = self.get_object()
+        try:
+            pdf_bytes = generate_pdf_report(audit.id)
+        except Exception:
+            logger.exception("PDF report generation failed for audit %s", audit.id)
+            return Response(
+                {"detail": "PDF report generation failed."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        filename = build_pdf_filename(audit.project.name, audit.id)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class APKFileViewSet(viewsets.ModelViewSet):

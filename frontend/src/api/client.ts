@@ -60,3 +60,29 @@ export function apiPost<TResponse, TBody = Record<string, unknown>>(
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
+
+export async function apiDownload(
+  path: string,
+): Promise<{ blob: Blob; filename: string | null }> {
+  const response = await fetch(`${API_BASE_URL}/${path.replace(/^\//, "")}`, {
+    headers: { Accept: "application/pdf" },
+  });
+
+  if (!response.ok) {
+    let detail = response.statusText || "Download failed";
+    try {
+      const body = (await response.json()) as { detail?: unknown };
+      if (body.detail) detail = String(body.detail);
+    } catch {
+      // Keep the clean HTTP fallback when the response is not JSON.
+    }
+    throw new ApiError(detail, response.status);
+  }
+
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const filenameMatch = disposition.match(/filename="([^"]+)"/i);
+  return {
+    blob: await response.blob(),
+    filename: filenameMatch?.[1] || null,
+  };
+}

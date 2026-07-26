@@ -25,7 +25,7 @@ flowchart LR
 | Redis/Celery | Queue and asynchronous analysis execution | Expose public endpoints |
 | Worker | Analyzer execution, normalization, rule evaluation, evidence generation | Trust APK input or produce malware verdicts |
 | Rules | YAML MASVS and ATT&CK detection definitions | Replace analyst judgement |
-| Report generator | JSON exports and later PDF reports | Bypass redaction or rerun analysis |
+| Report generator | On-demand deterministic JSON and PDF reports | Bypass redaction or rerun analysis |
 
 ## Data Flow
 1. User creates an audit and uploads an APK.
@@ -54,4 +54,3 @@ Docker Compose remains development-only.
 
 ## Optional AI Boundary
 Kimi AI is outside V1.0. If enabled later, it receives only redacted post-analysis context and returns advisory text that requires analyst validation.
-

@@ -30,7 +30,7 @@ flowchart LR
     API --> MINIO[(MinIO Object Storage)]
     WORKERS --> MINIO
     RISK --> REPORT[Report Generator]
-    REPORT --> MINIO
+    REPORT --> API
     EVID -. redacted post-analysis only .-> KIMI[Optional Kimi AI Assistant]
 ```
 
@@ -101,7 +101,7 @@ dependency volumes.
 For the first end-to-end check, open the frontend, create a project and audit,
 upload an authorized APK, start analysis, wait for status polling to complete,
 then review findings, ATT&CK triage indicators, evidence, scores, and the JSON
-report.
+report or download the PDF security report.
 
 ## Kubernetes and Helm deployment
 
@@ -145,7 +145,7 @@ The backend foundation has started in [backend](backend/README.md): Django setti
 
 ## Frontend MVP
 
-A minimal React, TypeScript, and Vite dashboard is available in [frontend](frontend/README.md). It supports the project-to-audit workflow, APK upload-contract initiation, analysis controls, findings and triage review, scores, evidence, and JSON reports.
+A minimal React, TypeScript, and Vite dashboard is available in [frontend](frontend/README.md). It supports the project-to-audit workflow, APK upload-contract initiation, analysis controls, findings and triage review, scores, evidence, JSON reports, and professional PDF report downloads.
 
 Run the backend separately, then start the dashboard:
 
@@ -157,6 +157,14 @@ npm run dev
 ```
 
 The default API base URL is `http://127.0.0.1:8000/api` and can be changed with `VITE_API_BASE_URL`.
+
+PDF reports are generated on demand at
+`GET /api/audits/{audit_id}/report/pdf/` using ReportLab and in-memory
+`BytesIO`. They contain a cover, executive and scoring summaries, methodology,
+APK metadata, findings, ATT&CK Mobile triage signals, bounded evidence,
+limitations, and a technical appendix. They use only persisted deterministic
+MSAP results, contain no AI-generated content, perform no dynamic execution,
+and do not claim a malware verdict. The JSON report endpoint remains available.
 
 ## Perimetre securite
 - Android APK uniquement pour le MVP.

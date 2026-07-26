@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from "./client";
+import { apiDownload, apiGet, apiPost } from "./client";
 import type {
   AnalysisStartResponse,
   AnalysisStatusResponse,
@@ -82,3 +82,5 @@ export const listComplianceScores = (auditId?: number) =>
 
 export const getJsonReport = (auditId: number) =>
   apiGet<JsonReport>(`audits/${auditId}/report/json/`);
+export const downloadPdfReport = (auditId: number) =>
+  apiDownload(`audits/${auditId}/report/pdf/`);

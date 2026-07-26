@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getJsonReport } from "../api/msap";
+import { downloadPdfReport, getJsonReport } from "../api/msap";
 import type { JsonReport } from "../api/types";
 import {
   Card,
@@ -18,7 +18,28 @@ export function ReportPage() {
   const id = Number(auditId);
   const [report, setReport] = useState<JsonReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [error, setError] = useState("");
+
+  async function handlePdfDownload() {
+    setDownloadingPdf(true);
+    setError("");
+    try {
+      const { blob, filename } = await downloadPdfReport(id);
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename || `MSAP_Audit_${id}_Security_Report.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 0);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setDownloadingPdf(false);
+    }
+  }
 
   useEffect(() => {
     getJsonReport(id)
@@ -37,9 +58,18 @@ export function ReportPage() {
         title={report.audit.name}
         description={`${report.project.name} • On-demand static assessment report`}
         actions={
-          <Link className="button button-secondary" to={`/audits/${id}`}>
-            Back to audit
-          </Link>
+          <>
+            <Link className="button button-secondary" to={`/audits/${id}`}>
+              Back to audit
+            </Link>
+            <button
+              className="button button-primary"
+              onClick={() => void handlePdfDownload()}
+              disabled={downloadingPdf}
+            >
+              {downloadingPdf ? "Generating PDF…" : "Download PDF Report"}
+            </button>
+          </>
         }
       />
       {error ? <ErrorMessage message={error} /> : null}
