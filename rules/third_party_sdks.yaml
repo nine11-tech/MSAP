@@ -1,0 +1,35 @@
+catalog:
+  name: MSAP deterministic Android SDK prefixes
+  version: "1.0"
+  inventory_label: probable dependency inventory
+sdks:
+  - name: Firebase Analytics
+    category: analytics
+    prefixes: [Lcom/google/firebase/analytics/]
+  - name: Google Mobile Ads
+    category: advertising
+    prefixes: [Lcom/google/android/gms/ads/]
+  - name: Facebook SDK
+    category: social
+    prefixes: [Lcom/facebook/]
+  - name: Sentry
+    category: crash-reporting
+    prefixes: [Lio/sentry/]
+  - name: Crashlytics
+    category: crash-reporting
+    prefixes: [Lcom/google/firebase/crashlytics/]
+  - name: OkHttp
+    category: networking
+    prefixes: [Lokhttp3/]
+  - name: Retrofit
+    category: networking
+    prefixes: [Lretrofit2/]
+  - name: Bouncy Castle
+    category: cryptography
+    prefixes: [Lorg/bouncycastle/]
+  - name: RootBeer
+    category: root-detection
+    prefixes: [Lcom/scottyab/rootbeer/]
+  - name: AppsFlyer
+    category: analytics
+    prefixes: [Lcom/appsflyer/]

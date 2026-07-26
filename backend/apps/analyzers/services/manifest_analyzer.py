@@ -7,7 +7,11 @@ from apps.analyzers.services.manifest_metadata_adapter import (
     ManifestMetadataAdapter,
     ManifestParsingError,
 )
-from apps.normalization.services.schemas import manifest_payload
+from apps.normalization.services.schemas import (
+    components_payload,
+    manifest_payload,
+    permissions_payload,
+)
 from apps.storage.services.file_provider import (
     APKChecksumMismatchError,
     APKDownloadError,
@@ -19,7 +23,7 @@ from apps.storage.services.file_provider import (
 
 class ManifestMetadataAnalyzer:
     name = "manifest_metadata_analyzer"
-    version = "0.1.0"
+    version = "0.2.0"
     description = (
         "Safely extracts and normalizes metadata from an APK AndroidManifest.xml."
     )
@@ -86,11 +90,26 @@ class ManifestMetadataAnalyzer:
                     version_code=metadata.version_code,
                     min_sdk=metadata.min_sdk,
                     target_sdk=metadata.target_sdk,
+                    compile_sdk=metadata.compile_sdk,
                     permissions=metadata.permissions,
+                    declared_permissions=metadata.declared_permissions,
+                    features=metadata.features,
                     components=metadata.components,
+                    deep_links=metadata.deep_links,
                     application=metadata.application,
+                    shared_user_id=metadata.shared_user_id,
                     parsing_status="PARSED",
-                )
+                ),
+                permissions_payload(
+                    source=self.name,
+                    permissions=metadata.permissions,
+                    declared_permissions=metadata.declared_permissions,
+                ),
+                components_payload(
+                    source=self.name,
+                    components=metadata.components,
+                    deep_links=metadata.deep_links,
+                ),
             ],
         )
 

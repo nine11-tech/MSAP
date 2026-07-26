@@ -1,8 +1,12 @@
 # MSAP Backend
 
-This directory contains the backend foundation for MSAP. It includes Django settings, initial metadata models, YAML rule catalog validation, MinIO upload metadata, Celery orchestration, constrained APK manifest metadata extraction, deterministic manifest rule execution, scoring, and JSON/PDF audit reporting.
+This directory contains the authenticated MSAP assessment backend: Django
+session authentication and RBAC, MinIO ingestion, Celery orchestration, bounded
+Android APK static analysis, rule coverage, scoring, component status, and
+JSON/PDF reporting.
 
-The backend does not implement Kimi AI, full APK/code analysis, full MASVS/ATT&CK catalog execution, MobSF, Frida, dynamic analysis, iOS analysis, malware classification, or malware sandboxing.
+It does not execute APK code, observe dynamic behavior, classify malware, support
+iOS, call third-party scanning services, or depend on MobSF.
 
 ## Setup
 ```bash
@@ -19,6 +23,8 @@ Create and apply migrations:
 ```bash
 python manage.py makemigrations
 python manage.py migrate
+python manage.py bootstrap_roles
+python manage.py validate_rules
 ```
 
 By default, local development can use SQLite through `DATABASE_URL=sqlite:///db.sqlite3`. For PostgreSQL, set either `DATABASE_URL` or the `POSTGRES_*` variables in `.env`.
@@ -40,8 +46,29 @@ celery -A msap worker -l info
 
 Celery uses Redis as its broker by default. For local development, run Redis with your preferred package manager or container runtime and point `REDIS_URL` or `CELERY_BROKER_URL` at it, for example `redis://localhost:6379/0`.
 
+## Authentication and roles
+
+Authentication uses Django users, database-backed server sessions,
+`SessionAuthentication`, and CSRF. Obtain a CSRF token from
+`GET /api/auth/csrf/`, send it as `X-CSRFToken` for login and every unsafe
+request, and include cookies. Authentication endpoints are login, logout, `me`,
+and change-password; there is no registration endpoint.
+
+`bootstrap_roles` creates:
+
+- `MSAP_ADMIN`: full platform operations and Django user/group administration.
+- `MSAP_ANALYST`: create/update projects and audits, upload and analyze, and read reports; deletion and user administration are denied.
+- `MSAP_VIEWER`: read-only access to projects, audits, results, evidence, scores, and reports.
+
+Superusers have administrator access. Create one locally with
+`python manage.py createsuperuser`; never place its password in Git.
+
+Login protection uses django-axes with five failures and a configurable
+15-minute default cooldown. Tracking is database-backed and combines username
+and source IP. `REMOTE_ADDR` is used unless trusted-proxy handling is explicitly
+enabled and configured.
+
 ## API Endpoints
-The current API is intentionally simple and does not implement authentication, raw file proxy uploads through Django, full APK/code analysis, full MASVS/ATT&CK catalog execution, or AI assistance.
 
 Writable metadata endpoints:
 - `GET /api/health/`
@@ -61,6 +88,9 @@ Writable metadata endpoints:
 - `GET|PUT|PATCH|DELETE /api/storage-references/{id}/`
 
 Read-only analysis result endpoints:
+- `GET /api/system/status/`
+- `GET /api/audits/{id}/coverage/`
+- `GET /api/rule-evaluations/?audit={id}`
 - `GET /api/analyzers/`
 - `GET /api/raw-analyzer-results/`
 - `GET /api/raw-analyzer-results/{id}/`
@@ -80,6 +110,10 @@ Read-only analysis result endpoints:
 - `GET /api/reports/{id}/`
 
 Finding, indicator, evidence, score, report, raw-result, and normalized-artifact list endpoints accept `?audit=<audit_id>` for audit-scoped retrieval.
+
+All API endpoints require authentication except health, CSRF initialization, and
+login. Schema/docs are public only in debug mode and administrator-only in
+production.
 
 Health response:
 
@@ -435,4 +469,6 @@ Core variables are documented in `.env.example` and include:
 - PDF metadata: `MSAP_REPORT_AUTHOR`, `MSAP_REPORT_ORGANIZATION`, `MSAP_REPORT_CLASSIFICATION`, `MSAP_REPORT_VERSION`
 
 ## Scope Note
-This is a constrained backend analysis increment. It establishes safe manifest metadata extraction, four deterministic assessment and triage detections, simple scoring, and on-demand JSON/PDF reporting behind the existing worker boundary. Broader rule execution and broader application analysis remain out of scope.
+The backend performs deterministic Android static assessment and retains explicit
+partial-coverage states. It does not execute APK code, observe runtime behavior,
+claim complete framework compliance, or classify malware.

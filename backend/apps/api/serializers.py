@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from apps.analyzers.models import RawAnalyzerResult
+from apps.appsec_rules.models import RuleEvaluation
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence
@@ -125,6 +126,11 @@ class AnalyzerMetadataSerializer(serializers.Serializer):
     version = serializers.CharField()
     description = serializers.CharField(allow_blank=True)
     enabled = serializers.BooleanField()
+    available = serializers.BooleanField()
+    optional = serializers.BooleanField()
+    status = serializers.CharField()
+    capability = serializers.CharField(required=False, allow_blank=True)
+    reason = serializers.CharField(required=False, allow_blank=True)
 
 
 class APKUploadConfirmRequestSerializer(serializers.Serializer):
@@ -189,6 +195,23 @@ class NormalizedArtifactSerializer(serializers.ModelSerializer):
 
 
 class FindingSerializer(serializers.ModelSerializer):
+    masvs_controls = serializers.SerializerMethodField()
+    maswe_ids = serializers.SerializerMethodField()
+    mastg_references = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _mapping(obj, key):
+        return obj.mapping_data.get(key, []) if isinstance(obj.mapping_data, dict) else []
+
+    def get_masvs_controls(self, obj):
+        return self._mapping(obj, "masvs_controls")
+
+    def get_maswe_ids(self, obj):
+        return self._mapping(obj, "maswe_ids")
+
+    def get_mastg_references(self, obj):
+        return self._mapping(obj, "mastg_references")
+
     class Meta:
         model = Finding
         fields = [
@@ -200,7 +223,15 @@ class FindingSerializer(serializers.ModelSerializer):
             "confidence",
             "standard",
             "category",
+            "description",
+            "mapping_data",
+            "masvs_controls",
+            "maswe_ids",
+            "mastg_references",
             "recommendation",
+            "false_positive_guidance",
+            "requires_manual_validation",
+            "status",
             "created_at",
         ]
         read_only_fields = fields
@@ -220,6 +251,10 @@ class SuspiciousIndicatorSerializer(serializers.ModelSerializer):
             "severity",
             "confidence",
             "triage_interpretation",
+            "mapping_rationale",
+            "false_positive_considerations",
+            "requires_manual_validation",
+            "non_malware_verdict_note",
             "created_at",
         ]
         read_only_fields = fields
@@ -261,4 +296,27 @@ class ReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = Report
         fields = ["id", "audit", "report_type", "storage_reference", "created_at"]
+        read_only_fields = fields
+
+
+class RuleEvaluationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RuleEvaluation
+        fields = [
+            "id",
+            "audit",
+            "framework",
+            "rule_id",
+            "result",
+            "severity",
+            "confidence",
+            "title",
+            "mapping_data",
+            "evidence_summary",
+            "remediation",
+            "requires_manual_validation",
+            "evaluator_version",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = fields

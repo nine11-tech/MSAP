@@ -1,27 +1,48 @@
 const configuredBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
 export const API_BASE_URL = (
-  configuredBaseUrl || "http://127.0.0.1:8000/api"
+  configuredBaseUrl ||
+  (import.meta.env.DEV ? "http://127.0.0.1:8000/api" : "/api")
 ).replace(/\/$/, "");
 
 export const API_DOCS_URL = `${API_BASE_URL.replace(/\/api$/, "")}/api/docs/`;
 
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+let csrfToken: string | null = null;
+
+export function setCsrfToken(token: string | null) {
+  csrfToken = token;
+}
+
+function isUnsafe(method = "GET") {
+  return !["GET", "HEAD", "OPTIONS", "TRACE"].includes(method.toUpperCase());
+}
+
+export async function request<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
+  const method = options?.method || "GET";
   const response = await fetch(`${API_BASE_URL}/${path.replace(/^\//, "")}`, {
     ...options,
+    credentials: "include",
     headers: {
       Accept: "application/json",
       ...(options?.body ? { "Content-Type": "application/json" } : {}),
+      ...(isUnsafe(method) && csrfToken
+        ? { "X-CSRFToken": csrfToken }
+        : {}),
       ...options?.headers,
     },
   });
@@ -41,7 +62,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       typeof body === "object" && body !== null && "detail" in body
         ? String(body.detail)
         : response.statusText || "API request failed";
-    throw new ApiError(detail, response.status);
+    const code =
+      typeof body === "object" && body !== null && "code" in body
+        ? String(body.code)
+        : undefined;
+    if (
+      response.status === 401 ||
+      (response.status === 403 &&
+        detail.toLowerCase().includes("authentication credentials"))
+    ) {
+      window.dispatchEvent(new CustomEvent("msap:session-expired"));
+    }
+    throw new ApiError(detail, response.status, code);
   }
 
   return body as T;
@@ -61,10 +93,17 @@ export function apiPost<TResponse, TBody = Record<string, unknown>>(
   });
 }
 
+export async function initializeCsrf(): Promise<string> {
+  const response = await request<{ csrfToken: string }>("auth/csrf/");
+  setCsrfToken(response.csrfToken);
+  return response.csrfToken;
+}
+
 export async function apiDownload(
   path: string,
 ): Promise<{ blob: Blob; filename: string | null }> {
   const response = await fetch(`${API_BASE_URL}/${path.replace(/^\//, "")}`, {
+    credentials: "include",
     headers: { Accept: "application/pdf" },
   });
 

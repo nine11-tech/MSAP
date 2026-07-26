@@ -80,6 +80,18 @@ including its required methods and headers, is retained in
 healthy dependencies, runs migrations and rule validation, then starts Django.
 The worker starts after the backend is healthy.
 
+The backend initialization also runs the idempotent `bootstrap_roles` command.
+It creates the `MSAP_ADMIN`, `MSAP_ANALYST`, and `MSAP_VIEWER` groups but never
+creates a user or stores an administrator password. Create the first administrator:
+
+```bash
+docker compose exec backend python manage.py createsuperuser
+```
+
+The web application uses Django server-side sessions and CSRF protection.
+Browser requests include credentials; no JWT, password, session identifier, or
+authentication token is stored in browser storage.
+
 Useful lifecycle commands:
 
 ```bash
@@ -141,11 +153,16 @@ PVCs may be retained by the cluster and should be reviewed separately before
 deletion.
 
 ## Backend status
-The backend foundation has started in [backend](backend/README.md): Django settings, metadata models, `ObjectStorageReference`, YAML rule loaders, the `validate_rules` command and unit tests.
+The backend provides authenticated/RBAC APIs, bounded asynchronous APK analysis,
+complete evaluation-state tracking, deterministic findings and ATT&CK triage,
+system-component status, MinIO storage, explainable scoring, and JSON/PDF reports.
 
-## Frontend MVP
+## Frontend
 
-A minimal React, TypeScript, and Vite dashboard is available in [frontend](frontend/README.md). It supports the project-to-audit workflow, APK upload-contract initiation, analysis controls, findings and triage review, scores, evidence, JSON reports, and professional PDF report downloads.
+A professional React, TypeScript, and Vite cybersecurity workspace is available
+in [frontend](frontend/README.md). It includes secure login, role-aware
+navigation, a live architecture status bar, dashboards, finding and ATT&CK
+triage workspaces, audit progress and coverage, and report downloads.
 
 Run the backend separately, then start the dashboard:
 
@@ -192,6 +209,7 @@ The active implementation baseline is intentionally small:
 - [Helm values contract](docs/09_Helm_Values.md)
 - [Development guide](docs/10_Development_Guide.md)
 - [Testing](docs/11_Testing.md)
+- [Security platform operations and analysis scope](docs/12_Security_Platform.md)
 
 Earlier detailed planning and diagram documents are preserved under [docs/archive](docs/archive/README.md) for reference only.
 

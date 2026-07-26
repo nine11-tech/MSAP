@@ -9,6 +9,13 @@
 | `DJANGO_ALLOWED_HOSTS` | Yes | No |
 | `DJANGO_CSRF_TRUSTED_ORIGINS` | For ingress | No |
 | `MSAP_ENVIRONMENT` | Yes | No |
+| `SESSION_COOKIE_AGE` | Yes (default 28800) | No |
+| `MSAP_PASSWORD_MIN_LENGTH` | Yes (default 12) | No |
+| `AXES_FAILURE_LIMIT` | Yes (default 5) | No |
+| `AXES_COOLOFF_MINUTES` | Yes (default 15) | No |
+| `MSAP_TRUST_PROXY_HEADERS` | Production proxy-specific | No |
+| `AXES_IPWARE_PROXY_COUNT` | Trusted proxy mode | No |
+| `AXES_IPWARE_PROXY_TRUSTED_IPS` | Trusted proxy mode | No |
 
 ## PostgreSQL
 | Variable | Required | Secret |
@@ -57,6 +64,15 @@
 | `MSAP_DEFAULT_RETENTION_POLICY` | Yes | No |
 | `MSAP_LOG_LEVEL` | Yes | No |
 | `MSAP_REDACTION_ENABLED` | Yes | No |
+| `MSAP_STATUS_CACHE_SECONDS` | Yes (default 5) | No |
+| `MSAP_STATUS_TIMEOUT_SECONDS` | Yes (default 1.5) | No |
+| `MSAP_APPLICATION_VERSION` | Optional | No |
+| `MSAP_MAX_APK_ZIP_ENTRIES` | Yes | No |
+| `MSAP_MAX_APK_UNCOMPRESSED_BYTES` | Yes | No |
+| `MSAP_MAX_APK_ENTRY_BYTES` | Yes | No |
+| `MSAP_MAX_APK_COMPRESSION_RATIO` | Yes | No |
+| `MSAP_MAX_DEX_BYTES` | Yes | No |
+| `MSAP_MAX_NORMALIZED_MATCHES` | Yes | No |
 
 ## Analyzer and Reports
 | Variable | Required | Secret |

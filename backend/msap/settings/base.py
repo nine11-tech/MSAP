@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import timedelta
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -41,7 +42,12 @@ def database_config() -> dict:
                 "PASSWORD": parsed.password or "",
                 "HOST": parsed.hostname or "",
                 "PORT": str(parsed.port or 5432),
-                "OPTIONS": {"sslmode": os.getenv("POSTGRES_SSLMODE", "prefer")},
+                "OPTIONS": {
+                    "sslmode": os.getenv("POSTGRES_SSLMODE", "prefer"),
+                    "connect_timeout": int(
+                        os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "3")
+                    ),
+                },
             }
         raise ValueError(f"Unsupported DATABASE_URL scheme: {parsed.scheme}")
 
@@ -53,7 +59,12 @@ def database_config() -> dict:
             "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
             "HOST": os.getenv("POSTGRES_HOST", "localhost"),
             "PORT": os.getenv("POSTGRES_PORT", "5432"),
-            "OPTIONS": {"sslmode": os.getenv("POSTGRES_SSLMODE", "prefer")},
+            "OPTIONS": {
+                "sslmode": os.getenv("POSTGRES_SSLMODE", "prefer"),
+                "connect_timeout": int(
+                    os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "3")
+                ),
+            },
         }
 
     return {
@@ -78,6 +89,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "drf_spectacular",
+    "axes",
+    "apps.api",
     "apps.projects",
     "apps.audits",
     "apps.storage",
@@ -100,6 +113,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "axes.middleware.AxesMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -128,7 +142,12 @@ DATABASES = {"default": database_config()}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {
+            "min_length": int(os.getenv("MSAP_PASSWORD_MIN_LENGTH", "12")),
+        },
+    },
     {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
@@ -143,6 +162,12 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
 }
 
 CORS_ALLOWED_ORIGINS = env_list(
@@ -150,6 +175,60 @@ CORS_ALLOWED_ORIGINS = env_list(
     "http://localhost:5173,http://127.0.0.1:5173",
 )
 CORS_EXPOSE_HEADERS = ["Content-Disposition"]
+CORS_ALLOW_CREDENTIALS = True
+
+AUTHENTICATION_BACKENDS = [
+    "axes.backends.AxesStandaloneBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "msap_sessionid")
+SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", str(8 * 60 * 60)))
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", False)
+CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", False)
+CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
+CSRF_COOKIE_HTTPONLY = False
+
+SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", False)
+SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", False)
+SECURE_HSTS_PRELOAD = env_bool("SECURE_HSTS_PRELOAD", False)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "same-origin"
+
+# Proxy-supplied forwarding headers are ignored unless the deployment explicitly
+# opts in after configuring its reverse proxy to replace (not append to) them.
+MSAP_TRUST_PROXY_HEADERS = env_bool("MSAP_TRUST_PROXY_HEADERS", False)
+if MSAP_TRUST_PROXY_HEADERS:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    USE_X_FORWARDED_HOST = True
+
+AXES_ENABLED = env_bool("AXES_ENABLED", True)
+AXES_FAILURE_LIMIT = int(os.getenv("AXES_FAILURE_LIMIT", "5"))
+AXES_COOLOFF_TIME = timedelta(
+    minutes=int(os.getenv("AXES_COOLOFF_MINUTES", "15"))
+)
+AXES_LOCK_OUT_AT_FAILURE = True
+AXES_RESET_ON_SUCCESS = True
+AXES_RESET_COOL_OFF_ON_FAILURE_DURING_LOCKOUT = False
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]
+AXES_HANDLER = "axes.handlers.database.AxesDatabaseHandler"
+AXES_LOCKOUT_CALLABLE = "apps.api.security.axes_lockout_response"
+AXES_HTTP_RESPONSE_CODE = 429
+AXES_SENSITIVE_PARAMETERS = ["password", "csrfmiddlewaretoken"]
+AXES_IPWARE_META_PRECEDENCE_ORDER = ("REMOTE_ADDR",)
+if MSAP_TRUST_PROXY_HEADERS:
+    AXES_IPWARE_META_PRECEDENCE_ORDER = (
+        "HTTP_X_FORWARDED_FOR",
+        "REMOTE_ADDR",
+    )
+    AXES_IPWARE_PROXY_COUNT = int(os.getenv("AXES_IPWARE_PROXY_COUNT", "1"))
+    AXES_IPWARE_PROXY_TRUSTED_IPS = env_list(
+        "AXES_IPWARE_PROXY_TRUSTED_IPS",
+    )
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "MSAP API",
@@ -164,6 +243,11 @@ CELERY_TASK_ALWAYS_EAGER = env_bool("CELERY_TASK_ALWAYS_EAGER", False)
 CELERY_TASK_EAGER_PROPAGATES = env_bool("CELERY_TASK_EAGER_PROPAGATES", True)
 CELERY_TASK_DEFAULT_QUEUE = os.getenv("CELERY_TASK_DEFAULT_QUEUE", "analysis")
 CELERY_TASK_TIME_LIMIT = int(os.getenv("CELERY_TASK_TIME_LIMIT", "900"))
+MSAP_STATUS_CACHE_SECONDS = int(os.getenv("MSAP_STATUS_CACHE_SECONDS", "5"))
+MSAP_STATUS_TIMEOUT_SECONDS = float(
+    os.getenv("MSAP_STATUS_TIMEOUT_SECONDS", "1.5")
+)
+MSAP_APPLICATION_VERSION = os.getenv("MSAP_APPLICATION_VERSION", "0.2.0")
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)
@@ -181,6 +265,17 @@ MSAP_MAX_MANIFEST_SIZE_BYTES = int(
     os.getenv("MSAP_MAX_MANIFEST_SIZE_BYTES", str(4 * 1024 * 1024))
 )
 MSAP_MAX_APK_ZIP_ENTRIES = int(os.getenv("MSAP_MAX_APK_ZIP_ENTRIES", "10000"))
+MSAP_MAX_APK_UNCOMPRESSED_BYTES = int(
+    os.getenv("MSAP_MAX_APK_UNCOMPRESSED_BYTES", str(1024 * 1024 * 1024))
+)
+MSAP_MAX_APK_ENTRY_BYTES = int(
+    os.getenv("MSAP_MAX_APK_ENTRY_BYTES", str(256 * 1024 * 1024))
+)
+MSAP_MAX_APK_COMPRESSION_RATIO = float(
+    os.getenv("MSAP_MAX_APK_COMPRESSION_RATIO", "200")
+)
+MSAP_MAX_DEX_BYTES = int(os.getenv("MSAP_MAX_DEX_BYTES", str(256 * 1024 * 1024)))
+MSAP_MAX_NORMALIZED_MATCHES = int(os.getenv("MSAP_MAX_NORMALIZED_MATCHES", "500"))
 MSAP_LOCAL_APK_ROOT = os.getenv("MSAP_LOCAL_APK_ROOT", "")
 MSAP_TEMP_DIR = os.getenv("MSAP_TEMP_DIR", "")
 MSAP_VERIFY_DOWNLOADED_APK_SHA256 = env_bool(
@@ -217,3 +312,26 @@ MSAP_REPORT_CLASSIFICATION = os.getenv(
 MSAP_REPORT_VERSION = os.getenv("MSAP_REPORT_VERSION", "1.0")
 
 AI_ASSISTANT_ENABLED = env_bool("AI_ASSISTANT_ENABLED", False)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "security": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "security",
+        },
+    },
+    "loggers": {
+        "msap.security": {
+            "handlers": ["console"],
+            "level": os.getenv("MSAP_SECURITY_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}

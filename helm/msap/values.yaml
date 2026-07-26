@@ -112,6 +112,11 @@ secrets:
 
 application:
   maxApkSizeBytes: 524288000
+  maxApkUncompressedBytes: 1073741824
+  maxApkEntryBytes: 268435456
+  maxApkCompressionRatio: 200
+  maxDexBytes: 268435456
+  maxNormalizedMatches: 500
   presignedUrlExpiresSeconds: 900
   uploadRequireSha256: false
   verifyUploadWithHead: true
@@ -121,6 +126,24 @@ application:
   reportOrganization: MSAP
   reportClassification: Security Assessment Report
   reportVersion: "1.0"
+  applicationVersion: "0.2.0"
+  statusCacheSeconds: 5
+  statusTimeoutSeconds: 1.5
+
+security:
+  sessionCookieAge: 28800
+  secureCookies: true
+  sslRedirect: true
+  hstsSeconds: 31536000
+  hstsIncludeSubdomains: true
+  hstsPreload: false
+  passwordMinimumLength: 12
+  loginFailureLimit: 5
+  loginCooloffMinutes: 15
+  # Enable only when the reverse proxy replaces inbound forwarding headers.
+  trustProxyHeaders: true
+  proxyCount: 1
+  trustedProxyIps: ""
 
 persistence:
   postgresql:

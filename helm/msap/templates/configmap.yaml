@@ -11,6 +11,23 @@ data:
   DJANGO_CSRF_TRUSTED_ORIGINS: {{ .Values.global.csrfTrustedOrigins | quote }}
   DJANGO_CORS_ALLOWED_ORIGINS: {{ .Values.global.corsAllowedOrigins | quote }}
   CORS_ALLOWED_ORIGINS: {{ .Values.global.corsAllowedOrigins | quote }}
+  SESSION_COOKIE_NAME: msap_sessionid
+  SESSION_COOKIE_AGE: {{ .Values.security.sessionCookieAge | quote }}
+  SESSION_COOKIE_SECURE: {{ .Values.security.secureCookies | quote }}
+  CSRF_COOKIE_SECURE: {{ .Values.security.secureCookies | quote }}
+  SECURE_SSL_REDIRECT: {{ .Values.security.sslRedirect | quote }}
+  SECURE_HSTS_SECONDS: {{ .Values.security.hstsSeconds | quote }}
+  SECURE_HSTS_INCLUDE_SUBDOMAINS: {{ .Values.security.hstsIncludeSubdomains | quote }}
+  SECURE_HSTS_PRELOAD: {{ .Values.security.hstsPreload | quote }}
+  MSAP_PASSWORD_MIN_LENGTH: {{ .Values.security.passwordMinimumLength | quote }}
+  AXES_FAILURE_LIMIT: {{ .Values.security.loginFailureLimit | quote }}
+  AXES_COOLOFF_MINUTES: {{ .Values.security.loginCooloffMinutes | quote }}
+  MSAP_TRUST_PROXY_HEADERS: {{ .Values.security.trustProxyHeaders | quote }}
+  AXES_IPWARE_PROXY_COUNT: {{ .Values.security.proxyCount | quote }}
+  AXES_IPWARE_PROXY_TRUSTED_IPS: {{ .Values.security.trustedProxyIps | quote }}
+  MSAP_STATUS_CACHE_SECONDS: {{ .Values.application.statusCacheSeconds | quote }}
+  MSAP_STATUS_TIMEOUT_SECONDS: {{ .Values.application.statusTimeoutSeconds | quote }}
+  MSAP_APPLICATION_VERSION: {{ .Values.application.applicationVersion | quote }}
   MSAP_ENVIRONMENT: {{ .Values.global.environment | quote }}
   POSTGRES_HOST: {{ include "msap.postgresqlHost" . | quote }}
   POSTGRES_PORT: {{ .Values.postgresql.port | quote }}
@@ -33,6 +50,11 @@ data:
   MINIO_BUCKET_REPORTS: {{ .Values.minio.buckets.reports | quote }}
   MINIO_BUCKET_EXPORTS: {{ .Values.minio.buckets.exports | quote }}
   MSAP_MAX_APK_SIZE_BYTES: {{ printf "%.0f" .Values.application.maxApkSizeBytes | quote }}
+  MSAP_MAX_APK_UNCOMPRESSED_BYTES: {{ printf "%.0f" .Values.application.maxApkUncompressedBytes | quote }}
+  MSAP_MAX_APK_ENTRY_BYTES: {{ printf "%.0f" .Values.application.maxApkEntryBytes | quote }}
+  MSAP_MAX_APK_COMPRESSION_RATIO: {{ .Values.application.maxApkCompressionRatio | quote }}
+  MSAP_MAX_DEX_BYTES: {{ printf "%.0f" .Values.application.maxDexBytes | quote }}
+  MSAP_MAX_NORMALIZED_MATCHES: {{ .Values.application.maxNormalizedMatches | quote }}
   MSAP_PRESIGNED_URL_EXPIRES_SECONDS: {{ .Values.application.presignedUrlExpiresSeconds | quote }}
   MSAP_UPLOAD_REQUIRE_SHA256: {{ .Values.application.uploadRequireSha256 | quote }}
   MSAP_VERIFY_UPLOAD_WITH_HEAD: {{ .Values.application.verifyUploadWithHead | quote }}

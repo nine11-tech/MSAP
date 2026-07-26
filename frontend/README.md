@@ -1,6 +1,9 @@
 # MSAP Frontend
 
-Minimal React and TypeScript dashboard for the MSAP backend MVP. It supports project and audit creation, direct browser-to-MinIO APK upload, automatic upload confirmation, analysis status polling, result review, scoring, JSON reports, and PDF report downloads.
+Professional React and TypeScript assessment workspace for MSAP. It provides
+secure session login, role-aware navigation, live component status, project and
+audit workflows, direct browser-to-MinIO upload, findings and ATT&CK triage,
+coverage, scoring, and JSON/PDF reports.
 
 ## Requirements
 
@@ -27,6 +30,11 @@ VITE_API_BASE_URL=http://127.0.0.1:8000/api
 ```
 
 Restart the Vite development server after changing environment variables.
+
+Every API fetch uses `credentials: "include"`. The client initializes CSRF and
+sends `X-CSRFToken` on unsafe requests. It stores neither authentication tokens
+nor session identifiers in `localStorage` or `sessionStorage`; a 401 expires the
+in-memory user state and returns to login.
 
 ## Run with the full development stack
 
@@ -116,16 +124,17 @@ The generated `dist/` directory and `node_modules/` are ignored by Git.
 ## Manual verification
 
 1. Start the Django backend, Redis/Celery if required, and the Vite frontend.
-2. Open **Projects** and create a project with a name and description.
-3. Open the project and create an audit.
-4. Ensure the MinIO APK bucket has a CORS rule for the exact frontend origin.
-5. Open the audit, choose an `.apk` file, then select **Upload and confirm APK**.
-6. Observe the `initiating`, `uploading`, `confirming`, and `uploaded` states. The UI sends the file with the headers returned by the backend and confirms metadata automatically.
-7. Select **Start analysis** and observe the job status. The page polls every two seconds until the job completes or fails; **Refresh status and results** remains available.
-8. Review APK metadata, findings, ATT&CK indicators, evidence, risk, and MASVS compliance.
-9. Select **Download PDF Report** on the audit or JSON report page. Confirm the loading label clears, the server-provided filename is used, and the PDF opens.
-10. Open **View JSON report** and review the structured sections or formatted raw response.
-11. To verify error handling, stop the backend and confirm a clean download error appears.
+2. Sign in with an administrator, analyst, or viewer account.
+3. Confirm the architecture bar polls every five seconds while visible and
+   supports manual refresh.
+4. Open **Projects** and create a project with a name and description.
+5. Open the project and create an audit.
+6. Ensure the MinIO APK bucket has a CORS rule for the exact frontend origin.
+7. Open the audit, choose an `.apk` file, then select **Upload and confirm APK**.
+8. Observe the upload states, start analysis, and follow analyzer progress.
+9. Review findings, ATT&CK triage, evidence, rule coverage, and scores.
+10. Download and inspect the JSON and PDF reports.
+11. Sign out, then verify viewer and analyst restrictions with role-specific users.
 
 The PDF request is received as a browser `Blob`. The frontend creates a
 short-lived object URL, triggers the attachment download, and revokes the URL.
@@ -137,7 +146,8 @@ The JSON report view remains available.
 - Browser SHA-256 calculation is deferred; server-side download verification still uses a digest when one is available.
 - When running services manually, MinIO buckets and CORS must still be configured
   separately; the root Compose workflow automates both.
-- Authentication and role-based access control are not implemented.
+- A viewer cannot upload, start analysis, modify metadata, or access administration.
+- Component status is bounded near-real-time polling, not streaming telemetry.
 - Reports contain deterministic persisted results only; there is no AI-generated content.
 - There is no dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
 - ATT&CK Mobile indicators are triage signals, not malware verdicts.

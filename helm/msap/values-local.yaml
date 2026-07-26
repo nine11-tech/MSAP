@@ -23,6 +23,13 @@ frontend:
     tag: local
     pullPolicy: Never
 
+security:
+  secureCookies: false
+  sslRedirect: false
+  hstsSeconds: 0
+  hstsIncludeSubdomains: false
+  trustProxyHeaders: false
+
 minio:
   publicEndpoint: "http://localhost:9000"
 

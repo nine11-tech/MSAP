@@ -27,10 +27,22 @@ from apps.api.serializers import (
     RawAnalyzerResultSerializer,
     ReportSerializer,
     RiskScoreSerializer,
+    RuleEvaluationSerializer,
     SuspiciousIndicatorSerializer,
+)
+from apps.api.permissions import (
+    IsMSAPViewerOrAbove,
+    IsReadOnlyViewerOrAbove,
+)
+from apps.api.roles import user_role
+from apps.api.services.system_status import (
+    collect_system_status,
+    serialize_system_status,
 )
 from apps.analyzers.models import RawAnalyzerResult
 from apps.analyzers.services.registry import AnalyzerRegistry
+from apps.appsec_rules.models import RuleEvaluation
+from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
@@ -68,19 +80,42 @@ class HealthView(APIView):
 
 
 class AnalyzerRegistryView(APIView):
+    permission_classes = [IsMSAPViewerOrAbove]
+
     @extend_schema(responses=AnalyzerMetadataSerializer(many=True))
     def get(self, request):
         return Response(AnalyzerRegistry().get_analyzer_metadata())
 
 
+class SystemStatusView(APIView):
+    permission_classes = [IsMSAPViewerOrAbove]
+
+    @extend_schema(responses=serializers.DictField())
+    def get(self, request):
+        force = request.query_params.get("refresh", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        result = collect_system_status(force=force)
+        return Response(
+            serialize_system_status(
+                result,
+                include_admin_details=user_role(request.user) == "ADMIN",
+            )
+        )
+
+
 class ProjectViewSet(viewsets.ModelViewSet):
     queryset = Project.objects.all()
     serializer_class = ProjectSerializer
+    permission_classes = [IsReadOnlyViewerOrAbove]
 
 
 class AuditViewSet(viewsets.ModelViewSet):
     queryset = Audit.objects.select_related("project").all()
     serializer_class = AuditSerializer
+    permission_classes = [IsReadOnlyViewerOrAbove]
     active_analysis_statuses = {
         Audit.Status.ANALYSIS_QUEUED,
         Audit.Status.ANALYSIS_RUNNING,
@@ -236,6 +271,12 @@ class AuditViewSet(viewsets.ModelViewSet):
         return Response(response)
 
     @extend_schema(responses=serializers.DictField())
+    @action(detail=True, methods=["get"], url_path="coverage")
+    def coverage(self, request, pk=None):
+        audit = self.get_object()
+        return Response(calculate_rule_coverage(audit.id))
+
+    @extend_schema(responses=serializers.DictField())
     @action(detail=True, methods=["get"], url_path="report/json")
     def json_report(self, request, pk=None):
         audit = self.get_object()
@@ -271,6 +312,7 @@ class AuditViewSet(viewsets.ModelViewSet):
 class APKFileViewSet(viewsets.ModelViewSet):
     queryset = APKFile.objects.select_related("audit", "storage_reference").all()
     serializer_class = APKFileSerializer
+    permission_classes = [IsReadOnlyViewerOrAbove]
 
     @extend_schema(
         request=APKUploadConfirmRequestSerializer,
@@ -321,6 +363,7 @@ class APKFileViewSet(viewsets.ModelViewSet):
 class ObjectStorageReferenceViewSet(viewsets.ModelViewSet):
     queryset = ObjectStorageReference.objects.select_related("project", "audit").all()
     serializer_class = ObjectStorageReferenceSerializer
+    permission_classes = [IsReadOnlyViewerOrAbove]
 
 
 class AuditScopedQuerysetMixin:
@@ -335,6 +378,7 @@ class AuditScopedQuerysetMixin:
 class FindingViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Finding.objects.select_related("audit").all()
     serializer_class = FindingSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class RawAnalyzerResultViewSet(
@@ -347,6 +391,7 @@ class RawAnalyzerResultViewSet(
         "storage_reference",
     ).all()
     serializer_class = RawAnalyzerResultSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class NormalizedArtifactViewSet(
@@ -359,6 +404,7 @@ class NormalizedArtifactViewSet(
         "storage_reference",
     ).all()
     serializer_class = NormalizedArtifactSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class SuspiciousIndicatorViewSet(
@@ -367,6 +413,7 @@ class SuspiciousIndicatorViewSet(
 ):
     queryset = SuspiciousIndicator.objects.select_related("audit").all()
     serializer_class = SuspiciousIndicatorSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class EvidenceViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
@@ -377,11 +424,13 @@ class EvidenceViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
         "storage_reference",
     ).all()
     serializer_class = EvidenceSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class RiskScoreViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = RiskScore.objects.select_related("audit").all()
     serializer_class = RiskScoreSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class ComplianceScoreViewSet(
@@ -390,8 +439,19 @@ class ComplianceScoreViewSet(
 ):
     queryset = ComplianceScore.objects.select_related("audit").all()
     serializer_class = ComplianceScoreSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
 
 
 class ReportViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     queryset = Report.objects.select_related("audit", "storage_reference").all()
     serializer_class = ReportSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+
+
+class RuleEvaluationViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
+    queryset = RuleEvaluation.objects.select_related("audit").all()
+    serializer_class = RuleEvaluationSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
