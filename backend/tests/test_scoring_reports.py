@@ -133,8 +133,11 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
     assert data["normalized_artifacts"]["by_type"] == {"MANIFEST": 1}
     assert data["limitations"] == [
         "Static analysis only",
+        "No runtime behavior is observed",
+        "Coverage does not include all MASVS controls",
+        "Only implemented deterministic rules are evaluated",
         "ATT&CK indicators are triage signals, not malware verdicts",
-        "Dynamic behavior is not observed",
+        "Absence of a finding does not prove absence of a vulnerability",
     ]
     assert raw_manifest_marker not in json.dumps(data)
     assert Report.objects.filter(
@@ -156,6 +159,58 @@ def test_attck_report_summary_is_triage_only(audit):
         "note": "ATT&CK Mobile indicators are triage signals, not malware verdicts.",
     }
     assert "malware_score" not in response.json()["summary"]
+
+
+@pytest.mark.django_db
+def test_pdf_report_endpoint_returns_attachment(audit):
+    finding = _create_finding(audit, "MSAP-AND-001", "High")
+    finding.recommendation = "Disable the insecure release configuration."
+    finding.save(update_fields=["recommendation"])
+    indicator = _create_indicator(audit, "MSAP-MOB-001", "Medium")
+    Evidence.objects.create(
+        audit=audit,
+        finding=finding,
+        evidence_type="manifest_attribute",
+        source="AndroidManifest.xml",
+        snippet="application.debuggable=true",
+    )
+    Evidence.objects.create(
+        audit=audit,
+        indicator=indicator,
+        evidence_type="manifest_permission",
+        source="AndroidManifest.xml",
+        snippet="permission=android.permission.READ_SMS",
+    )
+
+    response = APIClient().get(f"/api/audits/{audit.id}/report/pdf/")
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "application/pdf"
+    assert response["Content-Disposition"].startswith("attachment;")
+    assert response.content.startswith(b"%PDF")
+    assert len(response.content) > 1000
+    assert Report.objects.filter(
+        audit=audit,
+        report_type=Report.ReportType.PDF,
+    ).count() == 1
+
+
+@pytest.mark.django_db
+def test_pdf_report_endpoint_returns_404_for_missing_audit():
+    response = APIClient().get("/api/audits/999999/report/pdf/")
+
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_json_report_endpoint_still_works_with_pdf_reporting(audit):
+    pdf_response = APIClient().get(f"/api/audits/{audit.id}/report/pdf/")
+    json_response = APIClient().get(f"/api/audits/{audit.id}/report/json/")
+
+    assert pdf_response.status_code == 200
+    assert json_response.status_code == 200
+    assert json_response["Content-Type"].startswith("application/json")
+    assert json_response.json()["audit"]["id"] == audit.id
 
 
 def _create_finding(audit: Audit, rule_id: str, severity: str) -> Finding:

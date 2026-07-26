@@ -117,6 +117,10 @@ application:
   verifyUploadWithHead: true
   analyzerTimeoutSeconds: 600
   celeryTaskTimeLimit: 900
+  reportAuthor: MSAP Analyst
+  reportOrganization: MSAP
+  reportClassification: Security Assessment Report
+  reportVersion: "1.0"
 
 persistence:
   postgresql:

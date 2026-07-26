@@ -1,4 +1,6 @@
 from collections import Counter
+from pathlib import PurePosixPath
+import re
 
 from django.db import transaction
 
@@ -18,8 +20,11 @@ from apps.scoring.services.risk_scoring import calculate_risk_score
 
 REPORT_LIMITATIONS = [
     "Static analysis only",
+    "No runtime behavior is observed",
+    "Coverage does not include all MASVS controls",
+    "Only implemented deterministic rules are evaluated",
     "ATT&CK indicators are triage signals, not malware verdicts",
-    "Dynamic behavior is not observed",
+    "Absence of a finding does not prove absence of a vulnerability",
 ]
 
 
@@ -27,7 +32,8 @@ REPORT_LIMITATIONS = [
 def generate_json_report(audit_id: int) -> dict:
     audit = Audit.objects.select_related("project").get(id=audit_id)
     apk_file = (
-        APKFile.objects.filter(audit_id=audit_id)
+        APKFile.objects.select_related("storage_reference")
+        .filter(audit_id=audit_id)
         .order_by("-created_at", "-id")
         .first()
     )
@@ -104,12 +110,19 @@ def generate_json_report(audit_id: int) -> dict:
 def _apk_data(apk_file: APKFile | None) -> dict | None:
     if apk_file is None:
         return None
+    storage_reference = apk_file.storage_reference
     return {
         "id": apk_file.id,
+        "filename": _apk_filename(storage_reference.object_key)
+        if storage_reference is not None
+        else "",
         "package_name": apk_file.package_name,
         "version_name": apk_file.version_name,
         "sha256": apk_file.sha256,
         "size_bytes": apk_file.size_bytes,
+        "storage_status": storage_reference.storage_status
+        if storage_reference is not None
+        else "",
         "created_at": _isoformat(apk_file.created_at),
     }
 
@@ -168,6 +181,7 @@ def _analysis_job_data(job: AnalysisJob | None) -> dict | None:
         "started_at": _isoformat(job.started_at),
         "finished_at": _isoformat(job.finished_at),
         "summary": {
+            "analyzer_names": analyzers_run if isinstance(analyzers_run, list) else [],
             "analyzer_count": len(analyzers_run)
             if isinstance(analyzers_run, list)
             else 0,
@@ -189,3 +203,8 @@ def _analysis_job_data(job: AnalysisJob | None) -> dict | None:
 
 def _isoformat(value) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _apk_filename(object_key: str) -> str:
+    filename = PurePosixPath(object_key).name
+    return re.sub(r"^[0-9a-fA-F]{32}-", "", filename)

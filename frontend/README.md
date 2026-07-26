@@ -1,6 +1,6 @@
 # MSAP Frontend
 
-Minimal React and TypeScript dashboard for the MSAP backend MVP. It supports project and audit creation, direct browser-to-MinIO APK upload, automatic upload confirmation, analysis status polling, result review, scoring, and on-demand JSON reports.
+Minimal React and TypeScript dashboard for the MSAP backend MVP. It supports project and audit creation, direct browser-to-MinIO APK upload, automatic upload confirmation, analysis status polling, result review, scoring, JSON reports, and PDF report downloads.
 
 ## Requirements
 
@@ -123,7 +123,13 @@ The generated `dist/` directory and `node_modules/` are ignored by Git.
 6. Observe the `initiating`, `uploading`, `confirming`, and `uploaded` states. The UI sends the file with the headers returned by the backend and confirms metadata automatically.
 7. Select **Start analysis** and observe the job status. The page polls every two seconds until the job completes or fails; **Refresh status and results** remains available.
 8. Review APK metadata, findings, ATT&CK indicators, evidence, risk, and MASVS compliance.
-9. Open **View JSON report** and review the structured sections or formatted raw response.
+9. Select **Download PDF Report** on the audit or JSON report page. Confirm the loading label clears, the server-provided filename is used, and the PDF opens.
+10. Open **View JSON report** and review the structured sections or formatted raw response.
+11. To verify error handling, stop the backend and confirm a clean download error appears.
+
+The PDF request is received as a browser `Blob`. The frontend creates a
+short-lived object URL, triggers the attachment download, and revokes the URL.
+The JSON report view remains available.
 
 ## Known limitations
 
@@ -132,7 +138,8 @@ The generated `dist/` directory and `node_modules/` are ignored by Git.
 - When running services manually, MinIO buckets and CORS must still be configured
   separately; the root Compose workflow automates both.
 - Authentication and role-based access control are not implemented.
-- There is no PDF report, dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
+- Reports contain deterministic persisted results only; there is no AI-generated content.
+- There is no dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
 - ATT&CK Mobile indicators are triage signals, not malware verdicts.
 
 No frontend test framework was added in this sprint. `npm run build` provides TypeScript and production-bundle verification, followed by the manual workflow above.

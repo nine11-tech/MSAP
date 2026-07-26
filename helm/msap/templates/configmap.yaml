@@ -46,4 +46,8 @@ data:
   EXPORT_BUCKET: {{ .Values.minio.buckets.exports | quote }}
   REPORT_INCLUDE_EVIDENCE: "true"
   REPORT_REDACTION_REQUIRED: "true"
+  MSAP_REPORT_AUTHOR: {{ .Values.application.reportAuthor | quote }}
+  MSAP_REPORT_ORGANIZATION: {{ .Values.application.reportOrganization | quote }}
+  MSAP_REPORT_CLASSIFICATION: {{ .Values.application.reportClassification | quote }}
+  MSAP_REPORT_VERSION: {{ .Values.application.reportVersion | quote }}
   AI_ASSISTANT_ENABLED: "false"

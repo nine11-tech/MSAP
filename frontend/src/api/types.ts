@@ -165,10 +165,12 @@ export interface JsonReport {
   };
   apk: {
     id: number;
+    filename: string;
     package_name: string;
     version_name: string;
     sha256: string;
     size_bytes: number | null;
+    storage_status: string;
     created_at: string;
   } | null;
   summary: {

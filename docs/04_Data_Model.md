@@ -11,7 +11,7 @@
 - `Finding`: MASVS-oriented security finding.
 - `SuspiciousIndicator`: ATT&CK Mobile triage indicator.
 - `Evidence`: traceable support for a finding or indicator.
-- `Report`: generated JSON export or later PDF report.
+- `Report`: idempotent metadata record for an on-demand JSON or PDF report.
 
 ## Object Storage Principle
 PostgreSQL stores metadata, relationships and object references. MinIO stores APKs, large artifacts, evidence objects, reports and exports.
@@ -61,4 +61,3 @@ org/{organization_id}/project/{project_id}/audit/{audit_id}/{object_type}/{sha25
 ```
 
 Object keys must use sanitized filenames and must not be treated as the authorization boundary.
-
