@@ -249,6 +249,7 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
     story.extend(_scope_and_methodology(styles))
     story.extend(_apk_information(apk, audit, styles))
     story.extend(_risk_and_compliance(summary, styles))
+    story.extend(_coverage_section(summary.get("coverage", {}), styles))
     story.extend(
         _findings_section(
             findings,
@@ -385,12 +386,51 @@ def _risk_and_compliance(summary, styles) -> list:
         ("Raw risk weight", risk.get("raw_weight", 0)),
         ("MASVS compliance", f"{compliance.get('score', 0)}%"),
         ("Evaluated MASVS rules", compliance.get("evaluated_rules", 0)),
+        ("Applicable MASVS rules", compliance.get("applicable_rules", 0)),
+        ("Passed MASVS rules", compliance.get("passed_rules", 0)),
         ("Failed MASVS rules", compliance.get("failed_rules", 0)),
+        ("Review-required MASVS rules", compliance.get("review_required", 0)),
+        ("Unevaluated MASVS rules", compliance.get("not_evaluated", 0)),
         ("ATT&CK triage level", triage.get("triage_level", "Unknown")),
         ("ATT&CK indicator count", triage.get("triage_indicators", 0)),
     ]
     return [
         Paragraph("Risk and Compliance Summary", styles["section"]),
+        _key_value_table(rows, styles),
+        Paragraph(
+            _text(
+                compliance.get("coverage_warning")
+                or "All catalog rules with required artifacts were evaluated."
+            ),
+            styles["notice"] if compliance.get("partial_coverage") else styles["small_muted"],
+        ),
+    ]
+
+
+def _coverage_section(coverage, styles) -> list:
+    analyzers = coverage.get("analyzers", {})
+    rows = [
+        ("Catalog evaluations", coverage.get("total_catalog_rules", 0)),
+        ("Applicable", coverage.get("applicable", 0)),
+        ("Evaluated", coverage.get("evaluated", 0)),
+        ("Passed", coverage.get("passed", 0)),
+        ("Failed", coverage.get("failed", 0)),
+        ("Review required", coverage.get("review_required", 0)),
+        ("Not evaluated", coverage.get("not_evaluated", 0)),
+        ("Analyzers completed", ", ".join(analyzers.get("completed", [])) or "None"),
+        (
+            "Analyzers skipped",
+            ", ".join(item.get("name", "") for item in analyzers.get("skipped", []))
+            or "None",
+        ),
+        (
+            "Analyzers failed",
+            ", ".join(item.get("name", "") for item in analyzers.get("failed", []))
+            or "None",
+        ),
+    ]
+    return [
+        Paragraph("Analyzer and Rule Coverage", styles["section"]),
         _key_value_table(rows, styles),
     ]
 
@@ -422,12 +462,36 @@ def _findings_section(findings, evidence_index, styles) -> list:
             ("MASVS mapping/category", mapping or "Not recorded"),
             (
                 "Description",
-                "No additional description was persisted for this finding.",
+                finding.get("description")
+                or "No additional description was persisted for this finding.",
+            ),
+            (
+                "MASVS controls",
+                ", ".join((finding.get("mappings") or {}).get("masvs_controls", []))
+                or "Not recorded",
+            ),
+            (
+                "MASWE weaknesses",
+                ", ".join((finding.get("mappings") or {}).get("maswe_ids", []))
+                or "Not recorded",
+            ),
+            (
+                "MASTG references",
+                ", ".join((finding.get("mappings") or {}).get("mastg_references", []))
+                or "Not recorded",
             ),
             ("Evidence summary", evidence_summary or "No linked evidence recorded."),
             (
                 "Remediation",
                 finding.get("recommendation") or FALLBACK_REMEDIATION,
+            ),
+            (
+                "False-positive considerations",
+                finding.get("false_positive_guidance") or "Validate in application context.",
+            ),
+            (
+                "Manual validation",
+                "Required" if finding.get("requires_manual_validation") else "Not required for the static condition",
             ),
             ("Status", finding.get("status") or "Not recorded"),
         ]
@@ -479,14 +543,23 @@ def _indicators_section(indicators, evidence_index, styles) -> list:
                 or "No additional triage interpretation was persisted.",
             ),
             (
+                "Mapping rationale",
+                indicator.get("mapping_rationale") or "Static capability mapping requires validation.",
+            ),
+            (
+                "False-positive considerations",
+                indicator.get("false_positive_considerations")
+                or "Legitimate use is possible.",
+            ),
+            (
                 "Evidence",
                 _joined_evidence(evidence_index.get(indicator.get("id"), []))
                 or "No linked evidence recorded.",
             ),
             (
                 "Triage note",
-                "Investigate in application and deployment context; this signal "
-                "does not determine whether the application is malicious or benign.",
+                indicator.get("non_malware_verdict_note")
+                or "Triage signal — not a malware verdict.",
             ),
         ]
         elements.extend(

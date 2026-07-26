@@ -4,6 +4,9 @@ import re
 
 from django.db import transaction
 
+from apps.analyzers.models import RawAnalyzerResult
+from apps.appsec_rules.models import RuleEvaluation
+from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence
@@ -47,6 +50,12 @@ def generate_json_report(audit_id: int) -> dict:
         .only("id", "artifact_type", "source", "created_at")
         .order_by("id")
     )
+    evaluations = list(
+        RuleEvaluation.objects.filter(audit_id=audit_id).order_by("framework", "rule_id")
+    )
+    analyzer_results = list(
+        RawAnalyzerResult.objects.filter(audit_id=audit_id).order_by("analyzer_name")
+    )
     latest_job = (
         AnalysisJob.objects.filter(audit_id=audit_id)
         .order_by("-created_at", "-id")
@@ -85,9 +94,29 @@ def generate_json_report(audit_id: int) -> dict:
             "risk": risk,
             "masvs_compliance": masvs_compliance,
             "attack_mobile_triage": attack_mobile_triage,
+            "coverage": calculate_rule_coverage(audit_id),
         },
         "findings": [_finding_data(finding) for finding in findings],
         "indicators": [_indicator_data(indicator) for indicator in indicators],
+        "rule_evaluations": [_evaluation_data(item) for item in evaluations],
+        "analyzer_results": [
+            {
+                "name": item.analyzer_name,
+                "version": item.analyzer_version,
+                "status": item.status,
+                "message": (
+                    item.error_message
+                    if item.error_message
+                    in {
+                        "Analyzer is disabled.",
+                        "Analyzer capability is unavailable.",
+                        "No local APK path is available.",
+                    }
+                    else ("Analyzer did not complete." if item.error_message else "")
+                ),
+            }
+            for item in analyzer_results
+        ],
         "evidence": [_evidence_data(item) for item in evidence],
         "normalized_artifacts": {
             "count": len(artifacts),
@@ -136,7 +165,11 @@ def _finding_data(finding: Finding) -> dict:
         "confidence": finding.confidence,
         "standard": finding.standard,
         "category": finding.category,
+        "description": finding.description,
+        "mappings": finding.mapping_data,
         "recommendation": finding.recommendation,
+        "false_positive_guidance": finding.false_positive_guidance,
+        "requires_manual_validation": finding.requires_manual_validation,
     }
 
 
@@ -151,6 +184,26 @@ def _indicator_data(indicator: SuspiciousIndicator) -> dict:
         "severity": indicator.severity,
         "confidence": indicator.confidence,
         "triage_interpretation": indicator.triage_interpretation,
+        "mapping_rationale": indicator.mapping_rationale,
+        "false_positive_considerations": indicator.false_positive_considerations,
+        "requires_manual_validation": indicator.requires_manual_validation,
+        "non_malware_verdict_note": indicator.non_malware_verdict_note,
+    }
+
+
+def _evaluation_data(evaluation: RuleEvaluation) -> dict:
+    return {
+        "framework": evaluation.framework,
+        "rule_id": evaluation.rule_id,
+        "result": evaluation.result,
+        "title": evaluation.title,
+        "severity": evaluation.severity,
+        "confidence": evaluation.confidence,
+        "mappings": evaluation.mapping_data,
+        "evidence_summary": evaluation.evidence_summary,
+        "remediation": evaluation.remediation,
+        "requires_manual_validation": evaluation.requires_manual_validation,
+        "evaluator_version": evaluation.evaluator_version,
     }
 
 

@@ -1,11 +1,10 @@
 from django.db import transaction
 
-from apps.findings.models import Finding
+from apps.appsec_rules.models import RuleEvaluation
 from apps.indicators.models import SuspiciousIndicator
 from apps.scoring.models import ComplianceScore
 
 
-IMPLEMENTED_MASVS_RULE_IDS = ("MSAP-AND-001", "MSAP-AND-002")
 ATTCK_TRIAGE_NOTE = (
     "ATT&CK Mobile indicators are triage signals, not malware verdicts."
 )
@@ -13,18 +12,20 @@ ATTCK_TRIAGE_NOTE = (
 
 @transaction.atomic
 def calculate_masvs_compliance(audit_id: int) -> dict:
-    evaluated_rules = len(IMPLEMENTED_MASVS_RULE_IDS)
-    failed_rules = (
-        Finding.objects.filter(
+    results = list(
+        RuleEvaluation.objects.filter(
             audit_id=audit_id,
-            rule_id__in=IMPLEMENTED_MASVS_RULE_IDS,
-        )
-        .values("rule_id")
-        .distinct()
-        .count()
+            framework=RuleEvaluation.Framework.MASVS,
+        ).values_list("result", flat=True)
     )
-    passed_rules = evaluated_rules - failed_rules
-    score = round((passed_rules / evaluated_rules) * 100, 2)
+    passed_rules = results.count(RuleEvaluation.Result.PASS)
+    failed_rules = results.count(RuleEvaluation.Result.FAIL)
+    review_required = results.count(RuleEvaluation.Result.REVIEW_REQUIRED)
+    not_evaluated = results.count(RuleEvaluation.Result.NOT_EVALUATED)
+    not_applicable = results.count(RuleEvaluation.Result.NOT_APPLICABLE)
+    applicable_rules = passed_rules + failed_rules + review_required
+    evaluated_rules = applicable_rules + not_applicable
+    score = round((passed_rules / applicable_rules) * 100, 2) if applicable_rules else 0.0
 
     ComplianceScore.objects.update_or_create(
         audit_id=audit_id,
@@ -36,8 +37,18 @@ def calculate_masvs_compliance(audit_id: int) -> dict:
         "standard": "MASVS",
         "score": score,
         "evaluated_rules": evaluated_rules,
+        "applicable_rules": applicable_rules,
         "failed_rules": failed_rules,
         "passed_rules": passed_rules,
+        "review_required": review_required,
+        "not_evaluated": not_evaluated,
+        "not_applicable": not_applicable,
+        "partial_coverage": not_evaluated > 0,
+        "coverage_warning": (
+            f"{not_evaluated} catalog rule(s) were not evaluated and are not counted as passing."
+            if not_evaluated
+            else ""
+        ),
     }
 
 

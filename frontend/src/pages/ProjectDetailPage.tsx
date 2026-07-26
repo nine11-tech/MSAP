@@ -12,6 +12,7 @@ import {
   errorMessage,
   formatDate,
 } from "../components/Common";
+import { useAuth } from "../auth/AuthContext";
 
 export function ProjectDetailPage() {
   const { projectId } = useParams();
@@ -22,6 +23,8 @@ export function ProjectDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const { hasRole } = useAuth();
+  const canEdit = hasRole("ADMIN", "ANALYST");
 
   useEffect(() => {
     Promise.all([getProject(id), listAudits()])
@@ -66,7 +69,7 @@ export function ProjectDetailPage() {
       {error ? <ErrorMessage message={error} /> : null}
 
       <div className="content-grid sidebar-layout">
-        <Card title="Create audit">
+        {canEdit ? <Card title="Create audit">
           <form className="form-stack" onSubmit={handleCreateAudit}>
             <label>
               Audit name
@@ -81,7 +84,11 @@ export function ProjectDetailPage() {
               {submitting ? "Creating…" : "Create audit"}
             </button>
           </form>
-        </Card>
+        </Card> : (
+          <Card title="Read-only access">
+            <p className="muted">Your viewer role can review existing audits but cannot create one.</p>
+          </Card>
+        )}
 
         <Card title={`Audits (${audits.length})`}>
           {audits.length ? (

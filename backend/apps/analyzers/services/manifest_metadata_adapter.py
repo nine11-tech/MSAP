@@ -4,6 +4,10 @@ from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from django.conf import settings
+from apps.analyzers.services.safe_archive import (
+    UnsafeAPKArchive,
+    validate_apk_archive,
+)
 
 
 ANDROID_NAMESPACE = "http://schemas.android.com/apk/res/android"
@@ -22,15 +26,27 @@ class ManifestMetadata:
     version_code: str | None = None
     min_sdk: str | None = None
     target_sdk: str | None = None
+    compile_sdk: str | None = None
     permissions: list[str] = field(default_factory=list)
+    declared_permissions: list[dict] = field(default_factory=list)
+    features: list[dict] = field(default_factory=list)
     components: list[dict] = field(default_factory=list)
+    deep_links: list[dict] = field(default_factory=list)
     application: dict = field(
         default_factory=lambda: {
             "debuggable": None,
+            "test_only": None,
             "allow_backup": None,
+            "full_backup_content": None,
+            "data_extraction_rules": None,
             "uses_cleartext_traffic": None,
+            "network_security_config": None,
+            "request_legacy_external_storage": None,
+            "task_affinity": None,
+            "application_class": None,
         }
     )
+    shared_user_id: str | None = None
 
 
 class ManifestMetadataAdapter:
@@ -81,6 +97,10 @@ class ManifestMetadataAdapter:
             raise ManifestParsingError("Local APK file is empty.")
         if apk_size > self.max_apk_size_bytes:
             raise ManifestParsingError("Local APK exceeds the configured size limit.")
+        try:
+            validate_apk_archive(apk_path)
+        except UnsafeAPKArchive as exc:
+            raise ManifestParsingError(str(exc)) from exc
 
         try:
             with ZipFile(apk_path) as apk_zip:
@@ -171,8 +191,40 @@ class ManifestMetadataAdapter:
                 )
             }
         )
+        declared_permissions = []
+        for element in root:
+            if _local_name(element.tag) != "permission":
+                continue
+            name = _android_attribute(element, "name")
+            if name:
+                declared_permissions.append(
+                    {
+                        "name": name,
+                        "protection_level": _android_attribute(
+                            element,
+                            "protectionLevel",
+                        ),
+                    }
+                )
+        declared_permissions.sort(key=lambda item: item["name"])
+
+        features = []
+        for element in root:
+            if _local_name(element.tag) != "uses-feature":
+                continue
+            name = _android_attribute(element, "name")
+            if name:
+                features.append(
+                    {
+                        "name": name,
+                        "required": _boolean_attribute(element, "required"),
+                        "version": _android_attribute(element, "version"),
+                    }
+                )
+        features.sort(key=lambda item: item["name"])
 
         components = []
+        deep_links = []
         component_types = {
             "activity": "activity",
             "activity-alias": "activity_alias",
@@ -188,24 +240,95 @@ class ManifestMetadataAdapter:
                     or element.get("name")
                 )
                 if component_type and component_name:
+                    intent_filters = _intent_filters(element)
+                    explicit_exported = _boolean_attribute(element, "exported")
+                    if explicit_exported is None:
+                        inferred_exported = bool(intent_filters)
+                        exported_state = (
+                            "INFERRED_TRUE" if inferred_exported else "INFERRED_FALSE"
+                        )
+                    else:
+                        inferred_exported = explicit_exported
+                        exported_state = (
+                            "EXPLICIT_TRUE"
+                            if explicit_exported
+                            else "EXPLICIT_FALSE"
+                        )
+                    metadata = _metadata(element)
+                    qualified_name = _qualified_component_name(
+                        package_name,
+                        component_name,
+                    )
                     components.append(
                         {
                             "type": component_type,
-                            "name": _qualified_component_name(
-                                package_name,
-                                component_name,
+                            "name": qualified_name,
+                            "exported": inferred_exported,
+                            "exported_state": exported_state,
+                            "permission": _android_attribute(element, "permission"),
+                            "read_permission": _android_attribute(
+                                element,
+                                "readPermission",
                             ),
+                            "write_permission": _android_attribute(
+                                element,
+                                "writePermission",
+                            ),
+                            "authorities": _android_attribute(
+                                element,
+                                "authorities",
+                            ),
+                            "grant_uri_permissions": _boolean_attribute(
+                                element,
+                                "grantUriPermissions",
+                            ),
+                            "task_affinity": _android_attribute(
+                                element,
+                                "taskAffinity",
+                            ),
+                            "intent_filters": intent_filters,
+                            "metadata": metadata,
                         }
                     )
+                    for intent_filter in intent_filters:
+                        for data in intent_filter["data"]:
+                            if data.get("scheme"):
+                                deep_links.append(
+                                    {
+                                        "component": qualified_name,
+                                        **data,
+                                        "auto_verify": intent_filter["auto_verify"],
+                                    }
+                                )
         components.sort(key=lambda item: (item["type"], item["name"]))
 
         application = {
             "debuggable": _application_boolean(application_element, "debuggable"),
+            "test_only": _application_boolean(application_element, "testOnly"),
             "allow_backup": _application_boolean(application_element, "allowBackup"),
+            "full_backup_content": _android_attribute(
+                application_element,
+                "fullBackupContent",
+            ),
+            "data_extraction_rules": _android_attribute(
+                application_element,
+                "dataExtractionRules",
+            ),
             "uses_cleartext_traffic": _application_boolean(
                 application_element,
                 "usesCleartextTraffic",
             ),
+            "network_security_config": _android_attribute(
+                application_element,
+                "networkSecurityConfig",
+            ),
+            "request_legacy_external_storage": _application_boolean(
+                application_element,
+                "requestLegacyExternalStorage",
+            ),
+            "task_affinity": _android_attribute(application_element, "taskAffinity"),
+            "application_class": _android_attribute(application_element, "name"),
+            "metadata": _metadata(application_element),
         }
 
         return ManifestMetadata(
@@ -214,9 +337,14 @@ class ManifestMetadataAdapter:
             version_code=_android_attribute(root, "versionCode"),
             min_sdk=_android_attribute(uses_sdk, "minSdkVersion"),
             target_sdk=_android_attribute(uses_sdk, "targetSdkVersion"),
+            compile_sdk=_android_attribute(root, "compileSdkVersion"),
             permissions=permissions,
+            declared_permissions=declared_permissions,
+            features=features,
             components=components,
+            deep_links=deep_links,
             application=application,
+            shared_user_id=_android_attribute(root, "sharedUserId"),
         )
 
 
@@ -252,6 +380,70 @@ def _application_boolean(application_element, attribute_name: str) -> bool | Non
     if normalized_value in {"false", "0"}:
         return False
     return None
+
+
+def _boolean_attribute(element, attribute_name: str) -> bool | None:
+    return _application_boolean(element, attribute_name)
+
+
+def _metadata(element) -> list[dict]:
+    if element is None:
+        return []
+    items = []
+    for child in element:
+        if _local_name(child.tag) != "meta-data":
+            continue
+        name = _android_attribute(child, "name")
+        if name:
+            items.append(
+                {
+                    "name": name,
+                    "value": _android_attribute(child, "value"),
+                    "resource": _android_attribute(child, "resource"),
+                }
+            )
+    return sorted(items, key=lambda item: item["name"])
+
+
+def _intent_filters(element) -> list[dict]:
+    filters = []
+    for child in element:
+        if _local_name(child.tag) != "intent-filter":
+            continue
+        actions = []
+        categories = []
+        data_entries = []
+        for item in child:
+            kind = _local_name(item.tag)
+            if kind == "action":
+                name = _android_attribute(item, "name")
+                if name:
+                    actions.append(name)
+            elif kind == "category":
+                name = _android_attribute(item, "name")
+                if name:
+                    categories.append(name)
+            elif kind == "data":
+                data_entries.append(
+                    {
+                        "scheme": _android_attribute(item, "scheme"),
+                        "host": _android_attribute(item, "host"),
+                        "port": _android_attribute(item, "port"),
+                        "path": _android_attribute(item, "path"),
+                        "path_prefix": _android_attribute(item, "pathPrefix"),
+                        "path_pattern": _android_attribute(item, "pathPattern"),
+                        "mime_type": _android_attribute(item, "mimeType"),
+                    }
+                )
+        filters.append(
+            {
+                "actions": sorted(actions),
+                "categories": sorted(categories),
+                "data": data_entries,
+                "auto_verify": _boolean_attribute(child, "autoVerify"),
+            }
+        )
+    return filters
 
 
 def _optional_string(value) -> str | None:

@@ -11,6 +11,8 @@ import type {
   JsonReport,
   Project,
   RiskScore,
+  RuleCoverage,
+  SystemStatus,
   UploadContract,
   UploadInitiateRequest,
 } from "./types";
@@ -65,6 +67,8 @@ export const startAnalysis = (auditId: number) =>
   apiPost<AnalysisStartResponse>(`audits/${auditId}/analysis/start/`);
 export const getAnalysisStatus = (auditId: number) =>
   apiGet<AnalysisStatusResponse>(`audits/${auditId}/analysis/status/`);
+export const getAuditCoverage = (auditId: number) =>
+  apiGet<RuleCoverage>(`audits/${auditId}/coverage/`);
 
 const auditQuery = (auditId?: number) =>
   auditId === undefined ? "" : `?audit=${encodeURIComponent(auditId)}`;
@@ -84,3 +88,6 @@ export const getJsonReport = (auditId: number) =>
   apiGet<JsonReport>(`audits/${auditId}/report/json/`);
 export const downloadPdfReport = (auditId: number) =>
   apiDownload(`audits/${auditId}/report/pdf/`);
+
+export const getSystemStatus = (force = false) =>
+  apiGet<SystemStatus>(`system/status/${force ? "?refresh=true" : ""}`);

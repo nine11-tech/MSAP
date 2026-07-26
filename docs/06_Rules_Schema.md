@@ -5,58 +5,59 @@ MSAP uses YAML rule files to define initial MASVS findings and ATT&CK Mobile tri
 
 ## Common Fields
 ```yaml
-id: MASVS-001
+id: MSAP-AND-001
 title: Exported activity without clear protection
 description: Detects exported Android components that may need review.
-enabled: true
-severity: medium
-confidence: medium
-detection_type: manifest_query
-evidence:
-  artifact_type: manifest
-  fields:
-    - component_name
-    - exported
+standard: OWASP MASVS
+severity: High
+confidence: High
+prerequisites: [MANIFEST]
+condition: exported_activity_unprotected
+pattern_or_condition: exported activity and permission is absent
+evidence_requirements: Persisted normalized component metadata.
+requires_manual_validation: false
 ```
 
 ## MASVS Rule Fields
 - `id`
 - `title`
 - `description`
-- `enabled`
-- `masvs_control`
+- `masvs_category`
+- `masvs_controls`
+- `maswe_ids`
+- `mastg_references`
+- `cwe_ids`
 - `severity`
 - `confidence`
 - `detection_type`
-- `match`
-- `evidence`
+- `condition`
+- `prerequisites`
+- `evidence_requirements`
 - `remediation`
+- `false_positive_guidance`
+- `requires_manual_validation`
+- `test_type`
 
 ## ATT&CK Rule Fields
 - `id`
 - `title`
 - `description`
-- `enabled`
-- `attack_technique_id`
-- `attack_technique_name`
+- `technique_id`
+- `technique_name`
+- `tactic`
 - `confidence`
 - `detection_type`
-- `match`
-- `evidence`
-- `triage_note`
+- `condition`
+- `values`
+- `mapping_rationale`
+- `false_positive_considerations`
+- `requires_manual_validation`
+- `non_malware_verdict_note`
 
 ## Controlled Values
-Severity:
-- `info`
-- `low`
-- `medium`
-- `high`
-- `critical`
+Severity: `Low`, `Medium`, `High`, `Critical`.
 
-Confidence:
-- `low`
-- `medium`
-- `high`
+Confidence: `Low`, `Medium`, `High`.
 
 Detection types:
 - `manifest_query`
@@ -68,5 +69,7 @@ Detection types:
 - `certificate_check`
 
 ## Loading Rules
-Workers load YAML rules at startup or task execution. Invalid rules must fail closed with clear validation errors and must not silently produce findings.
-
+Workers load repository-owned YAML at task execution. `validate_rules` rejects
+duplicates, malformed internal/framework identifiers, and missing required
+metadata. `rules/framework_metadata.yaml` records official sources and snapshot
+dates. Updates are manual; audits never require internet access.

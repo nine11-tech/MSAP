@@ -4,6 +4,7 @@ from apps.analyzers.models import RawAnalyzerResult
 from apps.analyzers.services.base import AnalyzerResult
 from apps.analyzers.services.registry import AnalyzerRegistry
 from apps.appsec_rules.services.masvs_evaluator import evaluate_masvs_rules
+from apps.appsec_rules.models import RuleEvaluation
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.audits.services.analysis_orchestrator import AnalysisOrchestrator
@@ -48,12 +49,12 @@ def test_masvs_evaluator_creates_debuggable_finding_and_evidence(audit_and_apk):
 
     finding = Finding.objects.get(audit=audit, rule_id="MSAP-AND-001")
     evidence = Evidence.objects.get(finding=finding)
-    assert summary == {
-        "evaluated_rules": 2,
-        "findings_created": 1,
-        "findings_existing": 0,
-        "evidence_created": 1,
-    }
+    assert summary["catalog_rules"] == 36
+    assert summary["evaluated_rules"] == 16
+    assert summary["not_evaluated"] == 20
+    assert summary["findings_created"] == 1
+    assert summary["failed"] == 1
+    assert RuleEvaluation.objects.filter(audit=audit).count() == 36
     assert evidence.snippet == "application.debuggable=true"
     assert evidence.redacted is False
 
@@ -88,13 +89,14 @@ def test_attck_evaluator_creates_sms_indicator_and_evidence(audit_and_apk):
         indicator_id="MSAP-MOB-001",
     )
     evidence = Evidence.objects.get(indicator=indicator)
-    assert summary == {
-        "evaluated_indicators": 2,
-        "indicators_created": 1,
-        "indicators_existing": 0,
-        "evidence_created": 1,
-    }
-    assert evidence.snippet == "permission=android.permission.READ_SMS"
+    assert summary["catalog_indicators"] == 20
+    assert summary["evaluated_indicators"] == 14
+    assert summary["not_evaluated"] == 6
+    assert summary["matched_indicators"] == 1
+    assert summary["indicators_created"] == 1
+    assert evidence.snippet == (
+        "declared permission capability: android.permission.READ_SMS"
+    )
     assert evidence.redacted is False
 
 
@@ -120,10 +122,8 @@ def test_attck_evaluator_creates_accessibility_service_indicator(audit_and_apk):
         indicator_id="MSAP-MOB-002",
     )
     assert summary["indicators_created"] == 1
-    assert indicator.title == "Accessibility service usage"
-    assert indicator.evidence.get().snippet == (
-        "service.permission=android.permission.BIND_ACCESSIBILITY_SERVICE"
-    )
+    assert indicator.title == "Accessibility service capability"
+    assert indicator.evidence.get().snippet == "matched component capability declarations: 1"
 
 
 @pytest.mark.django_db
@@ -171,15 +171,27 @@ def test_orchestrator_evaluates_created_manifest_artifact(audit_and_apk):
             "score": 100,
             "severity": "Critical",
             "finding_count": 2,
-            "indicator_count": 2,
-            "raw_weight": 22,
+            "indicator_count": 0,
+            "raw_weight": 11,
+            "method": (
+                "Unique failed findings weighted by severity and confidence; "
+                "ATT&CK triage excluded."
+            ),
         },
         "masvs_compliance": {
             "standard": "MASVS",
-            "score": 0.0,
-            "evaluated_rules": 2,
+            "score": 87.5,
+            "evaluated_rules": 16,
+            "applicable_rules": 16,
             "failed_rules": 2,
-            "passed_rules": 0,
+            "passed_rules": 14,
+            "review_required": 0,
+            "not_evaluated": 20,
+            "not_applicable": 0,
+            "partial_coverage": True,
+            "coverage_warning": (
+                "20 catalog rule(s) were not evaluated and are not counted as passing."
+            ),
         },
         "attack_mobile_triage": {
             "triage_indicators": 2,

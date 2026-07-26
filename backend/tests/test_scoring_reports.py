@@ -4,6 +4,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.apk_files.models import APKFile
+from apps.appsec_rules.models import RuleEvaluation
 from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
@@ -25,6 +26,18 @@ def audit(db):
     return Audit.objects.create(project=project, name="Scoring audit")
 
 
+@pytest.fixture
+def admin_client(django_user_model):
+    user = django_user_model.objects.create_superuser(
+        username="report-admin",
+        email="report-admin@example.test",
+        password="Strong-Test-Password-42!",
+    )
+    client = APIClient()
+    client.force_authenticate(user)
+    return client
+
+
 @pytest.mark.django_db
 def test_risk_scoring_creates_and_updates_score_by_severity(audit):
     finding = _create_finding(audit, "MSAP-AND-001", "Low")
@@ -42,6 +55,10 @@ def test_risk_scoring_creates_and_updates_score_by_severity(audit):
         "finding_count": 1,
         "indicator_count": 0,
         "raw_weight": 7,
+        "method": (
+            "Unique failed findings weighted by severity and confidence; "
+            "ATT&CK triage excluded."
+        ),
     }
     assert risk_score.score == 70
     assert RiskScore.objects.filter(audit=audit).count() == 1
@@ -49,10 +66,14 @@ def test_risk_scoring_creates_and_updates_score_by_severity(audit):
 
 @pytest.mark.django_db
 def test_masvs_compliance_updates_for_zero_one_and_two_failed_rules(audit):
+    first = _create_evaluation(audit, "MSAP-AND-001", RuleEvaluation.Result.PASS)
+    second = _create_evaluation(audit, "MSAP-AND-002", RuleEvaluation.Result.PASS)
     fully_compliant = calculate_masvs_compliance(audit.id)
-    _create_finding(audit, "MSAP-AND-001", "High")
+    first.result = RuleEvaluation.Result.FAIL
+    first.save(update_fields=["result"])
     half_compliant = calculate_masvs_compliance(audit.id)
-    _create_finding(audit, "MSAP-AND-002", "Medium")
+    second.result = RuleEvaluation.Result.FAIL
+    second.save(update_fields=["result"])
     non_compliant = calculate_masvs_compliance(audit.id)
 
     assert fully_compliant["score"] == 100
@@ -67,7 +88,10 @@ def test_masvs_compliance_updates_for_zero_one_and_two_failed_rules(audit):
 
 
 @pytest.mark.django_db
-def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
+def test_json_report_endpoint_returns_results_without_raw_manifest(
+    audit,
+    admin_client,
+):
     apk_file = APKFile.objects.create(
         audit=audit,
         package_name="com.example.scored",
@@ -76,6 +100,8 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
         size_bytes=1024,
     )
     finding = _create_finding(audit, "MSAP-AND-001", "High")
+    _create_evaluation(audit, "MSAP-AND-001", RuleEvaluation.Result.FAIL)
+    _create_evaluation(audit, "MSAP-AND-002", RuleEvaluation.Result.PASS)
     indicator = _create_indicator(audit, "MSAP-MOB-001", "Medium")
     Evidence.objects.create(
         audit=audit,
@@ -115,9 +141,8 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
         },
     )
 
-    client = APIClient()
-    response = client.get(f"/api/audits/{audit.id}/report/json/")
-    second_response = client.get(f"/api/audits/{audit.id}/report/json/")
+    response = admin_client.get(f"/api/audits/{audit.id}/report/json/")
+    second_response = admin_client.get(f"/api/audits/{audit.id}/report/json/")
 
     assert response.status_code == 200
     assert second_response.status_code == 200
@@ -128,7 +153,7 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
     assert len(data["findings"]) == 1
     assert len(data["indicators"]) == 1
     assert len(data["evidence"]) == 2
-    assert data["summary"]["risk"]["score"] == 100
+    assert data["summary"]["risk"]["score"] == 70
     assert data["summary"]["masvs_compliance"]["score"] == 50
     assert data["normalized_artifacts"]["by_type"] == {"MANIFEST": 1}
     assert data["limitations"] == [
@@ -147,10 +172,10 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(audit):
 
 
 @pytest.mark.django_db
-def test_attck_report_summary_is_triage_only(audit):
+def test_attck_report_summary_is_triage_only(audit, admin_client):
     _create_indicator(audit, "MSAP-MOB-001", "Medium")
 
-    response = APIClient().get(f"/api/audits/{audit.id}/report/json/")
+    response = admin_client.get(f"/api/audits/{audit.id}/report/json/")
 
     triage = response.json()["summary"]["attack_mobile_triage"]
     assert triage == {
@@ -162,7 +187,7 @@ def test_attck_report_summary_is_triage_only(audit):
 
 
 @pytest.mark.django_db
-def test_pdf_report_endpoint_returns_attachment(audit):
+def test_pdf_report_endpoint_returns_attachment(audit, admin_client):
     finding = _create_finding(audit, "MSAP-AND-001", "High")
     finding.recommendation = "Disable the insecure release configuration."
     finding.save(update_fields=["recommendation"])
@@ -182,7 +207,7 @@ def test_pdf_report_endpoint_returns_attachment(audit):
         snippet="permission=android.permission.READ_SMS",
     )
 
-    response = APIClient().get(f"/api/audits/{audit.id}/report/pdf/")
+    response = admin_client.get(f"/api/audits/{audit.id}/report/pdf/")
 
     assert response.status_code == 200
     assert response["Content-Type"] == "application/pdf"
@@ -196,16 +221,16 @@ def test_pdf_report_endpoint_returns_attachment(audit):
 
 
 @pytest.mark.django_db
-def test_pdf_report_endpoint_returns_404_for_missing_audit():
-    response = APIClient().get("/api/audits/999999/report/pdf/")
+def test_pdf_report_endpoint_returns_404_for_missing_audit(admin_client):
+    response = admin_client.get("/api/audits/999999/report/pdf/")
 
     assert response.status_code == 404
 
 
 @pytest.mark.django_db
-def test_json_report_endpoint_still_works_with_pdf_reporting(audit):
-    pdf_response = APIClient().get(f"/api/audits/{audit.id}/report/pdf/")
-    json_response = APIClient().get(f"/api/audits/{audit.id}/report/json/")
+def test_json_report_endpoint_still_works_with_pdf_reporting(audit, admin_client):
+    pdf_response = admin_client.get(f"/api/audits/{audit.id}/report/pdf/")
+    json_response = admin_client.get(f"/api/audits/{audit.id}/report/json/")
 
     assert pdf_response.status_code == 200
     assert json_response.status_code == 200
@@ -236,4 +261,17 @@ def _create_indicator(
         severity=severity,
         confidence="Medium",
         triage_interpretation="Review in application context.",
+    )
+
+
+def _create_evaluation(audit: Audit, rule_id: str, result: str) -> RuleEvaluation:
+    return RuleEvaluation.objects.create(
+        audit=audit,
+        framework=RuleEvaluation.Framework.MASVS,
+        rule_id=rule_id,
+        result=result,
+        severity="HIGH",
+        confidence="HIGH",
+        title=f"Evaluation {rule_id}",
+        evaluator_version="test",
     )

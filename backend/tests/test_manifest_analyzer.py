@@ -60,22 +60,16 @@ def analyzer_context(db):
 def test_manifest_normalized_schema_has_stable_fields():
     artifact = build_manifest_artifact()
 
-    assert artifact == {
-        "schema_version": "1.0",
-        "package_name": None,
-        "version_name": None,
-        "version_code": None,
-        "min_sdk": None,
-        "target_sdk": None,
-        "permissions": [],
-        "components": [],
-        "application": {
-            "debuggable": None,
-            "allow_backup": None,
-            "uses_cleartext_traffic": None,
-        },
-        "parsing_status": "NOT_STARTED",
-    }
+    assert artifact["schema_version"] == "2.0"
+    assert artifact["analyzer_name"] == "manifest_metadata_analyzer"
+    assert artifact["source"] == "AndroidManifest.xml"
+    assert artifact["package_name"] is None
+    assert artifact["permissions"] == []
+    assert artifact["declared_permissions"] == []
+    assert artifact["components"] == []
+    assert artifact["application"]["debuggable"] is None
+    assert artifact["application"]["network_security_config"] is None
+    assert artifact["parsing_status"] == "NOT_STARTED"
 
 
 @pytest.mark.django_db
@@ -104,10 +98,14 @@ def test_orchestrator_completes_and_records_skipped_manifest(analyzer_context):
     assert result.summary["analyzers_run"] == [
         "placeholder_metadata",
         "manifest_metadata_analyzer",
+        "advanced_static_analyzer",
     ]
-    assert result.summary["skipped_analyzers"] == ["manifest_metadata_analyzer"]
+    assert result.summary["skipped_analyzers"] == [
+        "advanced_static_analyzer",
+        "manifest_metadata_analyzer",
+    ]
     assert result.summary["errors"] == []
-    assert result.summary["created_raw_analyzer_results"] == 2
+    assert result.summary["created_raw_analyzer_results"] == 3
     assert result.summary["created_normalized_artifacts"] == 1
 
 
@@ -159,54 +157,47 @@ def test_valid_fixture_creates_parsed_manifest_artifact(
         artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
     )
     assert result.summary["real_apk_parsing"] is True
-    assert artifact.normalized_data == {
-        "schema_version": "1.0",
-        "package_name": "com.example.fixture",
-        "version_name": "2.3.4",
-        "version_code": "42",
-        "min_sdk": "24",
-        "target_sdk": "35",
-        "permissions": [
-            "android.permission.CAMERA",
-            "android.permission.INTERNET",
-        ],
-        "components": [
-            {
-                "type": "activity",
-                "name": "com.example.fixture.MainActivity",
-            },
-            {
-                "type": "provider",
-                "name": "com.example.fixture.DataProvider",
-            },
-            {
-                "type": "receiver",
-                "name": "com.example.fixture.AlarmReceiver",
-            },
-            {
-                "type": "service",
-                "name": "com.example.fixture.SyncService",
-            },
-        ],
-        "application": {
-            "debuggable": True,
-            "allow_backup": False,
-            "uses_cleartext_traffic": True,
-        },
-        "parsing_status": "PARSED",
+    normalized = artifact.normalized_data
+    assert normalized["schema_version"] == "2.0"
+    assert normalized["package_name"] == "com.example.fixture"
+    assert normalized["version_name"] == "2.3.4"
+    assert normalized["version_code"] == "42"
+    assert normalized["min_sdk"] == "24"
+    assert normalized["target_sdk"] == "35"
+    assert normalized["permissions"] == [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+    ]
+    assert {item["type"] for item in normalized["components"]} == {
+        "activity",
+        "provider",
+        "receiver",
+        "service",
     }
+    assert normalized["application"]["debuggable"] is True
+    assert normalized["application"]["allow_backup"] is False
+    assert normalized["application"]["uses_cleartext_traffic"] is True
+    assert normalized["parsing_status"] == "PARSED"
     analyzer_context.apk_file.refresh_from_db()
     assert analyzer_context.apk_file.package_name == "com.example.fixture"
     assert analyzer_context.apk_file.version_name == "2.3.4"
-    assert Finding.objects.filter(audit=analyzer_context.audit).count() == 1
+    assert Finding.objects.filter(audit=analyzer_context.audit).count() == 2
     assert Finding.objects.filter(
         audit=analyzer_context.audit,
         rule_id="MSAP-AND-001",
     ).exists()
+    assert Finding.objects.filter(
+        audit=analyzer_context.audit,
+        rule_id="MSAP-AND-003",
+    ).exists()
     assert (
         SuspiciousIndicator.objects.filter(audit=analyzer_context.audit).count()
-        == 0
+        == 1
     )
+    assert SuspiciousIndicator.objects.filter(
+        audit=analyzer_context.audit,
+        indicator_id="MSAP-MOB-009",
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -262,7 +253,7 @@ def test_invalid_apk_fails_cleanly(analyzer_context, tmp_path):
     assert result.status == RawAnalyzerResult.Status.FAILED
     assert result.normalized_artifacts == []
     assert result.raw_summary["parsing_status"] == "FAILED"
-    assert result.error_message == "Local APK is not a readable ZIP archive."
+    assert result.error_message == "APK is not a readable ZIP archive."
 
 
 @pytest.mark.django_db

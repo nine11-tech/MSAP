@@ -1,196 +1,449 @@
+catalog:
+  name: MSAP deterministic Android MASVS evaluation catalog
+  version: "2.0.0"
+  snapshot_date: "2026-07-26"
+  platform: Android
+defaults: &defaults
+  standard: OWASP MASVS
+  confidence: Medium
+  source: Normalized APK artifacts
+  detection_type: deterministic_static_condition
+  prerequisites: []
+  evidence_requirements: Persisted normalized artifact value or bounded reference.
+  recommendation: Review the affected implementation and apply OWASP MAS guidance.
+  masvs_controls: []
+  maswe_ids: []
+  mastg_references: []
+  cwe_ids: []
+  false_positive_guidance: Validate the matched static evidence in application context.
+  requires_manual_validation: true
+  test_type: static/config
+  applicable_android: Android application package.
 rules:
-  - id: MSAP-AND-001
-    title: Android debuggable enabled
-    description: The application is configured with android:debuggable set to true.
-    standard: OWASP MASVS
+  - <<: *defaults
+    id: MSAP-AND-001
+    title: Release build is debuggable
+    description: The application manifest explicitly enables debugging.
     masvs_category: MASVS-RESILIENCE
     severity: High
     confidence: High
-    source: AndroidManifest.xml
-    detection_type: manifest_attribute
-    pattern_or_condition: "application/@android:debuggable == true"
-    impact: Debuggable production builds can expose runtime inspection, debugging interfaces and sensitive execution details.
-    recommendation: Disable android:debuggable for production builds and enforce release build configuration checks.
-    evidence_example: "<application android:debuggable=\"true\" ...>"
+    prerequisites: [MANIFEST]
+    condition: manifest_debuggable
+    pattern_or_condition: application.debuggable == true
+    recommendation: Disable android:debuggable in every production build variant.
+    masvs_controls: [MASVS-RESILIENCE-4]
+    maswe_ids: [MASWE-0067]
+    mastg_references: [MASTG-TEST-0226, MASTG-BEST-0007]
+    requires_manual_validation: false
 
-  - id: MSAP-AND-002
-    title: Android backup enabled
-    description: The application allows Android backup through android:allowBackup.
-    standard: OWASP MASVS
+  - <<: *defaults
+    id: MSAP-AND-002
+    title: Application backup is broadly enabled
+    description: The package permits backup without evidence that sensitive data is excluded.
     masvs_category: MASVS-STORAGE
     severity: Medium
     confidence: High
-    source: AndroidManifest.xml
-    detection_type: manifest_attribute
-    pattern_or_condition: "application/@android:allowBackup == true"
-    impact: Application data may be included in device backups and exposed if sensitive data is not protected.
-    recommendation: Disable android:allowBackup or document and secure all backup-eligible data.
-    evidence_example: "<application android:allowBackup=\"true\" ...>"
+    prerequisites: [MANIFEST]
+    condition: manifest_allow_backup
+    pattern_or_condition: application.allow_backup == true
+    recommendation: Disable backup or define and validate explicit backup exclusion rules.
+    masvs_controls: [MASVS-STORAGE-2]
+    maswe_ids: [MASWE-0004]
+    mastg_references: [MASTG-TEST-0262, MASTG-BEST-0004]
+    false_positive_guidance: A validated backup policy may exclude every sensitive data location.
+    requires_manual_validation: false
 
-  - id: MSAP-AND-003
-    title: Cleartext traffic allowed
-    description: The application permits unencrypted network traffic.
-    standard: OWASP MASVS
+  - <<: *defaults
+    id: MSAP-AND-003
+    title: Manifest permits cleartext traffic
+    description: The manifest enables cleartext traffic and no overriding network configuration was proven safe.
     masvs_category: MASVS-NETWORK
     severity: High
     confidence: High
-    source: AndroidManifest.xml, network_security_config
-    detection_type: configuration_condition
-    pattern_or_condition: "usesCleartextTraffic == true or cleartextTrafficPermitted == true"
-    impact: Network communications may be exposed to interception or modification.
-    recommendation: Disable cleartext traffic and enforce HTTPS for all production endpoints.
-    evidence_example: "android:usesCleartextTraffic=\"true\""
+    prerequisites: [MANIFEST]
+    condition: manifest_cleartext
+    pattern_or_condition: application.uses_cleartext_traffic == true
+    recommendation: Disable cleartext traffic and migrate endpoints to authenticated TLS.
+    masvs_controls: [MASVS-NETWORK-1]
+    maswe_ids: [MASWE-0050]
+    mastg_references: [MASTG-TEST-0235]
+    requires_manual_validation: false
 
-  - id: MSAP-AND-004
-    title: Exported activity without protection
-    description: An exported activity is declared without an apparent permission guard.
-    standard: OWASP MASVS
+  - &exported
+    <<: *defaults
+    id: MSAP-AND-004
+    title: Exported activity lacks an access-control permission
+    description: An exported activity is statically reachable without a declared permission guard.
     masvs_category: MASVS-PLATFORM
     severity: High
     confidence: High
-    source: AndroidManifest.xml
-    detection_type: manifest_component_rule
-    pattern_or_condition: "activity/@android:exported == true and missing android:permission"
-    impact: External applications may invoke sensitive screens or workflows.
-    recommendation: Set exported to false unless required, and protect exported activities with appropriate permissions.
-    evidence_example: "<activity android:name=\".AdminActivity\" android:exported=\"true\" />"
+    prerequisites: [MANIFEST]
+    condition: exported_activity_unprotected
+    pattern_or_condition: exported activity and permission is absent
+    recommendation: Keep the activity private or protect it with an appropriate signature permission.
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0119]
+    mastg_references: [MASTG-BEST-0052]
+    requires_manual_validation: false
 
-  - id: MSAP-AND-005
-    title: Exported service without protection
-    description: An exported service is declared without an apparent permission guard.
-    standard: OWASP MASVS
-    masvs_category: MASVS-PLATFORM
+  - <<: *exported
+    id: MSAP-AND-005
+    title: Exported service lacks an access-control permission
+    description: An exported service is statically reachable without a declared permission guard.
+    condition: exported_service_unprotected
+    pattern_or_condition: exported service and permission is absent
+    maswe_ids: [MASWE-0062]
+
+  - <<: *exported
+    id: MSAP-AND-006
+    title: Exported receiver lacks an access-control permission
+    description: An exported broadcast receiver is statically reachable without a declared permission guard.
+    condition: exported_receiver_unprotected
+    pattern_or_condition: exported receiver and permission is absent
+    maswe_ids: [MASWE-0063]
+
+  - <<: *exported
+    id: MSAP-AND-007
+    title: Exported provider lacks access control
+    description: An exported content provider lacks read, write, or component permission protection.
+    condition: exported_provider_unprotected
+    pattern_or_condition: exported provider and access permissions are absent
+    maswe_ids: [MASWE-0064]
+    mastg_references: [MASTG-TEST-0355, MASTG-BEST-0052]
+
+  - <<: *defaults
+    id: MSAP-AND-008
+    title: Package is marked testOnly
+    description: The production candidate manifest contains android:testOnly=true.
+    masvs_category: MASVS-CODE
     severity: High
     confidence: High
-    source: AndroidManifest.xml
-    detection_type: manifest_component_rule
-    pattern_or_condition: "service/@android:exported == true and missing android:permission"
-    impact: External applications may bind to or start sensitive services.
-    recommendation: Set exported to false unless required, and protect exported services with appropriate permissions.
-    evidence_example: "<service android:name=\".SyncService\" android:exported=\"true\" />"
+    prerequisites: [MANIFEST]
+    condition: manifest_test_only
+    pattern_or_condition: application.test_only == true
+    recommendation: Produce a release artifact without the testOnly flag.
+    masvs_controls: [MASVS-CODE-2]
+    requires_manual_validation: false
 
-  - id: MSAP-AND-006
-    title: Exported receiver without protection
-    description: An exported broadcast receiver is declared without an apparent permission guard.
-    standard: OWASP MASVS
+  - <<: *defaults
+    id: MSAP-AND-009
+    title: Legacy external-storage behavior requested
+    description: The manifest requests legacy external-storage behavior.
+    masvs_category: MASVS-STORAGE
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: request_legacy_storage
+    pattern_or_condition: application.request_legacy_external_storage == true
+    masvs_controls: [MASVS-STORAGE-1]
+    mastg_references: [MASTG-TEST-0202]
+
+  - <<: *defaults
+    id: MSAP-AND-010
+    title: Weak custom permission protection
+    description: A custom permission uses a weak or unspecified protection level.
     masvs_category: MASVS-PLATFORM
     severity: High
-    confidence: High
-    source: AndroidManifest.xml
-    detection_type: manifest_component_rule
-    pattern_or_condition: "receiver/@android:exported == true and missing android:permission"
-    impact: External applications may send crafted broadcasts to the application.
-    recommendation: Set exported to false unless required, and protect receivers with permissions or explicit intent handling.
-    evidence_example: "<receiver android:name=\".BootReceiver\" android:exported=\"true\" />"
+    prerequisites: [MANIFEST]
+    condition: weak_custom_permission
+    pattern_or_condition: custom permission protection level is normal, dangerous, or absent
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0059]
 
-  - id: MSAP-AND-007
-    title: Hardcoded API key
-    description: A value resembling an API key is present in code or resources.
-    standard: OWASP MASVS
-    masvs_category: MASVS-AUTH
-    severity: High
-    confidence: Medium
-    source: Decompiled code, resources
-    detection_type: regex_secret_detection
-    pattern_or_condition: "(?i)(api[_-]?key|x-api-key)[\"'\\s:=]+[A-Za-z0-9_\\-]{16,}"
-    impact: Exposed API keys may allow unauthorized use of backend services.
-    recommendation: Remove API keys from the mobile client and use server-side secret management or scoped short-lived credentials.
-    evidence_example: "API_KEY = \"AIza...\""
+  - <<: *defaults
+    id: MSAP-AND-011
+    title: Deprecated shared user ID declared
+    description: The manifest declares sharedUserId, expanding trust across packages.
+    masvs_category: MASVS-PLATFORM
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: shared_user_id
+    pattern_or_condition: manifest.shared_user_id is present
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0059]
 
-  - id: MSAP-AND-008
-    title: Hardcoded token
-    description: A value resembling an authentication token is present in code or resources.
-    standard: OWASP MASVS
-    masvs_category: MASVS-AUTH
-    severity: High
-    confidence: Medium
-    source: Decompiled code, resources
-    detection_type: regex_secret_detection
-    pattern_or_condition: "(?i)(token|bearer|jwt)[\"'\\s:=]+[A-Za-z0-9_\\-.=]{20,}"
-    impact: Exposed tokens may enable unauthorized access until revoked or expired.
-    recommendation: Avoid hardcoded tokens and issue short-lived tokens through authenticated runtime flows.
-    evidence_example: "Authorization: Bearer eyJhbGciOi..."
+  - <<: *defaults
+    id: MSAP-AND-012
+    title: Custom task affinity requires review
+    description: A custom activity or application task affinity can affect task isolation.
+    masvs_category: MASVS-PLATFORM
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: custom_task_affinity
+    pattern_or_condition: non-empty custom taskAffinity is declared
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0057]
 
-  - id: MSAP-AND-009
-    title: Insecure HTTP URL
-    description: An insecure HTTP endpoint is referenced in code or resources.
-    standard: OWASP MASVS
+  - <<: *defaults
+    id: MSAP-AND-013
+    title: Custom URI schemes require validation
+    description: Custom schemes can be claimed by other applications and need strict input validation.
+    masvs_category: MASVS-PLATFORM
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: custom_uri_scheme
+    pattern_or_condition: deep link uses a non-http(s) scheme
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0058]
+
+  - <<: *defaults
+    id: MSAP-AND-014
+    title: Web app link is not verified
+    description: An HTTP(S) deep link does not declare app-link verification.
+    masvs_category: MASVS-PLATFORM
+    severity: Low
+    prerequisites: [MANIFEST]
+    condition: unverified_app_link
+    pattern_or_condition: http(s) deep link and autoVerify is not true
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0058]
+
+  - <<: *defaults
+    id: MSAP-AND-015
+    title: Target Android version requires currency review
+    description: The target SDK is below the catalog review threshold.
+    masvs_category: MASVS-CODE
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: old_target_sdk
+    pattern_or_condition: target_sdk < 31
+    masvs_controls: [MASVS-CODE-1]
+    maswe_ids: [MASWE-0078]
+    mastg_references: [MASTG-BEST-0010]
+
+  - &network
+    <<: *defaults
+    id: MSAP-AND-016
+    title: Production configuration trusts user-installed CAs
+    description: Network security configuration includes the user certificate store.
     masvs_category: MASVS-NETWORK
-    severity: Medium
-    confidence: Medium
-    source: Decompiled code, resources
-    detection_type: string_pattern
-    pattern_or_condition: "http://"
-    impact: Cleartext endpoints may expose traffic or indicate insecure backend integration.
-    recommendation: Replace HTTP endpoints with HTTPS and validate TLS configuration.
-    evidence_example: "http://api.example.com/login"
-
-  - id: MSAP-AND-010
-    title: Weak cryptographic algorithm
-    description: The application references weak cryptographic primitives or modes.
-    standard: OWASP MASVS
-    masvs_category: MASVS-CRYPTO
     severity: High
-    confidence: Medium
-    source: Decompiled code
-    detection_type: string_pattern
-    pattern_or_condition: "MD5|SHA1|DES|RC4|AES/ECB"
-    impact: Weak cryptography can reduce confidentiality, integrity or resistance to attacks.
-    recommendation: Use approved modern algorithms, authenticated encryption modes and platform cryptographic APIs correctly.
-    evidence_example: "MessageDigest.getInstance(\"MD5\")"
+    confidence: High
+    prerequisites: [NETWORK_SECURITY_CONFIG]
+    condition: network_user_ca
+    pattern_or_condition: user_ca_trust == true
+    masvs_controls: [MASVS-NETWORK-1]
+    mastg_references: [MASTG-TEST-0286]
+    requires_manual_validation: false
 
-  - id: MSAP-AND-011
-    title: Sensitive data in logs
-    description: Logging statements may include sensitive values such as tokens, passwords or personal data.
-    standard: OWASP MASVS
-    masvs_category: MASVS-PRIVACY
-    severity: Medium
-    confidence: Medium
-    source: Decompiled code
-    detection_type: heuristic_code_pattern
-    pattern_or_condition: "Log.(d|e|i|v|w) combined with sensitive keywords"
-    impact: Sensitive data may be exposed through local logs or debugging tools.
-    recommendation: Remove sensitive logs and enforce a secure logging policy for production builds.
-    evidence_example: "Log.d(\"auth\", \"token=\" + token)"
+  - <<: *network
+    id: MSAP-AND-017
+    title: Debug network overrides packaged
+    description: Network security configuration contains debug-overrides.
+    condition: network_debug_overrides
+    pattern_or_condition: debug_overrides == true
+    mastg_references: [MASTG-TEST-0286]
 
-  - id: MSAP-AND-012
-    title: WebView JavaScript enabled
-    description: A WebView enables JavaScript execution.
-    standard: OWASP MASVS
-    masvs_category: MASVS-PLATFORM
-    severity: Medium
-    confidence: Medium
-    source: Decompiled code
-    detection_type: code_pattern
-    pattern_or_condition: "setJavaScriptEnabled(true)"
-    impact: WebView JavaScript can increase attack surface if untrusted content is loaded.
-    recommendation: Enable JavaScript only when necessary and harden WebView settings, URL loading and bridge exposure.
-    evidence_example: "webView.getSettings().setJavaScriptEnabled(true)"
+  - <<: *network
+    id: MSAP-AND-018
+    title: Certificate pin configuration is expired
+    description: A network security pin-set contains a past expiration date.
+    condition: expired_pin_set
+    pattern_or_condition: pin-set expiration is before assessment time
+    mastg_references: [MASTG-TEST-0243]
 
-  - id: MSAP-AND-013
-    title: Missing certificate pinning indicator
-    description: No known indicator of certificate pinning is found during static analysis.
-    standard: OWASP MASVS
+  - <<: *network
+    id: MSAP-AND-019
+    title: Domain cleartext exception configured
+    description: A network security domain configuration permits cleartext.
+    condition: network_domain_cleartext
+    pattern_or_condition: any domain cleartextTrafficPermitted == true
+    maswe_ids: [MASWE-0050]
+    mastg_references: [MASTG-TEST-0235]
+
+  - <<: *defaults
+    id: MSAP-AND-020
+    title: Certificate pinning requirement review
+    description: No static pin-set was observed; pinning is threat-model dependent and is not universally required.
     masvs_category: MASVS-NETWORK
     severity: Low
     confidence: Low
-    source: Decompiled code, network_security_config
-    detection_type: absence_indicator
-    pattern_or_condition: "No TrustManager, CertificatePinner, pin-set or known pinning library indicator found"
-    impact: The application may rely only on the platform trust store, which may be insufficient for high-risk threat models.
-    recommendation: Assess the threat model and implement certificate pinning where justified.
-    evidence_example: "No pin-set in network_security_config.xml"
+    prerequisites: [NETWORK_SECURITY_CONFIG]
+    condition: missing_pinning_review
+    pattern_or_condition: no pin-set found
+    masvs_controls: [MASVS-NETWORK-2]
+    mastg_references: [MASTG-TEST-0242]
+    false_positive_guidance: Platform trust may be appropriate for the application's threat model.
 
-  - id: MSAP-AND-014
-    title: Weak network security configuration
-    description: The network security configuration contains permissive or weak settings.
-    standard: OWASP MASVS
-    masvs_category: MASVS-NETWORK
-    severity: High
+  - &signing
+    <<: *defaults
+    id: MSAP-AND-021
+    title: APK signature is missing or invalid
+    description: Static signing inspection could not confirm a valid APK signature.
+    masvs_category: MASVS-CODE
+    severity: Critical
     confidence: High
-    source: network_security_config
-    detection_type: xml_configuration_rule
-    pattern_or_condition: "Permissive domain-config, debug-overrides, user trust anchors or cleartext exceptions in production"
-    impact: Weak network settings can reduce transport security and expose application traffic.
-    recommendation: Restrict trust anchors, remove debug overrides from release builds and avoid broad cleartext exceptions.
-    evidence_example: "<certificates src=\"user\" />"
+    prerequisites: [SIGNING]
+    condition: unsigned_apk
+    pattern_or_condition: signed == false or malformed == true
+    masvs_controls: [MASVS-CODE-2]
+    requires_manual_validation: false
+
+  - <<: *signing
+    id: MSAP-AND-022
+    title: Signer certificate is outside its validity period
+    description: A signer certificate is expired or not yet valid.
+    severity: High
+    prerequisites: [CERTIFICATE]
+    condition: invalid_certificate_dates
+    pattern_or_condition: any certificate expired or not_yet_valid
+
+  - <<: *signing
+    id: MSAP-AND-023
+    title: Debug signing certificate detected
+    description: Signer metadata contains a standard Android debug certificate indicator.
+    severity: High
+    prerequisites: [CERTIFICATE]
+    condition: debug_certificate
+    pattern_or_condition: any certificate debug_certificate_indicator == true
+
+  - <<: *signing
+    id: MSAP-AND-024
+    title: Weak signer algorithm detected
+    description: Signer certificate metadata references MD5 or SHA-1.
+    severity: High
+    prerequisites: [CERTIFICATE]
+    condition: weak_certificate_algorithm
+    pattern_or_condition: certificate hash/signature algorithm contains md5 or sha1
+
+  - <<: *defaults
+    id: MSAP-AND-025
+    title: Legacy-only APK signing requires review
+    description: Only the v1 JAR signing scheme was detected.
+    masvs_category: MASVS-CODE
+    severity: Medium
+    prerequisites: [SIGNING]
+    condition: legacy_only_signing
+    pattern_or_condition: legacy_only == true
+    masvs_controls: [MASVS-CODE-2]
+    mastg_references: [MASTG-TEST-0224, MASTG-BEST-0006]
+
+  - <<: *defaults
+    id: MSAP-AND-026
+    title: Embedded secret pattern detected
+    description: A contextual secret or private-key pattern was detected; values are irreversibly redacted.
+    masvs_category: MASVS-AUTH
+    severity: High
+    prerequisites: [SECRETS]
+    condition: contextual_secret
+    pattern_or_condition: non-entropy secret match exists
+    masvs_controls: [MASVS-AUTH-1, MASVS-CRYPTO-1]
+    maswe_ids: [MASWE-0005, MASWE-0013]
+    test_type: static/package
+
+  - <<: *defaults
+    id: MSAP-AND-027
+    title: High-entropy constant requires secret review
+    description: A high-entropy constant was detected without enough context to classify it as a secret.
+    masvs_category: MASVS-AUTH
+    severity: Medium
+    confidence: Low
+    prerequisites: [SECRETS]
+    condition: entropy_secret_review
+    pattern_or_condition: HIGH_ENTROPY_CONSTANT match exists
+    masvs_controls: [MASVS-AUTH-1]
+    maswe_ids: [MASWE-0005]
+    test_type: static/package
+
+  - &code
+    <<: *defaults
+    id: MSAP-AND-028
+    title: Risky cryptographic API reference requires validation
+    description: Static references include ECB, DES, 3DES, RC4, or legacy hash primitives.
+    masvs_category: MASVS-CRYPTO
+    severity: High
+    prerequisites: [CRYPTO_USAGE]
+    condition: risky_crypto_reference
+    pattern_or_condition: risky crypto reference match exists
+    masvs_controls: [MASVS-CRYPTO-1, MASVS-CRYPTO-2]
+    maswe_ids: [MASWE-0019, MASWE-0020, MASWE-0021]
+    mastg_references: [MASTG-BEST-0005, MASTG-BEST-0009]
+    test_type: static/code
+
+  - <<: *code
+    id: MSAP-AND-029
+    title: Permissive TLS implementation reference requires validation
+    description: TrustManager or HostnameVerifier references require implementation-level review.
+    masvs_category: MASVS-NETWORK
+    condition: permissive_tls_reference
+    pattern_or_condition: permissive trust reference exists
+    masvs_controls: [MASVS-NETWORK-1]
+    maswe_ids: []
+
+  - &webview
+    <<: *defaults
+    id: MSAP-AND-030
+    title: WebView local-file access reference
+    description: WebView configuration references local or universal file access.
+    masvs_category: MASVS-PLATFORM
+    severity: High
+    prerequisites: [WEBVIEW_USAGE]
+    condition: webview_file_access
+    pattern_or_condition: file access reference exists
+    masvs_controls: [MASVS-PLATFORM-2]
+    maswe_ids: [MASWE-0069, MASWE-0072]
+    mastg_references: [MASTG-TEST-0252, MASTG-BEST-0011]
+    test_type: static/code
+
+  - <<: *webview
+    id: MSAP-AND-031
+    title: WebView JavaScript bridge reference
+    description: addJavascriptInterface usage requires validation of bridge exposure and loaded origins.
+    condition: webview_js_bridge
+    pattern_or_condition: JavaScript bridge reference exists
+    maswe_ids: [MASWE-0068]
+
+  - <<: *webview
+    id: MSAP-AND-032
+    title: WebView debugging reference
+    description: Web contents debugging may be enabled in a release path.
+    condition: webview_debug
+    pattern_or_condition: setWebContentsDebuggingEnabled reference exists
+    maswe_ids: [MASWE-0074]
+    mastg_references: [MASTG-TEST-0227, MASTG-BEST-0008]
+
+  - <<: *webview
+    id: MSAP-AND-033
+    title: WebView SSL error handling requires validation
+    description: SSL error handler references can be unsafe when proceed() is invoked.
+    condition: webview_ssl_handler
+    pattern_or_condition: SSL error handler reference exists
+    maswe_ids: [MASWE-0071]
+
+  - <<: *defaults
+    id: MSAP-AND-034
+    title: Native library hardening coverage review
+    description: Native libraries exist but hardening properties were not fully evaluated.
+    masvs_category: MASVS-RESILIENCE
+    severity: Medium
+    prerequisites: [NATIVE_LIBRARIES]
+    condition: native_hardening_review
+    pattern_or_condition: native libraries exist and hardening status is NOT_EVALUATED
+    masvs_controls: [MASVS-RESILIENCE-1]
+    test_type: static/package
+
+  - <<: *defaults
+    id: MSAP-AND-035
+    title: Privacy-sensitive permissions require purpose review
+    description: Privacy-sensitive Android permissions were declared.
+    masvs_category: MASVS-PRIVACY
+    severity: Medium
+    prerequisites: [MANIFEST]
+    condition: privacy_permission_review
+    pattern_or_condition: sensitive permission declaration exists
+    masvs_controls: [MASVS-PRIVACY-1, MASVS-PRIVACY-4]
+    maswe_ids: [MASWE-0117]
+    mastg_references: [MASTG-DEMO-0033]
+
+  - <<: *defaults
+    id: MSAP-AND-036
+    title: Logging API references require sensitive-data review
+    description: Logging references exist; static references alone cannot prove sensitive data is logged.
+    masvs_category: MASVS-STORAGE
+    severity: Medium
+    prerequisites: [CODE_REFERENCES]
+    condition: logging_reference_review
+    pattern_or_condition: Android logging method reference exists
+    masvs_controls: [MASVS-STORAGE-2, MASVS-PRIVACY-2]
+    maswe_ids: [MASWE-0001]
+    mastg_references: [MASTG-TEST-0231, MASTG-BEST-0002]
+    test_type: static/code

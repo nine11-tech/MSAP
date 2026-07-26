@@ -4,6 +4,7 @@ import {
   confirmApkUpload,
   downloadPdfReport,
   getAnalysisStatus,
+  getAuditCoverage,
   getAudit,
   initiateApkUpload,
   listApkFiles,
@@ -24,6 +25,7 @@ import type {
   Finding,
   Indicator,
   RiskScore,
+  RuleCoverage,
   UploadContract,
 } from "../api/types";
 import {
@@ -38,6 +40,7 @@ import {
   formatBytes,
   formatDate,
 } from "../components/Common";
+import { useAuth } from "../auth/AuthContext";
 
 const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
 type UploadState =
@@ -72,12 +75,18 @@ export function AuditDetailPage() {
   const [complianceScores, setComplianceScores] = useState<ComplianceScore[]>([]);
   const [analysisStatus, setAnalysisStatus] =
     useState<AnalysisStatusResponse | null>(null);
+  const [coverage, setCoverage] = useState<RuleCoverage | null>(null);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [activeTab, setActiveTab] = useState<
+    "overview" | "findings" | "attack" | "evidence" | "coverage"
+  >("overview");
+  const { hasRole } = useAuth();
+  const canOperate = hasRole("ADMIN", "ANALYST");
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>("idle");
@@ -96,6 +105,7 @@ export function AuditDetailPage() {
         auditRiskScores,
         auditComplianceScores,
         statusData,
+        coverageData,
       ] = await Promise.all([
         getAudit(id),
         listApkFiles(),
@@ -105,6 +115,7 @@ export function AuditDetailPage() {
         listRiskScores(id),
         listComplianceScores(id),
         getAnalysisStatus(id),
+        getAuditCoverage(id),
       ]);
       setAudit(auditData);
       setApkFiles(allApkFiles.filter((item) => item.audit === id));
@@ -114,6 +125,7 @@ export function AuditDetailPage() {
       setRiskScores(auditRiskScores);
       setComplianceScores(auditComplianceScores);
       setAnalysisStatus(statusData);
+      setCoverage(coverageData);
       if (ACTIVE_JOB_STATUSES.includes(statusData.latest_job?.status || "")) {
         setIsPolling(true);
       }
@@ -271,6 +283,15 @@ export function AuditDetailPage() {
   const hasConfirmedApk = apkFiles.some((apk) =>
     ["UPLOADED", "VERIFIED"].includes(apk.storage_status || ""),
   );
+  const lifecycleStep = analysisStatus?.latest_job?.status === "COMPLETED"
+    ? 4
+    : analysisIsActive
+      ? 3
+      : hasConfirmedApk
+        ? 2
+        : apkFiles.length
+          ? 1
+          : 0;
 
   return (
     <>
@@ -303,6 +324,15 @@ export function AuditDetailPage() {
       {error ? <ErrorMessage message={error} /> : null}
       {notice ? <div className="alert alert-success">{notice}</div> : null}
 
+      <ol className="lifecycle-stepper" aria-label="Audit lifecycle">
+        {["Audit created", "Upload initiated", "APK confirmed", "Analysis running", "Results ready"].map((label, index) => (
+          <li className={index < lifecycleStep ? "complete" : index === lifecycleStep ? "current" : ""} key={label}>
+            <span>{index < lifecycleStep ? "✓" : index + 1}</span>
+            {label}
+          </li>
+        ))}
+      </ol>
+
       <div className="metric-grid audit-metrics">
         <Card className="metric-card">
           <span className="metric-label">Audit status</span>
@@ -330,6 +360,25 @@ export function AuditDetailPage() {
         </Card>
       </div>
 
+      <nav className="workspace-tabs" aria-label="Audit result views">
+        {[
+          ["overview", "Overview"],
+          ["findings", `Findings (${findings.length})`],
+          ["attack", `ATT&CK (${indicators.length})`],
+          ["evidence", `Evidence (${evidence.length})`],
+          ["coverage", "Analyzer coverage"],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            className={activeTab === value ? "active" : ""}
+            onClick={() => setActiveTab(value as typeof activeTab)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {activeTab === "overview" ? <>
       <Card title="APK upload">
         <div className="upload-layout">
           <form className="form-stack" onSubmit={handleUpload}>
@@ -341,7 +390,7 @@ export function AuditDetailPage() {
                 onChange={(event) =>
                   handleFileSelection(event.target.files?.[0] || null)
                 }
-                disabled={working}
+                disabled={working || !canOperate}
                 required
               />
             </label>
@@ -363,7 +412,7 @@ export function AuditDetailPage() {
             ) : null}
             <button
               className="button button-primary"
-              disabled={working || !selectedFile}
+              disabled={working || !selectedFile || !canOperate}
             >
               Upload and confirm APK
             </button>
@@ -408,9 +457,9 @@ export function AuditDetailPage() {
           </div>
         </div>
         <p className="notice">
-          Upload uses the backend-signed Content-Type header and confirms metadata
-          automatically after a successful MinIO PUT. Browser SHA-256 calculation
-          is deferred.
+          {canOperate
+            ? "Upload uses a short-lived backend-signed contract and confirms metadata after the MinIO transfer."
+            : "Viewer access is read-only. An analyst or administrator can upload an APK."}
         </p>
       </Card>
 
@@ -419,7 +468,7 @@ export function AuditDetailPage() {
           <button
             className="button button-primary"
             onClick={() => void handleStartAnalysis()}
-            disabled={working || analysisIsActive || !hasConfirmedApk}
+            disabled={working || analysisIsActive || !hasConfirmedApk || !canOperate}
           >
             {analysisIsActive ? "Analysis active" : "Start analysis"}
           </button>
@@ -476,7 +525,9 @@ export function AuditDetailPage() {
           <EmptyState message="No APK metadata exists for this audit." />
         )}
       </Card>
+      </> : null}
 
+      {activeTab === "findings" ? (
       <Card title={`Findings (${findings.length})`}>
         {findings.length ? (
           <div className="table-wrap">
@@ -509,7 +560,9 @@ export function AuditDetailPage() {
           <EmptyState message="No MASVS findings recorded." />
         )}
       </Card>
+      ) : null}
 
+      {activeTab === "attack" ? (
       <Card title={`ATT&CK indicators (${indicators.length})`}>
         {indicators.length ? (
           <div className="table-wrap">
@@ -547,7 +600,9 @@ export function AuditDetailPage() {
           ATT&amp;CK Mobile indicators are triage signals, not malware verdicts.
         </p>
       </Card>
+      ) : null}
 
+      {activeTab === "evidence" ? (
       <Card title={`Evidence (${evidence.length})`}>
         {evidence.length ? (
           <div className="table-wrap">
@@ -580,6 +635,44 @@ export function AuditDetailPage() {
           <EmptyState message="No evidence recorded." />
         )}
       </Card>
+      ) : null}
+
+      {activeTab === "coverage" ? (
+        <Card title="Analyzer coverage">
+          {coverage?.total_catalog_rules ? (
+            <>
+              <div className="metric-grid compact-metrics">
+                {[
+                  ["Catalog", coverage.total_catalog_rules],
+                  ["Evaluated", coverage.evaluated],
+                  ["Passed", coverage.passed],
+                  ["Failed", coverage.failed],
+                  ["Review", coverage.review_required],
+                  ["Not evaluated", coverage.not_evaluated],
+                ].map(([label, value]) => (
+                  <div className="metric-card" key={String(label)}>
+                    <span>{label}</span><strong>{value}</strong>
+                  </div>
+                ))}
+              </div>
+              {coverage.partial_coverage ? (
+                <p className="inline-notice warning">
+                  Partial coverage: unevaluated rules are not counted as passing.
+                </p>
+              ) : null}
+              <dl className="details-list compact-details">
+                <div><dt>Completed analyzers</dt><dd>{coverage.analyzers.completed.join(", ") || "None"}</dd></div>
+                <div><dt>Skipped analyzers</dt><dd>{coverage.analyzers.skipped.map((item) => item.name).join(", ") || "None"}</dd></div>
+                <div><dt>Failed analyzers</dt><dd>{coverage.analyzers.failed.map((item) => item.name).join(", ") || "None"}</dd></div>
+                <div><dt>ATT&CK techniques matched</dt><dd>{coverage.attack_mobile.matched_techniques.join(", ") || "None"}</dd></div>
+              </dl>
+              <p className="muted">{coverage.attack_mobile.note}</p>
+            </>
+          ) : (
+            <EmptyState message="Start analysis to populate analyzer coverage." />
+          )}
+        </Card>
+      ) : null}
     </>
   );
 }

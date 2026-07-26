@@ -11,6 +11,7 @@ import {
   errorMessage,
   formatDate,
 } from "../components/Common";
+import { useAuth } from "../auth/AuthContext";
 
 export function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -19,6 +20,8 @@ export function ProjectsPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const { hasRole } = useAuth();
+  const canEdit = hasRole("ADMIN", "ANALYST");
 
   useEffect(() => {
     listProjects()
@@ -53,7 +56,7 @@ export function ProjectsPage() {
       {error ? <ErrorMessage message={error} /> : null}
 
       <div className="content-grid sidebar-layout">
-        <Card title="Create project">
+        {canEdit ? <Card title="Create project">
           <form className="form-stack" onSubmit={handleSubmit}>
             <label>
               Name
@@ -77,7 +80,11 @@ export function ProjectsPage() {
               {submitting ? "Creating…" : "Create project"}
             </button>
           </form>
-        </Card>
+        </Card> : (
+          <Card title="Read-only access">
+            <p className="muted">Your viewer role can inspect projects and assessments but cannot create or modify them.</p>
+          </Card>
+        )}
 
         <Card title={`All projects (${projects.length})`}>
           {loading ? (

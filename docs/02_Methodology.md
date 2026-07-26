@@ -28,6 +28,13 @@ Each finding should include:
 - Evidence links.
 - Remediation guidance.
 
+The repository catalog contains 36 useful static evaluations across all eight
+MASVS categories. `RuleEvaluation` records PASS, FAIL, REVIEW_REQUIRED,
+NOT_APPLICABLE, and NOT_EVALUATED. Only FAIL creates a finding. Missing analyzer
+evidence is NOT_EVALUATED and is never counted as passing compliance. Mappings
+to MASWE and MASTG are included only where official identifiers were manually
+verified.
+
 ## ATT&CK Mobile Triage
 ATT&CK mappings are indicators, not verdicts. They may help analysts prioritize review, but they must not be presented as proof of malware.
 
@@ -38,6 +45,10 @@ Each indicator should include:
 - Evidence links.
 - Analyst interpretation note.
 
+The Android catalog contains 20 capability-oriented mappings from the ATT&CK
+Mobile matrix snapshot. Permissions and API references indicate capability, not
+execution. Indicators remain separate from vulnerability risk.
+
 ## Evidence Rules
 - Evidence must be traceable to source artifacts.
 - Short redacted snippets may be stored in PostgreSQL.
@@ -46,5 +57,7 @@ Each indicator should include:
 - Reports must distinguish deterministic findings from analyst or optional AI commentary.
 
 ## Scoring
-Risk scoring should combine severity, confidence, impact, exposure and exploitability. Scoring must be explainable and should never override evidence.
-
+Risk scoring uses unique failed findings weighted by severity and confidence.
+ATT&CK indicators do not increase risk. MASVS compliance reports applicable,
+evaluated, passed, failed, review-required, and unevaluated counts with an
+explicit partial-coverage warning.

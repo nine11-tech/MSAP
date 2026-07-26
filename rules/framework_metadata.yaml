@@ -1,0 +1,15 @@
+frameworks:
+  - name: OWASP Mobile Application Security Verification Standard
+    short_name: MASVS
+    source: https://mas.owasp.org/MASVS/
+    snapshot_date: "2026-07-26"
+    applicable_platform: Android
+    catalog_version: "MSAP catalog 2.0.0; OWASP MAS website live snapshot"
+    updater_notes: Review MASWE beta identifiers and MASTG v2 mappings manually against official OWASP sources before updating.
+  - name: MITRE ATT&CK Mobile
+    short_name: ATTACK_MOBILE
+    source: https://attack.mitre.org/matrices/mobile/android/
+    snapshot_date: "2026-07-26"
+    applicable_platform: Android
+    catalog_version: "Live ATT&CK Mobile Android matrix snapshot"
+    updater_notes: Technique mappings are static triage capability mappings and never runtime detection or malware classification.

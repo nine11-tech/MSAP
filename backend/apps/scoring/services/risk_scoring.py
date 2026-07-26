@@ -1,7 +1,6 @@
 from django.db import transaction
 
 from apps.findings.models import Finding
-from apps.indicators.models import SuspiciousIndicator
 from apps.scoring.models import RiskScore
 
 
@@ -11,29 +10,26 @@ SEVERITY_WEIGHTS = {
     "Medium": 4,
     "Low": 1,
 }
+CONFIDENCE_WEIGHTS = {"High": 1.0, "Medium": 0.75, "Low": 0.5}
 
 
 @transaction.atomic
 def calculate_risk_score(audit_id: int) -> dict:
-    finding_severities = Finding.objects.filter(audit_id=audit_id).values_list(
-        "severity",
-        flat=True,
+    findings = list(
+        Finding.objects.filter(audit_id=audit_id).values(
+            "rule_id", "severity", "confidence"
+        )
     )
-    indicator_severities = SuspiciousIndicator.objects.filter(
-        audit_id=audit_id
-    ).values_list("severity", flat=True)
-
     finding_weights = [
-        SEVERITY_WEIGHTS.get(severity, 0) for severity in finding_severities
+        SEVERITY_WEIGHTS.get(item["severity"].title(), 0)
+        * CONFIDENCE_WEIGHTS.get(item["confidence"].title(), 0.5)
+        for item in findings
     ]
-    indicator_weights = [
-        SEVERITY_WEIGHTS.get(severity, 0) for severity in indicator_severities
-    ]
-    raw_weight = sum(finding_weights) + sum(indicator_weights)
+    raw_weight = round(sum(finding_weights), 2)
 
     # Each weight point contributes 10 score points; cumulative risk is capped
     # at 100 so the result remains a small, transparent MVP score.
-    score = min(raw_weight * 10, 100)
+    score = round(min(raw_weight * 10, 100), 2)
     severity = _score_severity(score)
 
     RiskScore.objects.update_or_create(
@@ -45,12 +41,13 @@ def calculate_risk_score(audit_id: int) -> dict:
         "score": score,
         "severity": severity,
         "finding_count": len(finding_weights),
-        "indicator_count": len(indicator_weights),
+        "indicator_count": 0,
         "raw_weight": raw_weight,
+        "method": "Unique failed findings weighted by severity and confidence; ATT&CK triage excluded.",
     }
 
 
-def _score_severity(score: int) -> str:
+def _score_severity(score: float) -> str:
     if score >= 81:
         return "Critical"
     if score >= 61:

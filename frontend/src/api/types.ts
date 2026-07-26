@@ -6,6 +6,43 @@ export interface Project {
   updated_at: string;
 }
 
+export type UserRole = "ADMIN" | "ANALYST" | "VIEWER";
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  role: UserRole;
+  is_staff: boolean;
+  permissions: string[];
+}
+
+export type ComponentStatus =
+  | "OPERATIONAL"
+  | "DEGRADED"
+  | "UNAVAILABLE"
+  | "DISABLED";
+
+export interface SystemComponent {
+  id: string;
+  label: string;
+  status: ComponentStatus;
+  latency_ms: number | null;
+  message: string;
+  last_successful_check: string | null;
+  details?: Record<string, unknown>;
+}
+
+export interface SystemStatus {
+  overall_status: "OPERATIONAL" | "DEGRADED" | "OUTAGE";
+  checked_at: string;
+  components: SystemComponent[];
+  deployment_mode?: string;
+  application_version?: string;
+}
+
 export interface Audit {
   id: number;
   project: number;
@@ -37,6 +74,13 @@ export interface Finding {
   standard: string;
   category: string;
   recommendation: string;
+  description?: string;
+  masvs_controls?: string[];
+  maswe_ids?: string[];
+  mastg_references?: string[];
+  false_positive_guidance?: string;
+  requires_manual_validation?: boolean;
+  status?: string;
   created_at: string;
 }
 
@@ -51,6 +95,10 @@ export interface Indicator {
   severity: string;
   confidence: string;
   triage_interpretation: string;
+  mapping_rationale?: string;
+  false_positive_considerations?: string;
+  requires_manual_validation?: boolean;
+  non_malware_verdict_note?: string;
   created_at: string;
 }
 
@@ -123,6 +171,33 @@ export interface AnalysisStatusResponse {
   latest_job: AnalysisJob | null;
 }
 
+export interface RuleCoverage {
+  total_catalog_rules: number;
+  applicable: number;
+  evaluated: number;
+  passed: number;
+  failed: number;
+  review_required: number;
+  not_applicable: number;
+  not_evaluated: number;
+  partial_coverage: boolean;
+  analyzers: {
+    completed: string[];
+    skipped: Array<{ name: string; reason: string }>;
+    failed: Array<{ name: string; reason: string }>;
+  };
+  masvs: {
+    total: number;
+    by_category: Record<string, Record<string, number>>;
+  };
+  attack_mobile: {
+    total: number;
+    by_tactic: Record<string, Record<string, number>>;
+    matched_techniques: string[];
+    note: string;
+  };
+}
+
 export interface ReportRiskSummary {
   score: number;
   severity: string;
@@ -137,6 +212,10 @@ export interface ReportComplianceSummary {
   evaluated_rules: number;
   failed_rules: number;
   passed_rules: number;
+  applicable_rules: number;
+  review_required: number;
+  not_evaluated: number;
+  partial_coverage: boolean;
 }
 
 export interface ReportTriageSummary {
@@ -177,10 +256,13 @@ export interface JsonReport {
     risk: ReportRiskSummary;
     masvs_compliance: ReportComplianceSummary;
     attack_mobile_triage: ReportTriageSummary;
+    coverage: RuleCoverage;
   };
   findings: Array<Record<string, unknown>>;
   indicators: Array<Record<string, unknown>>;
   evidence: Array<Record<string, unknown>>;
+  rule_evaluations: Array<Record<string, unknown>>;
+  analyzer_results: Array<Record<string, unknown>>;
   normalized_artifacts: {
     count: number;
     by_type: Record<string, number>;

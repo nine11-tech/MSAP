@@ -5,7 +5,7 @@ MSAP is a cloud-native web application with an API, asynchronous workers, metada
 
 ```mermaid
 flowchart LR
-    User[User] --> FE[React Frontend]
+    User[Authenticated User] --> FE[React Frontend]
     FE --> API[Django REST API]
     API --> PG[(PostgreSQL)]
     API --> MINIO[(MinIO)]
@@ -26,6 +26,8 @@ flowchart LR
 | Worker | Analyzer execution, normalization, rule evaluation, evidence generation | Trust APK input or produce malware verdicts |
 | Rules | YAML MASVS and ATT&CK detection definitions | Replace analyst judgement |
 | Report generator | On-demand deterministic JSON and PDF reports | Bypass redaction or rerun analysis |
+| Session/RBAC layer | Django sessions, CSRF, group roles and login protection | Store browser bearer tokens or expose registration |
+| Status service | Bounded cached dependency and capability checks | Expose credentials, raw exceptions or sensitive hostnames |
 
 ## Data Flow
 1. User creates an audit and uploads an APK.
@@ -36,6 +38,10 @@ flowchart LR
 6. Worker creates raw outputs, normalized artifacts, findings, indicators and evidence.
 7. Backend exposes audit status and results.
 8. Report generator creates JSON export objects in MinIO.
+
+The React application polls component status every five seconds only while the
+page is visible. The aggregate is cached for roughly five seconds. This keeps
+the platform operationally useful without WebSockets or a service mesh.
 
 ## Kubernetes Target
 Production packaging should include:
@@ -52,5 +58,10 @@ Production packaging should include:
 
 Docker Compose remains development-only.
 
-## Optional AI Boundary
-Kimi AI is outside V1.0. If enabled later, it receives only redacted post-analysis context and returns advisory text that requires analyst validation.
+## Analysis boundary
+
+APK ZIP validation and checksum verification happen before bounded static
+inspection. Workers never execute APK code or allow APK-originated network
+activity. Large outputs belong in MinIO; PostgreSQL stores normalized bounded
+matches and object references. Optional external-tool capabilities are reported
+and skipped when absent.

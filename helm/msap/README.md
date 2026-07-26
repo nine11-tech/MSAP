@@ -80,11 +80,21 @@ A single Helm post-install/post-upgrade hook Job runs:
 ```text
 python manage.py migrate --noinput
 python manage.py validate_rules
+python manage.py bootstrap_roles
 ```
 
 The Job uses the backend image and shared configuration, preventing migration
 races across backend replicas. Successful hook Jobs are deleted; failed Jobs
 remain available for inspection.
+
+The role bootstrap never creates a user. Create the first administrator with a
+one-shot pod using the deployed backend image, or interactively:
+
+```bash
+kubectl exec -n msap deployment/msap-backend -- python manage.py createsuperuser
+```
+
+No default administrator password is present in the chart.
 
 ## MinIO initialization and endpoints
 
@@ -205,8 +215,9 @@ helm template msap helm/msap --namespace msap -f helm/msap/values-local.yaml
 
 ## Current limitations
 
-- No authentication or application RBAC
+- Session authentication and group RBAC are application-wide, not multi-tenant project ACLs
 - No HA PostgreSQL, Redis Sentinel/Cluster, or distributed MinIO
 - No autoscaling controller or NetworkPolicy baseline yet
 - No AI, dynamic analysis, service mesh, or operator
 - Presigned storage URLs require a separately reachable public MinIO endpoint
+- Static analysis does not execute APKs, observe dynamic behavior, or classify malware

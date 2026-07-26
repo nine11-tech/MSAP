@@ -1,10 +1,10 @@
-import json
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 from django.db import transaction
 
+from apps.appsec_rules.models import RuleEvaluation
 from apps.audits.models import Audit
 from apps.evidence.models import Evidence
 from apps.indicators.models import SuspiciousIndicator
@@ -12,13 +12,7 @@ from apps.normalization.models import NormalizedArtifact
 from apps.triage_rules.services.triage_rule_loader import load_attck_triage_rules
 
 
-IMPLEMENTED_INDICATOR_IDS = ("MSAP-MOB-001", "MSAP-MOB-002")
-SMS_PERMISSIONS = {
-    "android.permission.READ_SMS",
-    "android.permission.RECEIVE_SMS",
-    "android.permission.SEND_SMS",
-}
-ACCESSIBILITY_SERVICE_PERMISSION = "android.permission.BIND_ACCESSIBILITY_SERVICE"
+EVALUATOR_VERSION = "2.0.0"
 
 
 @transaction.atomic
@@ -31,51 +25,67 @@ def evaluate_attck_indicators(
         rules_path
         or Path(settings.ANALYZER_RULES_PATH) / "attck_mobile_triage_rules.yaml"
     )
-    implemented_rules = {
-        rule["id"]: rule
-        for rule in rules
-        if rule["id"] in IMPLEMENTED_INDICATOR_IDS
-    }
+    artifacts = _artifact_map(audit_id)
     summary = {
+        "catalog_indicators": len(rules),
         "evaluated_indicators": 0,
+        "matched_indicators": 0,
+        "not_evaluated": 0,
         "indicators_created": 0,
         "indicators_existing": 0,
         "evidence_created": 0,
     }
 
-    manifest = (
-        NormalizedArtifact.objects.filter(
+    for rule in rules:
+        missing = [name for name in rule["prerequisites"] if name not in artifacts]
+        if missing:
+            result = RuleEvaluation.Result.NOT_EVALUATED
+            snippet = f"Prerequisite artifact unavailable: {', '.join(missing)}"
+            matched = False
+            summary["not_evaluated"] += 1
+        else:
+            matched, snippet = _match(rule, artifacts)
+            result = (
+                RuleEvaluation.Result.REVIEW_REQUIRED
+                if matched
+                else RuleEvaluation.Result.NOT_APPLICABLE
+            )
+            summary["evaluated_indicators"] += 1
+            summary["matched_indicators"] += int(matched)
+
+        mappings = {
+            "technique_id": rule["technique_id"],
+            "technique_name": rule["technique_name"],
+            "tactic": rule["tactic"],
+            "mapping_rationale": rule["mapping_rationale"],
+            "non_malware_verdict_note": rule["non_malware_verdict_note"],
+        }
+        RuleEvaluation.objects.update_or_create(
             audit_id=audit_id,
-            artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
+            framework=RuleEvaluation.Framework.ATTACK_MOBILE,
+            rule_id=rule["id"],
+            defaults={
+                "result": result,
+                "severity": rule["severity"].upper(),
+                "confidence": rule["confidence"].upper(),
+                "title": rule["title"],
+                "mapping_data": mappings,
+                "evidence_summary": snippet,
+                "remediation": "",
+                "requires_manual_validation": True,
+                "evaluator_version": EVALUATOR_VERSION,
+            },
         )
-        .order_by("-created_at", "-id")
-        .first()
-    )
-    if manifest is None:
-        return summary
 
-    normalized_data = manifest.normalized_data
-    if not isinstance(normalized_data, dict):
-        normalized_data = {}
-    conditions = {
-        "MSAP-MOB-001": _sms_evidence(normalized_data.get("permissions", [])),
-        "MSAP-MOB-002": _accessibility_evidence(
-            normalized_data.get("components", [])
-        ),
-    }
-
-    for indicator_id in IMPLEMENTED_INDICATOR_IDS:
-        rule = implemented_rules.get(indicator_id)
-        if rule is None:
-            continue
-        summary["evaluated_indicators"] += 1
-        snippet = conditions[indicator_id]
-        if snippet is None:
+        if not matched:
+            SuspiciousIndicator.objects.filter(
+                audit_id=audit_id, indicator_id=rule["id"]
+            ).delete()
             continue
 
-        indicator, created = SuspiciousIndicator.objects.get_or_create(
+        indicator, created = SuspiciousIndicator.objects.update_or_create(
             audit_id=audit_id,
-            indicator_id=indicator_id,
+            indicator_id=rule["id"],
             defaults={
                 "title": rule["title"],
                 "tactic": rule["tactic"],
@@ -84,19 +94,22 @@ def evaluate_attck_indicators(
                 "severity": rule["severity"],
                 "confidence": rule["confidence"],
                 "triage_interpretation": rule["triage_interpretation"],
+                "mapping_rationale": rule["mapping_rationale"],
+                "false_positive_considerations": rule[
+                    "false_positive_considerations"
+                ],
+                "requires_manual_validation": True,
+                "non_malware_verdict_note": rule["non_malware_verdict_note"],
             },
         )
-        summary[
-            "indicators_created" if created else "indicators_existing"
-        ] += 1
-
+        summary["indicators_created" if created else "indicators_existing"] += 1
         _, evidence_created = Evidence.objects.get_or_create(
             audit_id=audit_id,
             finding=None,
             indicator=indicator,
             evidence_type=rule["detection_type"],
             source=rule["source"],
-            snippet=snippet,
+            snippet=snippet[:500],
             redacted=False,
         )
         summary["evidence_created"] += int(evidence_created)
@@ -104,57 +117,73 @@ def evaluate_attck_indicators(
     return summary
 
 
-def _sms_evidence(permissions: Any) -> str | None:
-    if not isinstance(permissions, list):
-        return None
-    for permission in permissions:
-        permission_name = permission
-        if isinstance(permission, dict):
-            permission_name = permission.get("name")
-        if isinstance(permission_name, str) and permission_name in SMS_PERMISSIONS:
-            return f"permission={permission_name}"
-    return None
-
-
-def _accessibility_evidence(components: Any) -> str | None:
-    if not isinstance(components, list):
-        return None
-    for component in components:
-        if not isinstance(component, dict):
+def _artifact_map(audit_id: int) -> dict[str, dict]:
+    artifacts: dict[str, dict] = {}
+    for artifact in NormalizedArtifact.objects.filter(audit_id=audit_id).order_by(
+        "created_at", "id"
+    ):
+        value = artifact.normalized_data if isinstance(artifact.normalized_data, dict) else {}
+        data = value.get("data") if isinstance(value.get("data"), dict) else value
+        if value.get("extraction_status") in {"FAILED", "NOT_STARTED"}:
             continue
-        component_type = component.get("type") or component.get("component_type")
-        if not isinstance(component_type, str) or component_type.lower() != "service":
-            continue
+        artifacts[artifact.artifact_type] = data
+    return artifacts
 
-        permission = component.get("permission") or component.get(
-            "android:permission"
-        )
-        if permission == ACCESSIBILITY_SERVICE_PERMISSION:
-            return f"service.permission={permission}"
 
-        name = component.get("name")
-        if isinstance(name, str) and "accessibility" in name.lower():
-            return f"service.name={_short_value(name)}"
+def _match(rule: dict[str, Any], artifacts: dict[str, dict]) -> tuple[bool, str]:
+    manifest = artifacts.get("MANIFEST", {})
+    permissions = {
+        item.get("name") if isinstance(item, dict) else item
+        for item in manifest.get("permissions", [])
+    }
+    components = [
+        item for item in manifest.get("components", []) if isinstance(item, dict)
+    ]
+    values = set(rule.get("values", []))
+    condition = rule["condition"]
 
-        for metadata_key in ("metadata", "meta_data"):
-            metadata = component.get(metadata_key)
-            metadata_contains_accessibility = (
-                metadata is not None
-                and "accessibility" in _serialized(metadata).lower()
+    if condition == "permission_any":
+        matches = sorted(permissions & values)
+        return bool(matches), f"declared permission capability: {', '.join(matches)}"
+    if condition in {"accessibility_service", "device_admin", "vpn_service"}:
+        condition_keywords = {
+            "accessibility_service": ("accessibility",),
+            "device_admin": ("device_admin", "deviceadmin"),
+            "vpn_service": ("vpnservice", "bind_vpn_service"),
+        }[condition]
+        matches = []
+        for component in components:
+            serialized = " ".join(
+                str(component.get(field, ""))
+                for field in ("name", "permission", "metadata", "intent_filters")
             )
-            if metadata_contains_accessibility:
-                return f"service.metadata={_short_value(metadata)}"
-    return None
+            if any(value.lower() in serialized.lower() for value in values) or any(
+                keyword in serialized.lower() for keyword in condition_keywords
+            ):
+                matches.append(component.get("name", "unnamed component"))
+        return bool(matches), f"matched component capability declarations: {len(matches)}"
+    if condition == "code_reference_category":
+        matches = [
+            item
+            for item in artifacts.get("CODE_REFERENCES", {}).get("matches", [])
+            if item.get("category") in values
+        ]
+        return bool(matches), _reference_summary(matches, "code")
+    if condition == "native_libraries":
+        libraries = artifacts.get("NATIVE_LIBRARIES", {}).get("libraries", [])
+        return bool(libraries), f"native library inventory count: {len(libraries)}"
+    if condition == "any_crypto_reference":
+        matches = artifacts.get("CRYPTO_USAGE", {}).get("matches", [])
+        return bool(matches), _reference_summary(matches, "cryptographic")
+    return False, f"condition '{condition}' produced no triage match"
 
 
-def _serialized(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _short_value(value: Any, limit: int = 160) -> str:
-    serialized = _serialized(value)
-    if len(serialized) <= limit:
-        return serialized
-    return f"{serialized[: limit - 3]}..."
+def _reference_summary(matches: list[dict], label: str) -> str:
+    categories = sorted(
+        {
+            str(item.get("category") or item.get("type"))
+            for item in matches
+            if item.get("category") or item.get("type")
+        }
+    )
+    return f"{label} reference categories: {', '.join(categories[:12])}"

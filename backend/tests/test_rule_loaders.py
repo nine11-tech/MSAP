@@ -36,7 +36,7 @@ def test_selected_attck_indicators_are_present():
     rules_by_id = {rule["id"]: rule for rule in rules}
 
     assert "MSAP-MOB-001" in rules_by_id
-    assert rules_by_id["MSAP-MOB-002"]["title"] == "Accessibility service usage"
+    assert rules_by_id["MSAP-MOB-002"]["title"] == "Accessibility service capability"
 
 
 def test_invalid_masvs_severity_fails(tmp_path):

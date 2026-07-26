@@ -20,6 +20,7 @@ do
 done
 
 python manage.py migrate --noinput
+python manage.py bootstrap_roles
 
 case "${MSAP_VALIDATE_RULES_ON_STARTUP:-true}" in
     1|true|TRUE|yes|YES|on|ON)

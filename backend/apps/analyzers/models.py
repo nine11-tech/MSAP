@@ -44,7 +44,12 @@ class RawAnalyzerResult(models.Model):
             models.Index(fields=["audit", "apk_file"]),
             models.Index(fields=["analyzer_name", "status"]),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["audit", "apk_file", "analyzer_name"],
+                name="unique_raw_analyzer_result",
+            )
+        ]
 
     def __str__(self) -> str:
         return f"{self.analyzer_name} result for audit {self.audit_id}"
-

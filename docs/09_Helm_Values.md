@@ -78,3 +78,10 @@ aiAssistant:
 - Enable TLS for production ingress.
 - Prefer non-root containers and no privilege escalation.
 - Keep AI disabled by default.
+- Secure Django session/CSRF cookies, SSL redirect and HSTS are enabled.
+- Login protection defaults to five failures and a fifteen-minute cooldown.
+- Configure `security.trustProxyHeaders`, `proxyCount`, and `trustedProxyIps`
+  only for infrastructure-controlled reverse proxies.
+- The migration Job applies migrations, validates catalogs, and bootstraps roles.
+- Backend and worker run as UID/GID 10001 with read-only roots and `/tmp`
+  `emptyDir` scratch space.

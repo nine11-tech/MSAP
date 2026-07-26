@@ -24,8 +24,15 @@ from apps.storage.models import ObjectStorageReference
 
 
 @pytest.fixture
-def api_client():
-    return APIClient()
+def api_client(django_user_model):
+    user = django_user_model.objects.create_superuser(
+        username="api-admin",
+        email="admin@example.test",
+        password="Strong-Test-Password-42!",
+    )
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
 
 
 @pytest.mark.django_db
@@ -175,23 +182,17 @@ def test_analyzer_registry_endpoint_returns_registered_analyzers(api_client):
 
     assert response.status_code == 200
     data = response.json()
-    assert data == [
-        {
-            "name": "placeholder_metadata",
-            "version": "0.1.0",
-            "description": "Creates placeholder APK metadata from database records only.",
-            "enabled": True,
-        },
-        {
-            "name": "manifest_metadata_analyzer",
-            "version": "0.1.0",
-            "description": (
-                "Safely extracts and normalizes metadata from an APK "
-                "AndroidManifest.xml."
-            ),
-            "enabled": True,
-        },
-    ]
+    names = {item["name"] for item in data}
+    assert {
+        "placeholder_metadata",
+        "manifest_metadata_analyzer",
+        "advanced_static_analyzer",
+        "jadx_adapter",
+        "apktool_adapter",
+        "apkid_adapter",
+        "yara_adapter",
+    } == names
+    assert all({"version", "enabled", "available", "optional", "status"} <= item.keys() for item in data)
 
 
 @pytest.mark.django_db
@@ -408,11 +409,12 @@ def test_start_analysis_requires_existing_audit(api_client):
 def test_analyzer_registry_returns_placeholder_metadata_analyzer(api_client):
     analyzers = AnalyzerRegistry().get_registered_analyzers()
 
-    assert len(analyzers) == 2
+    assert len(analyzers) == 3
     assert isinstance(analyzers[0], PlaceholderMetadataAnalyzer)
     assert analyzers[0].name == "placeholder_metadata"
     assert isinstance(analyzers[1], ManifestMetadataAnalyzer)
     assert analyzers[1].name == "manifest_metadata_analyzer"
+    assert analyzers[2].name == "advanced_static_analyzer"
 
 
 @pytest.mark.django_db
@@ -427,6 +429,7 @@ def test_registry_returns_supported_analyzers_for_valid_context(api_client):
     assert [analyzer.name for analyzer in supported] == [
         "placeholder_metadata",
         "manifest_metadata_analyzer",
+        "advanced_static_analyzer",
     ]
 
 
@@ -507,7 +510,7 @@ def test_start_analysis_creates_job_and_updates_audit_status(api_client):
         audit_id=audit_id,
         task_id=data["task_id"],
     ).exists()
-    assert RawAnalyzerResult.objects.filter(audit_id=audit_id).count() == 2
+    assert RawAnalyzerResult.objects.filter(audit_id=audit_id).count() == 3
     assert NormalizedArtifact.objects.filter(audit_id=audit_id).count() == 1
 
 
@@ -527,7 +530,7 @@ def test_placeholder_task_transitions_job_to_completed(api_client):
     assert job.started_at is not None
     assert job.finished_at is not None
     assert job.error_message == ""
-    assert job.result_summary["summary"]["created_raw_analyzer_results"] == 2
+    assert job.result_summary["summary"]["created_raw_analyzer_results"] == 3
     assert job.result_summary["summary"]["created_normalized_artifacts"] == 1
     assert audit.status == Audit.Status.ANALYSIS_COMPLETED
 
@@ -560,7 +563,7 @@ def test_analysis_creates_raw_result_and_normalized_artifact_only(api_client):
     )
     assert artifact.apk_file.audit_id == audit_id
     assert artifact.artifact_type == NormalizedArtifact.ArtifactType.APK_METADATA
-    assert artifact.normalized_data["schema_version"] == "1.0"
+    assert artifact.normalized_data["schema_version"] == "2.0"
     assert artifact.normalized_data["storage"]["bucket"] == "msap-apk-uploads"
     assert artifact.normalized_data["storage"]["object_key"].endswith("/app.apk")
     assert artifact.normalized_data["real_apk_parsing"] is False
