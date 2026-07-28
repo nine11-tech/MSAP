@@ -152,6 +152,18 @@ helm uninstall msap --namespace msap
 PVCs may be retained by the cluster and should be reviewed separately before
 deletion.
 
+## GitLab CI/CD
+
+GitHub (`origin`) remains the primary source repository, while GitLab
+(`gitlab`) provides the secondary CI/CD pipeline. Branches and merge requests
+run repository, Django rule/migration, Compose, Helm, backend test, frontend
+build/audit, and production image build checks. Only successful default-branch
+and tag pipelines publish images to the GitLab Container Registry. No
+deployment or Android dynamic-analysis job exists yet.
+
+See [docs/18_GitLab_CICD.md](docs/18_GitLab_CICD.md) for workflow, image-tag,
+security, accepted npm advisory, and future deployment/runner policies.
+
 ## Backend status
 The backend provides authenticated/RBAC APIs, bounded asynchronous APK analysis,
 complete evaluation-state tracking, deterministic findings and ATT&CK triage,
@@ -210,6 +222,7 @@ The active implementation baseline is intentionally small:
 - [Development guide](docs/10_Development_Guide.md)
 - [Testing](docs/11_Testing.md)
 - [Security platform operations and analysis scope](docs/12_Security_Platform.md)
+- [GitLab CI/CD baseline](docs/18_GitLab_CICD.md)
 
 Earlier detailed planning and diagram documents are preserved under [docs/archive](docs/archive/README.md) for reference only.
 
