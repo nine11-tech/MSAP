@@ -88,3 +88,10 @@ runtime control flow, server-side behavior, dynamically retrieved code,
 environmental TLS behavior, or actual user-data access. MSAP therefore does not
 claim complete OWASP compliance, complete ATT&CK detection, or malware
 classification.
+
+## Dynamic Lab Security References
+
+Phase 3 dynamic-lab operations and security boundaries are documented here:
+
+- [Dynamic Lab Operations Runbook](07_Deployment/31_Dynamic_Lab_Operations_Runbook.md)
+- [Dynamic Lab Security Boundaries](09_Security/31_Dynamic_Lab_Security_Boundaries.md)

@@ -65,3 +65,11 @@ inspection. Workers never execute APK code or allow APK-originated network
 activity. Large outputs belong in MinIO; PostgreSQL stores normalized bounded
 matches and object references. Optional external-tool capabilities are reported
 and skipped when absent.
+
+## Dynamic Analysis Architecture References
+
+Phase 3 dynamic-analysis architecture and state-machine contracts are maintained
+as dedicated documents:
+
+- [Dynamic Analysis Architecture](03_Architecture/31_Dynamic_Analysis_Architecture.md)
+- [Dynamic Lab State Machine](03_Architecture/32_Dynamic_Lab_State_Machine.md)
