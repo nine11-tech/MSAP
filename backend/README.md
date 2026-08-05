@@ -130,6 +130,7 @@ Dynamic lab foundation endpoints:
 - `GET|POST /api/dynamic/jobs/`
 - `GET|PUT|PATCH|DELETE /api/dynamic/jobs/{id}/`
 - `POST /api/dynamic/jobs/{id}/cancel/`
+- `POST /api/dynamic/jobs/{id}/run-mvp/`
 - `GET /api/dynamic/sessions/`
 - `GET /api/dynamic/sessions/{id}/`
 - `POST /api/dynamic/sessions/{id}/transition/`
@@ -148,6 +149,54 @@ metadata filters exposed by their model fields, such as `?audit=<audit_id>`,
 All API endpoints require authentication except health, CSRF initialization, and
 login. Schema/docs are public only in debug mode and administrator-only in
 production.
+
+## Dynamic MVP Runner
+
+The local dynamic MVP runner is disabled by default and is intended for a
+validated analyst workstation lab, not CI or production. Enable it only when the
+local `scripts/dynamic-lab/` environment is ready:
+
+```env
+MSAP_DYNAMIC_RUNNER_ENABLED=true
+MSAP_DYNAMIC_MVP_DEVICE_SERIAL=emulator-5554
+MSAP_DYNAMIC_MVP_DEVICE_NAME=Lab-Root
+MSAP_DYNAMIC_MVP_DEVICE_POOL_SLUG=local-android-lab
+```
+
+Seed the backend metadata for the local lab:
+
+```bash
+python manage.py seed_dynamic_lab
+```
+
+Expected marker:
+
+```text
+SEED_DYNAMIC_LAB_RESULT=PASS
+```
+
+Run the bounded MVP sequence for an existing audit:
+
+```bash
+python manage.py run_dynamic_mvp --audit-id <audit_id>
+```
+
+Expected marker:
+
+```text
+DYNAMIC_MVP_RUNNER_RESULT=PASS
+```
+
+The runner leases the local emulator, creates a dynamic session, runs only the
+allowlisted repository scripts, stores stage summaries/events/artifacts, and
+releases or quarantines the device according to cleanup outcome. It does not
+install or execute uploaded APKs and does not claim target APK vulnerabilities,
+malware detection, or full behavioral analysis.
+
+The platform TLS probe is intentionally off by default because it can create a
+temporary probe APK and reboot the emulator during cleanup. To run it, set
+`MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=true` and pass
+`--include-platform-tls-probe`.
 
 Health response:
 

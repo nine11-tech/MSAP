@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db.models import Max
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -5,7 +6,11 @@ from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from apps.api.permissions import IsMSAPViewerOrAbove, IsReadOnlyViewerOrAbove
+from apps.api.permissions import (
+    IsMSAPAnalystOrAdmin,
+    IsMSAPViewerOrAbove,
+    IsReadOnlyViewerOrAbove,
+)
 from apps.dynamic_analysis.models import (
     DynamicAnalysisJob,
     DynamicDevice,
@@ -52,6 +57,7 @@ from apps.dynamic_analysis.services.state_machine import (
     DynamicStateTransitionError,
     transition_session,
 )
+from apps.dynamic_analysis.tasks import run_dynamic_mvp_job_task
 
 
 class DynamicFilterMixin:
@@ -280,6 +286,56 @@ class DynamicAnalysisJobViewSet(DynamicFilterMixin, viewsets.ModelViewSet):
         )
         return Response(self.get_serializer(job).data)
 
+    @extend_schema(responses={202: DynamicAnalysisJobSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="run-mvp",
+        permission_classes=[IsMSAPAnalystOrAdmin],
+    )
+    def run_mvp(self, request, pk=None):
+        if not settings.MSAP_DYNAMIC_RUNNER_ENABLED:
+            return Response(
+                {"detail": "Dynamic MVP runner is disabled."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        job = self.get_object()
+        if job.status not in {
+            DynamicAnalysisJob.Status.QUEUED,
+            DynamicAnalysisJob.Status.RUNNING,
+        }:
+            return Response(
+                {"detail": f"Dynamic job cannot run from status {job.status}."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        include_platform_tls_probe = _request_bool(
+            request.data,
+            "include_platform_tls_probe",
+        )
+        if (
+            include_platform_tls_probe
+            and not settings.MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED
+        ):
+            return Response(
+                {"detail": "Platform TLS probe is disabled by settings."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        async_result = run_dynamic_mvp_job_task.delay(
+            job.id,
+            include_platform_tls_probe=include_platform_tls_probe,
+        )
+        return Response(
+            {
+                "job": self.get_serializer(job).data,
+                "task_id": async_result.id,
+                "include_platform_tls_probe": include_platform_tls_probe,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
 
 class DynamicSessionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModelViewSet):
     queryset = DynamicSession.objects.select_related(
@@ -360,3 +416,12 @@ class DynamicSessionArtifactViewSet(
         "redaction_state",
         "confidence",
     )
+
+
+def _request_bool(data, key: str) -> bool:
+    value = data.get(key, False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)

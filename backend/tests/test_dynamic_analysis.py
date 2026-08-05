@@ -1,10 +1,14 @@
 from datetime import timedelta
+import inspect
+from io import StringIO
+from unittest.mock import Mock, patch
 
 import pytest
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
+from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -14,12 +18,15 @@ from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
     DynamicAnalysisJob,
     DynamicDevice,
+    DynamicDeviceCapability,
     DynamicDeviceEvent,
     DynamicDeviceLease,
     DynamicDevicePool,
     DynamicEmulatorSnapshot,
     DynamicSession,
+    DynamicSessionArtifact,
     DynamicSessionEvent,
+    DynamicSessionStage,
 )
 from apps.dynamic_analysis.services.leases import (
     DynamicLeaseError,
@@ -27,6 +34,18 @@ from apps.dynamic_analysis.services.leases import (
     heartbeat_lease,
     quarantine_device,
     release_lease,
+)
+from apps.dynamic_analysis.services.local_scripts import (
+    DynamicScriptExecutionError,
+    DynamicScriptResult,
+    get_dynamic_stage_timeout,
+    run_dynamic_lab_script,
+)
+from apps.dynamic_analysis.services import local_scripts
+from apps.dynamic_analysis.services.mvp_runner import (
+    DynamicMvpRunnerError,
+    create_dynamic_mvp_job,
+    run_dynamic_mvp_job,
 )
 from apps.dynamic_analysis.services.state_machine import (
     DynamicStateTransitionError,
@@ -439,6 +458,431 @@ def test_dynamic_viewer_cannot_perform_unsafe_write(django_user_model):
     assert response.status_code == 403
 
 
+@pytest.mark.django_db
+def test_seed_dynamic_lab_command_creates_local_lab_metadata():
+    output = StringIO()
+
+    call_command("seed_dynamic_lab", stdout=output)
+
+    assert "SEED_DYNAMIC_LAB_RESULT=PASS" in output.getvalue()
+    pool = DynamicDevicePool.objects.get(slug="local-android-lab")
+    device = DynamicDevice.objects.get(serial="emulator-5554")
+    assert pool.name == "Local Android Lab"
+    assert device.name == "Lab-Root"
+    assert device.status == DynamicDevice.Status.AVAILABLE
+    assert device.kind == DynamicDevice.Kind.EMULATOR
+    assert device.host_type == DynamicDevice.HostType.WINDOWS_WSL
+    assert device.api_level == 35
+    assert device.abi == "x86_64"
+    assert device.is_rooted is True
+    assert device.selinux_mode == "Enforcing"
+    assert device.has_frida is True
+    assert device.has_mitm_ready is True
+    assert DynamicDeviceCapability.objects.filter(device=device).count() == 7
+    assert DynamicEmulatorSnapshot.objects.filter(device=device).count() == 2
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=False)
+@pytest.mark.django_db
+def test_dynamic_mvp_runner_refuses_when_disabled():
+    audit, _apk = _make_audit_with_apk("runner-disabled")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+
+    with pytest.raises(DynamicMvpRunnerError):
+        run_dynamic_mvp_job(job.id)
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
+def test_dynamic_local_script_wrapper_rejects_non_allowlisted_script(tmp_path):
+    with override_settings(MSAP_DYNAMIC_LAB_SCRIPT_DIR=tmp_path, PROJECT_ROOT=tmp_path):
+        with pytest.raises(DynamicScriptExecutionError):
+            run_dynamic_lab_script("not-allowed.sh", timeout_seconds=1)
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
+def test_dynamic_local_script_wrapper_handles_pass_markers(tmp_path):
+    _write_test_script(tmp_path, "preflight.sh", "echo PREFLIGHT_RESULT=PASS\n")
+
+    with override_settings(MSAP_DYNAMIC_LAB_SCRIPT_DIR=tmp_path, PROJECT_ROOT=tmp_path):
+        result = run_dynamic_lab_script("preflight.sh", timeout_seconds=5)
+
+    assert result.return_code == 0
+    assert result.pass_markers == ["PREFLIGHT_RESULT=PASS"]
+    assert result.fail_markers == []
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
+def test_dynamic_local_script_wrapper_handles_fail_markers_and_nonzero(tmp_path):
+    _write_test_script(
+        tmp_path,
+        "frida-smoke.sh",
+        "echo FRIDA_SMOKE_RESULT=FAIL\nexit 7\n",
+    )
+
+    with override_settings(MSAP_DYNAMIC_LAB_SCRIPT_DIR=tmp_path, PROJECT_ROOT=tmp_path):
+        with pytest.raises(DynamicScriptExecutionError) as exc:
+            run_dynamic_lab_script("frida-smoke.sh", timeout_seconds=5)
+
+    assert exc.value.result.return_code == 7
+    assert exc.value.result.fail_markers == ["FRIDA_SMOKE_RESULT=FAIL"]
+
+
+@override_settings(
+    MSAP_DYNAMIC_STAGE_TIMEOUT_SECONDS=0,
+    MSAP_DYNAMIC_STAGE_TIMEOUTS_JSON="",
+    MSAP_DYNAMIC_STAGE_TIMEOUT_MIN_SECONDS=1,
+    MSAP_DYNAMIC_STAGE_TIMEOUT_MAX_SECONDS=1800,
+)
+def test_dynamic_stage_timeout_mapping_defaults_and_overrides():
+    assert get_dynamic_stage_timeout("preflight") == 420
+    assert get_dynamic_stage_timeout("restore-instrumented-snapshot.sh") == 600
+    assert get_dynamic_stage_timeout("platform_tls_probe") == 900
+    assert get_dynamic_stage_timeout("cleanup_runtime_state") == 420
+
+    with override_settings(MSAP_DYNAMIC_STAGE_TIMEOUT_SECONDS=222):
+        assert get_dynamic_stage_timeout("preflight") == 222
+        assert get_dynamic_stage_timeout("cleanup-runtime-state.sh") == 222
+
+    with override_settings(
+        MSAP_DYNAMIC_STAGE_TIMEOUT_SECONDS=0,
+        MSAP_DYNAMIC_STAGE_TIMEOUTS_JSON=(
+            '{"preflight": 333, "cleanup-runtime-state.sh": 444}'
+        ),
+    ):
+        assert get_dynamic_stage_timeout("preflight") == 333
+        assert get_dynamic_stage_timeout("cleanup_runtime_state") == 444
+
+    with override_settings(
+        MSAP_DYNAMIC_STAGE_TIMEOUT_SECONDS=0,
+        MSAP_DYNAMIC_STAGE_TIMEOUTS_JSON='{"platform_tls_probe": 9999}',
+        MSAP_DYNAMIC_STAGE_TIMEOUT_MAX_SECONDS=500,
+    ):
+        assert get_dynamic_stage_timeout("platform-tls-probe.sh") == 500
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
+def test_dynamic_local_script_timeout_failure_includes_previews(tmp_path):
+    _write_test_script(
+        tmp_path,
+        "preflight.sh",
+        "echo before-timeout\n"
+        "echo err-before-timeout >&2\n"
+        "sleep 2\n"
+        "echo after-timeout\n",
+    )
+
+    with override_settings(MSAP_DYNAMIC_LAB_SCRIPT_DIR=tmp_path, PROJECT_ROOT=tmp_path):
+        with pytest.raises(DynamicScriptExecutionError) as exc:
+            run_dynamic_lab_script("preflight.sh", timeout_seconds=1)
+
+    message = str(exc.value)
+    assert exc.value.stage_name == "preflight"
+    assert exc.value.script_name == "preflight.sh"
+    assert exc.value.timeout_seconds == 1
+    assert exc.value.result.timed_out is True
+    assert exc.value.result.timeout_seconds == 1
+    assert "stage=preflight" in message
+    assert "script=preflight.sh" in message
+    assert "timeout=1s" in message
+    assert "stdout_preview:" in message
+    assert "stderr_preview:" in message
+    assert "before-timeout" in exc.value.result.stdout_preview
+    assert "err-before-timeout" in exc.value.result.stderr_preview
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_MVP_DEVICE_SERIAL="emulator-test",
+)
+def test_dynamic_local_script_env_includes_safe_runner_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("MSAP_ANDROID_SERIAL", raising=False)
+    monkeypatch.setenv("MSAP_DYNAMIC_HOME", "/tmp/msap-dynamic-home")
+    _write_test_script(
+        tmp_path,
+        "preflight.sh",
+        'echo "ENABLED=$MSAP_DYNAMIC_RUNNER_ENABLED"\n'
+        'echo "SERIAL=$MSAP_ANDROID_SERIAL"\n'
+        'echo "DYNAMIC_HOME=$MSAP_DYNAMIC_HOME"\n'
+        'case ":$PATH:" in *":$HOME/.local/bin:"*) echo "LOCAL_BIN_IN_PATH=yes";; '
+        '*) echo "LOCAL_BIN_IN_PATH=no";; esac\n'
+        "echo PREFLIGHT_RESULT=PASS\n",
+    )
+
+    with override_settings(MSAP_DYNAMIC_LAB_SCRIPT_DIR=tmp_path, PROJECT_ROOT=tmp_path):
+        result = run_dynamic_lab_script("preflight.sh", timeout_seconds=5)
+
+    assert "ENABLED=true" in result.stdout_preview
+    assert "SERIAL=emulator-test" in result.stdout_preview
+    assert "DYNAMIC_HOME=/tmp/msap-dynamic-home" in result.stdout_preview
+    assert "LOCAL_BIN_IN_PATH=yes" in result.stdout_preview
+
+
+def test_dynamic_local_script_wrapper_does_not_use_shell_true():
+    source = inspect.getsource(local_scripts.run_dynamic_lab_script)
+
+    assert "shell" + "=True" not in source
+    assert "subprocess" + ".run(" not in source
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_mvp_runner_creates_session_stages_artifacts_on_pass():
+    audit, _apk = _make_audit_with_apk("runner-pass")
+    job = create_dynamic_mvp_job(audit)
+
+    with patch(
+        "apps.dynamic_analysis.services.mvp_runner.run_dynamic_lab_script",
+        side_effect=_mock_successful_dynamic_script,
+    ):
+        result = run_dynamic_mvp_job(job.id)
+
+    job.refresh_from_db()
+    session = DynamicSession.objects.get(job=job)
+    lease = DynamicDeviceLease.objects.get(job=job)
+    device = session.device
+    device.refresh_from_db()
+    assert result["job_status"] == DynamicAnalysisJob.Status.COMPLETED
+    assert job.status == DynamicAnalysisJob.Status.COMPLETED
+    assert session.state == DynamicSession.State.COMPLETED
+    assert session.cleanup_status == DynamicSession.CleanupStatus.SUCCEEDED
+    assert lease.lease_status == DynamicDeviceLease.LeaseStatus.RELEASED
+    assert device.status == DynamicDevice.Status.AVAILABLE
+    assert DynamicSessionStage.objects.filter(session=session).count() == 7
+    assert DynamicSessionArtifact.objects.filter(session=session).count() == 7
+    assert DynamicSessionStage.objects.get(
+        session=session,
+        name="platform_tls_probe",
+    ).status == DynamicSessionStage.StageStatus.SKIPPED
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+    MSAP_DYNAMIC_STAGE_TIMEOUT_SECONDS=0,
+)
+@pytest.mark.django_db
+def test_run_dynamic_mvp_command_prints_stage_progress():
+    audit, _apk = _make_audit_with_apk("command-progress")
+    output = StringIO()
+
+    with patch(
+        "apps.dynamic_analysis.services.mvp_runner.run_dynamic_lab_script",
+        side_effect=_mock_successful_dynamic_script,
+    ):
+        call_command(
+            "run_dynamic_mvp",
+            "--audit-id",
+            str(audit.id),
+            stdout=output,
+        )
+
+    value = output.getvalue()
+    assert "Job ID:" in value
+    assert "Session ID:" in value
+    assert "STAGE START preflight script=preflight.sh timeout=420s" in value
+    assert "PASS preflight script=preflight.sh" in value
+    assert "SKIP platform_tls_probe script=platform-tls-probe.sh" in value
+    assert "Final job status: COMPLETED" in value
+    assert "Final session state: COMPLETED" in value
+    assert "DYNAMIC_MVP_RUNNER_RESULT=PASS" in value
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_mvp_runner_marks_failed_and_attempts_cleanup_after_stage_failure():
+    audit, _apk = _make_audit_with_apk("runner-fail")
+    job = create_dynamic_mvp_job(audit)
+    calls = []
+
+    def script_side_effect(script_name, timeout_seconds=None, extra_env=None):
+        calls.append(script_name)
+        if script_name == "frida-smoke.sh":
+            result = _dynamic_script_result(
+                "frida_smoke",
+                script_name,
+                fail_markers=["FRIDA_SMOKE_RESULT=FAIL"],
+                return_code=1,
+            )
+            raise DynamicScriptExecutionError("Frida smoke failed.", result=result)
+        return _mock_successful_dynamic_script(script_name, timeout_seconds, extra_env)
+
+    with patch(
+        "apps.dynamic_analysis.services.mvp_runner.run_dynamic_lab_script",
+        side_effect=script_side_effect,
+    ):
+        result = run_dynamic_mvp_job(job.id)
+
+    job.refresh_from_db()
+    session = DynamicSession.objects.get(job=job)
+    lease = DynamicDeviceLease.objects.get(job=job)
+    assert result["job_status"] == DynamicAnalysisJob.Status.FAILED
+    assert job.failure_category == DynamicAnalysisJob.FailureCategory.FRIDA_START_FAILED
+    assert session.state == DynamicSession.State.FAILED
+    assert session.cleanup_status == DynamicSession.CleanupStatus.SUCCEEDED
+    assert lease.lease_status == DynamicDeviceLease.LeaseStatus.RELEASED
+    assert "cleanup-runtime-state.sh" in calls
+    assert calls.index("cleanup-runtime-state.sh") > calls.index("frida-smoke.sh")
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_mvp_runner_quarantines_device_if_cleanup_fails():
+    audit, _apk = _make_audit_with_apk("runner-cleanup-fail")
+    job = create_dynamic_mvp_job(audit)
+
+    def script_side_effect(script_name, timeout_seconds=None, extra_env=None):
+        if script_name == "cleanup-runtime-state.sh":
+            result = _dynamic_script_result(
+                "cleanup_runtime_state",
+                script_name,
+                fail_markers=["CLEANUP_RUNTIME_STATE_RESULT=FAIL"],
+                return_code=1,
+            )
+            raise DynamicScriptExecutionError("Cleanup failed.", result=result)
+        return _mock_successful_dynamic_script(script_name, timeout_seconds, extra_env)
+
+    with patch(
+        "apps.dynamic_analysis.services.mvp_runner.run_dynamic_lab_script",
+        side_effect=script_side_effect,
+    ):
+        result = run_dynamic_mvp_job(job.id)
+
+    job.refresh_from_db()
+    session = DynamicSession.objects.get(job=job)
+    lease = DynamicDeviceLease.objects.get(job=job)
+    device = session.device
+    device.refresh_from_db()
+    assert result["job_status"] == DynamicAnalysisJob.Status.FAILED
+    assert job.failure_category == DynamicAnalysisJob.FailureCategory.CLEANUP_FAILED
+    assert session.state == DynamicSession.State.QUARANTINED
+    assert session.cleanup_status == DynamicSession.CleanupStatus.FAILED
+    assert lease.lease_status == DynamicDeviceLease.LeaseStatus.RELEASED
+    assert device.status == DynamicDevice.Status.QUARANTINED
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_mvp_runner_cleanup_timeout_quarantines_without_running_records():
+    audit, _apk = _make_audit_with_apk("runner-cleanup-timeout")
+    job = create_dynamic_mvp_job(audit)
+
+    def script_side_effect(script_name, timeout_seconds=None, extra_env=None):
+        if script_name == "cleanup-runtime-state.sh":
+            result = _dynamic_script_result(
+                "cleanup_runtime_state",
+                script_name,
+                return_code=-1,
+                stdout_preview="cleanup started",
+                stderr_preview="PowerShell relay did not exit",
+                timed_out=True,
+                timeout_seconds=timeout_seconds,
+            )
+            raise DynamicScriptExecutionError(
+                "Dynamic lab script timed out. "
+                "stage=cleanup_runtime_state "
+                "script=cleanup-runtime-state.sh "
+                f"timeout={timeout_seconds}s\n"
+                "stdout_preview:\ncleanup started\n"
+                "stderr_preview:\nPowerShell relay did not exit",
+                result=result,
+                timeout_seconds=timeout_seconds,
+            )
+        return _mock_successful_dynamic_script(script_name, timeout_seconds, extra_env)
+
+    with patch(
+        "apps.dynamic_analysis.services.mvp_runner.run_dynamic_lab_script",
+        side_effect=script_side_effect,
+    ):
+        result = run_dynamic_mvp_job(job.id)
+
+    job.refresh_from_db()
+    session = DynamicSession.objects.get(job=job)
+    lease = DynamicDeviceLease.objects.get(job=job)
+    device = session.device
+    device.refresh_from_db()
+    cleanup_stage = DynamicSessionStage.objects.get(
+        session=session,
+        name="cleanup_runtime_state",
+    )
+    assert result["job_status"] == DynamicAnalysisJob.Status.FAILED
+    assert job.status == DynamicAnalysisJob.Status.FAILED
+    assert job.failure_category == DynamicAnalysisJob.FailureCategory.CLEANUP_FAILED
+    assert "cleanup-runtime-state.sh" in job.failure_message
+    assert session.state == DynamicSession.State.QUARANTINED
+    assert session.cleanup_status == DynamicSession.CleanupStatus.FAILED
+    assert session.quarantine_required is True
+    assert lease.lease_status == DynamicDeviceLease.LeaseStatus.RELEASED
+    assert device.status == DynamicDevice.Status.QUARANTINED
+    assert cleanup_stage.status == DynamicSessionStage.StageStatus.FAILED
+    assert cleanup_stage.metadata["timed_out"] is True
+    assert "cleanup started" in cleanup_stage.message
+    assert not DynamicSessionStage.objects.filter(
+        session=session,
+        status=DynamicSessionStage.StageStatus.RUNNING,
+    ).exists()
+    assert not DynamicSession.objects.filter(
+        job=job,
+        cleanup_status=DynamicSession.CleanupStatus.IN_PROGRESS,
+    ).exists()
+    assert not DynamicAnalysisJob.objects.filter(
+        id=job.id,
+        status=DynamicAnalysisJob.Status.RUNNING,
+    ).exists()
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=False)
+@pytest.mark.django_db
+def test_dynamic_api_run_mvp_action_refuses_when_disabled(api_client):
+    audit, _apk = _make_audit_with_apk("api-run-disabled")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+
+    response = api_client.post(
+        f"/api/dynamic/jobs/{job.id}/run-mvp/",
+        {},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Dynamic MVP runner is disabled."
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_api_run_mvp_action_queues_when_enabled(api_client):
+    audit, _apk = _make_audit_with_apk("api-run-enabled")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+    async_result = Mock(id="task-dynamic-mvp")
+
+    with patch(
+        "apps.dynamic_analysis.views.run_dynamic_mvp_job_task.delay",
+        return_value=async_result,
+    ) as delay:
+        response = api_client.post(
+            f"/api/dynamic/jobs/{job.id}/run-mvp/",
+            {},
+            format="json",
+        )
+
+    assert response.status_code == 202
+    assert response.json()["task_id"] == "task-dynamic-mvp"
+    delay.assert_called_once_with(job.id, include_platform_tls_probe=False)
+
+
 def _make_audit_with_apk(suffix: str = "default") -> tuple[Audit, APKFile]:
     project = Project.objects.create(name=f"Dynamic project {suffix}")
     audit = Audit.objects.create(project=project, name=f"Dynamic audit {suffix}")
@@ -496,4 +940,68 @@ def _make_session(
         state=state,
         cleanup_status=cleanup_status,
         started_at=timezone.now(),
+    )
+
+
+def _write_test_script(tmp_path, script_name: str, body: str):
+    script_path = tmp_path / script_name
+    script_path.write_text(f"#!/usr/bin/env sh\n{body}", encoding="utf-8")
+    script_path.chmod(0o755)
+    return script_path
+
+
+def _mock_successful_dynamic_script(
+    script_name,
+    timeout_seconds=None,
+    extra_env=None,
+) -> DynamicScriptResult:
+    markers = {
+        "preflight.sh": "PREFLIGHT_RESULT=PASS",
+        "restore-instrumented-snapshot.sh": "RESTORE_INSTRUMENTED_SNAPSHOT_RESULT=PASS",
+        "refresh-frida-bridge.sh": "FRIDA_BRIDGE_REFRESH_RESULT=PASS",
+        "frida-smoke.sh": "FRIDA_SMOKE_RESULT=PASS",
+        "mitmproxy-smoke.sh": "MITMPROXY_SMOKE_RESULT=PASS",
+        "platform-tls-probe.sh": "PLATFORM_TLS_PROBE_RESULT=PASS",
+        "cleanup-runtime-state.sh": "CLEANUP_RUNTIME_STATE_RESULT=PASS",
+    }
+    return _dynamic_script_result(
+        script_name.removesuffix(".sh").replace("-", "_"),
+        script_name,
+        pass_markers=[markers[script_name]],
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _dynamic_script_result(
+    stage_name: str,
+    script_name: str,
+    *,
+    pass_markers: list[str] | None = None,
+    fail_markers: list[str] | None = None,
+    return_code: int = 0,
+    stdout_preview: str | None = None,
+    stderr_preview: str = "",
+    timed_out: bool = False,
+    timeout_seconds: int | None = None,
+) -> DynamicScriptResult:
+    now = timezone.now()
+    markers = pass_markers or fail_markers or []
+    return DynamicScriptResult(
+        stage_name=stage_name,
+        script_name=script_name,
+        return_code=return_code,
+        stdout_preview=(
+            stdout_preview if stdout_preview is not None else "\n".join(markers)
+        ),
+        stderr_preview=stderr_preview,
+        stdout_path=None,
+        stderr_path=None,
+        started_at=now,
+        finished_at=now,
+        duration_seconds=1.0,
+        pass_markers=pass_markers or [],
+        fail_markers=fail_markers or [],
+        redaction_applied=False,
+        timed_out=timed_out,
+        timeout_seconds=timeout_seconds,
     )

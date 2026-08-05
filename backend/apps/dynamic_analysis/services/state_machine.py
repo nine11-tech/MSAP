@@ -44,6 +44,8 @@ VALID_TRANSITIONS = {
     },
     DynamicSession.State.PREPARING_DEVICE: {
         DynamicSession.State.INSTALLING_APK,
+        DynamicSession.State.STARTING_CAPTURE,
+        DynamicSession.State.STARTING_INSTRUMENTATION,
         DynamicSession.State.CLEANING_UP,
     },
     DynamicSession.State.INSTALLING_APK: {
@@ -55,10 +57,13 @@ VALID_TRANSITIONS = {
     DynamicSession.State.STARTING_CAPTURE: {
         DynamicSession.State.STARTING_INSTRUMENTATION,
         DynamicSession.State.LAUNCHING_APP,
+        DynamicSession.State.COLLECTING_EVIDENCE,
         DynamicSession.State.CLEANING_UP,
     },
     DynamicSession.State.STARTING_INSTRUMENTATION: {
+        DynamicSession.State.STARTING_CAPTURE,
         DynamicSession.State.LAUNCHING_APP,
+        DynamicSession.State.COLLECTING_EVIDENCE,
         DynamicSession.State.CLEANING_UP,
     },
     DynamicSession.State.LAUNCHING_APP: {
