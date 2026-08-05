@@ -99,6 +99,7 @@ INSTALLED_APPS = [
     "apps.normalization",
     "apps.appsec_rules",
     "apps.triage_rules",
+    "apps.dynamic_analysis",
     "apps.findings",
     "apps.indicators",
     "apps.evidence",
