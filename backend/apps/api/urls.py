@@ -26,6 +26,19 @@ from apps.api.auth_views import (
     LogoutView,
     MeView,
 )
+from apps.dynamic_analysis.views import (
+    DynamicAnalysisJobViewSet,
+    DynamicDeviceCapabilityViewSet,
+    DynamicDeviceEventViewSet,
+    DynamicDeviceLeaseViewSet,
+    DynamicDevicePoolViewSet,
+    DynamicDeviceViewSet,
+    DynamicEmulatorSnapshotViewSet,
+    DynamicSessionArtifactViewSet,
+    DynamicSessionEventViewSet,
+    DynamicSessionStageViewSet,
+    DynamicSessionViewSet,
+)
 
 
 router = DefaultRouter()
@@ -61,6 +74,61 @@ router.register(
     "rule-evaluations",
     RuleEvaluationViewSet,
     basename="rule-evaluation",
+)
+router.register(
+    "dynamic/device-pools",
+    DynamicDevicePoolViewSet,
+    basename="dynamic-device-pool",
+)
+router.register(
+    "dynamic/devices",
+    DynamicDeviceViewSet,
+    basename="dynamic-device",
+)
+router.register(
+    "dynamic/device-capabilities",
+    DynamicDeviceCapabilityViewSet,
+    basename="dynamic-device-capability",
+)
+router.register(
+    "dynamic/emulator-snapshots",
+    DynamicEmulatorSnapshotViewSet,
+    basename="dynamic-emulator-snapshot",
+)
+router.register(
+    "dynamic/device-leases",
+    DynamicDeviceLeaseViewSet,
+    basename="dynamic-device-lease",
+)
+router.register(
+    "dynamic/device-events",
+    DynamicDeviceEventViewSet,
+    basename="dynamic-device-event",
+)
+router.register(
+    "dynamic/jobs",
+    DynamicAnalysisJobViewSet,
+    basename="dynamic-analysis-job",
+)
+router.register(
+    "dynamic/sessions",
+    DynamicSessionViewSet,
+    basename="dynamic-session",
+)
+router.register(
+    "dynamic/session-stages",
+    DynamicSessionStageViewSet,
+    basename="dynamic-session-stage",
+)
+router.register(
+    "dynamic/session-events",
+    DynamicSessionEventViewSet,
+    basename="dynamic-session-event",
+)
+router.register(
+    "dynamic/session-artifacts",
+    DynamicSessionArtifactViewSet,
+    basename="dynamic-session-artifact",
 )
 
 urlpatterns = [

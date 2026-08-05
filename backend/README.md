@@ -2,11 +2,12 @@
 
 This directory contains the authenticated MSAP assessment backend: Django
 session authentication and RBAC, MinIO ingestion, Celery orchestration, bounded
-Android APK static analysis, rule coverage, scoring, component status, and
-JSON/PDF reporting.
+Android APK static analysis, rule coverage, scoring, component status,
+JSON/PDF reporting, and the metadata foundation for dynamic device inventory.
 
-It does not execute APK code, observe dynamic behavior, classify malware, support
-iOS, call third-party scanning services, or depend on MobSF.
+It does not execute APK code from Django, control ADB/Frida/mitmproxy from the
+API, observe dynamic behavior yet, classify malware, support iOS, call
+third-party scanning services, or depend on MobSF.
 
 ## Setup
 ```bash
@@ -109,7 +110,40 @@ Read-only analysis result endpoints:
 - `GET /api/reports/`
 - `GET /api/reports/{id}/`
 
+Dynamic lab foundation endpoints:
+- `GET|POST /api/dynamic/device-pools/`
+- `GET|PUT|PATCH|DELETE /api/dynamic/device-pools/{id}/`
+- `GET|POST /api/dynamic/devices/`
+- `GET|PUT|PATCH|DELETE /api/dynamic/devices/{id}/`
+- `POST /api/dynamic/devices/{id}/health/`
+- `POST /api/dynamic/devices/{id}/quarantine/`
+- `POST /api/dynamic/devices/{id}/mark-available/`
+- `GET /api/dynamic/device-capabilities/`
+- `GET /api/dynamic/device-capabilities/{id}/`
+- `GET|POST /api/dynamic/emulator-snapshots/`
+- `GET|PUT|PATCH|DELETE /api/dynamic/emulator-snapshots/{id}/`
+- `GET|POST /api/dynamic/device-leases/`
+- `GET /api/dynamic/device-leases/{id}/`
+- `POST /api/dynamic/device-leases/{id}/release/`
+- `GET /api/dynamic/device-events/`
+- `GET /api/dynamic/device-events/{id}/`
+- `GET|POST /api/dynamic/jobs/`
+- `GET|PUT|PATCH|DELETE /api/dynamic/jobs/{id}/`
+- `POST /api/dynamic/jobs/{id}/cancel/`
+- `GET /api/dynamic/sessions/`
+- `GET /api/dynamic/sessions/{id}/`
+- `POST /api/dynamic/sessions/{id}/transition/`
+- `GET /api/dynamic/session-stages/`
+- `GET /api/dynamic/session-stages/{id}/`
+- `GET /api/dynamic/session-events/`
+- `GET /api/dynamic/session-events/{id}/`
+- `GET /api/dynamic/session-artifacts/`
+- `GET /api/dynamic/session-artifacts/{id}/`
+
 Finding, indicator, evidence, score, report, raw-result, and normalized-artifact list endpoints accept `?audit=<audit_id>` for audit-scoped retrieval.
+Dynamic job, lease, session, event, and artifact endpoints support the matching
+metadata filters exposed by their model fields, such as `?audit=<audit_id>`,
+`?device=<device_id>`, `?session=<session_id>`, and status/state filters.
 
 All API endpoints require authentication except health, CSRF initialization, and
 login. Schema/docs are public only in debug mode and administrator-only in
