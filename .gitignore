@@ -63,3 +63,21 @@ samples/*.ipa
 *.crt
 *.p12
 *.jks
+
+# Dynamic Android lab local state
+/.msap-dynamic-lab.local.env
+*.keystore
+*.cer
+*.apk
+*.apks
+*.aab
+*.flows
+*.har
+*.pcap
+*.pcapng
+*.mp4
+*.webm
+/dynamic-evidence/
+/evidence/
+/MobileLab/
+/apk/
