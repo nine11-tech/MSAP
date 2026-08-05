@@ -61,3 +61,14 @@ org/{organization_id}/project/{project_id}/audit/{audit_id}/{object_type}/{sha25
 ```
 
 Object keys must use sanitized filenames and must not be treated as the authorization boundary.
+
+## Dynamic Analysis Design References
+
+Phase 3 dynamic-analysis implementation contracts are maintained separately
+until Django models and APIs are introduced:
+
+- [Dynamic Device Contracts](04_Design/31_Dynamic_Device_Contracts.md)
+- [Dynamic Session Contracts](04_Design/32_Dynamic_Session_Contracts.md)
+- [Dynamic Evidence Schema](04_Design/33_Dynamic_Evidence_Schema.md)
+- [Dynamic Analyzer Interface](04_Design/34_Dynamic_Analyzer_Interface.md)
+- [Static/Dynamic Correlation Contract](04_Design/35_Static_Dynamic_Correlation_Contract.md)
