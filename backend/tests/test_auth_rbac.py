@@ -8,6 +8,7 @@ from rest_framework.test import APIClient
 
 from apps.api.roles import ANALYST_GROUP, VIEWER_GROUP
 from apps.projects.models import Project
+from msap.settings import development as development_settings
 
 
 PASSWORD = "Correct-Horse-Battery-Staple-42!"
@@ -63,6 +64,30 @@ def test_login_me_and_logout(django_user_model, role_groups):
     )
     assert logout_response.status_code == 204
     assert client.get("/api/auth/me/").status_code in {401, 403}
+
+
+@pytest.mark.django_db
+@override_settings(
+    CSRF_TRUSTED_ORIGINS=development_settings.CSRF_TRUSTED_ORIGINS,
+)
+def test_login_accepts_local_vite_origin(django_user_model, role_groups):
+    user = django_user_model.objects.create_user(
+        username="vite-user",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=ANALYST_GROUP))
+    client, csrf_token = csrf_client()
+
+    response = client.post(
+        "/api/auth/login/",
+        {"username": "vite-user", "password": PASSWORD},
+        format="json",
+        HTTP_X_CSRFTOKEN=csrf_token,
+        HTTP_ORIGIN="http://127.0.0.1:5173",
+        HTTP_REFERER="http://127.0.0.1:5173/",
+    )
+
+    assert response.status_code == 200
 
 
 @pytest.mark.django_db
