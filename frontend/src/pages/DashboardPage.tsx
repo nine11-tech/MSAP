@@ -193,6 +193,17 @@ export function DashboardPage() {
             <li><strong>No malware verdict</strong><span>ATT&amp;CK mappings support triage and do not classify applications.</span></li>
           </ul>
         </Card>
+        <Card title="Dynamic Lab MVP">
+          <div className="dynamic-dashboard-card">
+            <p>
+              Validate Android lab orchestration with snapshots, Frida,
+              mitmproxy, optional platform TLS proof, and cleanup evidence.
+            </p>
+            <Link className="button button-secondary" to="/dynamic">
+              Open Dynamic Lab
+            </Link>
+          </div>
+        </Card>
       </div>
     </>
   );

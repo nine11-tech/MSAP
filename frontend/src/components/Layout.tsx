@@ -16,6 +16,7 @@ export function Layout({ children }: { children: ReactNode }) {
       ["/findings", "Findings"],
       ["/attack-triage", "ATT&CK Triage"],
       ["/reports", "Reports"],
+      ["/dynamic", "Dynamic Lab"],
       ["/system-status", "System Status"],
       ["/administration", "Administration"],
       ["/profile", "Profile & Security"],
@@ -28,6 +29,7 @@ export function Layout({ children }: { children: ReactNode }) {
     { to: "/findings", label: "Findings", icon: "FI" },
     { to: "/attack-triage", label: "ATT&CK Triage", icon: "AT" },
     { to: "/reports", label: "Reports", icon: "RP" },
+    { to: "/dynamic", label: "Dynamic Lab", icon: "DL" },
     { to: "/system-status", label: "System Status", icon: "SY" },
   ];
 
@@ -76,7 +78,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </nav>
           <p className="sidebar-scope">
             <span className="status-dot status-operational" />
-            <span className="nav-label">Static analysis only</span>
+            <span className="nav-label">Static + dynamic MVP</span>
           </p>
         </aside>
         <div className="app-main">
@@ -118,7 +120,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <ArchitectureStatusBar />
           <main className="page-container">{children}</main>
           <footer className="footer">
-            Deterministic Android static assessment • Triage signals are not
+            Deterministic Android assessment MVP • Triage signals are not
             malware verdicts
           </footer>
         </div>

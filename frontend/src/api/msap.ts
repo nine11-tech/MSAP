@@ -5,6 +5,17 @@ import type {
   ApkFile,
   Audit,
   ComplianceScore,
+  DynamicAnalysisJob,
+  DynamicDevice,
+  DynamicDeviceCapability,
+  DynamicDevicePool,
+  DynamicEmulatorSnapshot,
+  DynamicJobCreateRequest,
+  DynamicRunMvpResponse,
+  DynamicSession,
+  DynamicSessionArtifact,
+  DynamicSessionEvent,
+  DynamicSessionStage,
   Evidence,
   Finding,
   Indicator,
@@ -91,3 +102,48 @@ export const downloadPdfReport = (auditId: number) =>
 
 export const getSystemStatus = (force = false) =>
   apiGet<SystemStatus>(`system/status/${force ? "?refresh=true" : ""}`);
+
+export const listDynamicDevicePools = () =>
+  apiGet<DynamicDevicePool[]>("dynamic/device-pools/");
+export const listDynamicDevices = () =>
+  apiGet<DynamicDevice[]>("dynamic/devices/");
+export const listDynamicDeviceCapabilities = (deviceId?: number) =>
+  apiGet<DynamicDeviceCapability[]>(
+    `dynamic/device-capabilities/${deviceId === undefined ? "" : `?device=${encodeURIComponent(deviceId)}`}`,
+  );
+export const listDynamicEmulatorSnapshots = (deviceId?: number) =>
+  apiGet<DynamicEmulatorSnapshot[]>(
+    `dynamic/emulator-snapshots/${deviceId === undefined ? "" : `?device=${encodeURIComponent(deviceId)}`}`,
+  );
+export const listDynamicJobs = (auditId?: number) =>
+  apiGet<DynamicAnalysisJob[]>(
+    `dynamic/jobs/${auditId === undefined ? "" : `?audit=${encodeURIComponent(auditId)}`}`,
+  );
+export const createDynamicJob = (data: DynamicJobCreateRequest) =>
+  apiPost<DynamicAnalysisJob, DynamicJobCreateRequest>("dynamic/jobs/", data);
+export const runDynamicMvpJob = (
+  jobId: number,
+  data: { include_platform_tls_probe?: boolean } = {},
+) =>
+  apiPost<DynamicRunMvpResponse, { include_platform_tls_probe?: boolean }>(
+    `dynamic/jobs/${jobId}/run-mvp/`,
+    data,
+  );
+export const listDynamicSessions = (jobId?: number) =>
+  apiGet<DynamicSession[]>(
+    `dynamic/sessions/${jobId === undefined ? "" : `?job=${encodeURIComponent(jobId)}`}`,
+  );
+export const getDynamicSession = (sessionId: number) =>
+  apiGet<DynamicSession>(`dynamic/sessions/${sessionId}/`);
+export const listDynamicSessionStages = (sessionId: number) =>
+  apiGet<DynamicSessionStage[]>(
+    `dynamic/session-stages/?session=${encodeURIComponent(sessionId)}`,
+  );
+export const listDynamicSessionEvents = (sessionId: number) =>
+  apiGet<DynamicSessionEvent[]>(
+    `dynamic/session-events/?session=${encodeURIComponent(sessionId)}`,
+  );
+export const listDynamicSessionArtifacts = (sessionId: number) =>
+  apiGet<DynamicSessionArtifact[]>(
+    `dynamic/session-artifacts/?session=${encodeURIComponent(sessionId)}`,
+  );
