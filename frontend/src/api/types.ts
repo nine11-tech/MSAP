@@ -271,3 +271,194 @@ export interface JsonReport {
   analysis_job: Record<string, unknown> | null;
   limitations: string[];
 }
+
+export interface DynamicDevicePool {
+  id: number;
+  name: string;
+  slug: string;
+  description: string;
+  is_active: boolean;
+  max_concurrent_leases: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicDevice {
+  id: number;
+  pool: number | null;
+  pool_name: string | null;
+  name: string;
+  serial: string;
+  kind: string;
+  host_type: string;
+  host_identifier: string;
+  status: string;
+  api_level: number;
+  android_version: string;
+  abi: string;
+  avd_name: string;
+  is_rooted: boolean;
+  selinux_mode: string;
+  has_frida: boolean;
+  has_mitm_ready: boolean;
+  current_snapshot: string;
+  last_seen_at: string | null;
+  last_health_check_at: string | null;
+  quarantine_reason: string;
+  notes: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicDeviceCapability {
+  id: number;
+  device: number;
+  device_serial: string;
+  capability_type: string;
+  name: string;
+  version: string;
+  is_available: boolean;
+  details: Record<string, unknown>;
+  checked_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicEmulatorSnapshot {
+  id: number;
+  device: number;
+  device_serial: string;
+  name: string;
+  snapshot_type: string;
+  description: string;
+  api_level: number;
+  abi: string;
+  contains_frida_binary: boolean;
+  contains_public_ca: boolean;
+  contains_target_apk: boolean;
+  validation_status: string;
+  validated_at: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicAnalysisJob {
+  id: number;
+  audit: number;
+  apk: number | null;
+  requested_by: number | null;
+  requested_by_username: string | null;
+  mode: string;
+  status: string;
+  priority: number;
+  requested_tool_profile: string;
+  requested_interaction_mode: string;
+  requested_device_pool: number | null;
+  timeout_seconds: number;
+  max_retries: number;
+  retry_count: number;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  summary: Record<string, unknown>;
+  failure_category: string;
+  failure_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicSession {
+  id: number;
+  job: number;
+  audit: number;
+  apk: number | null;
+  device: number;
+  device_serial: string;
+  lease: number;
+  snapshot: number | null;
+  state: string;
+  state_reason: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  tool_versions: Record<string, unknown>;
+  network_capture_enabled: boolean;
+  frida_enabled: boolean;
+  runtime_ca_enabled: boolean;
+  ui_automation_enabled: boolean;
+  cleanup_status: string;
+  quarantine_required: boolean;
+  summary: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicSessionStage {
+  id: number;
+  session: number;
+  name: string;
+  state: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  attempt: number;
+  message: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DynamicSessionEvent {
+  id: number;
+  session: number;
+  event_type: string;
+  severity: string;
+  message: string;
+  sequence_number: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DynamicSessionArtifact {
+  id: number;
+  session: number;
+  artifact_type: string;
+  category: string;
+  name: string;
+  summary: string;
+  raw_reference: number | null;
+  normalized: Record<string, unknown>;
+  redaction_state: string;
+  confidence: string;
+  manual_validation_required: boolean;
+  correlation_keys: string[];
+  sequence_number: number;
+  created_at: string;
+}
+
+export interface DynamicJobCreateRequest {
+  audit: number;
+  mode: "COMBINED" | "DYNAMIC_ONLY";
+  requested_tool_profile:
+    | "ADB_ONLY"
+    | "NETWORK_CAPTURE"
+    | "FRIDA_BASIC"
+    | "FRIDA_EXTENDED"
+    | "FULL";
+  requested_interaction_mode:
+    | "PASSIVE"
+    | "BASIC_AUTOMATION"
+    | "SCRIPTED_SCENARIO"
+    | "AUTHORIZED_LOGIN_SCENARIO";
+  requested_device_pool?: number | null;
+  timeout_seconds?: number;
+}
+
+export interface DynamicRunMvpResponse {
+  job: DynamicAnalysisJob;
+  task_id: string;
+  include_platform_tls_probe: boolean;
+}
