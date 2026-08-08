@@ -1,4 +1,5 @@
 from rest_framework import serializers
+import re
 
 from apps.analyzers.models import RawAnalyzerResult
 from apps.appsec_rules.models import RuleEvaluation
@@ -106,9 +107,17 @@ class APKUploadInitiateRequestSerializer(serializers.Serializer):
         return value
 
     def validate_sha256(self, value):
-        if value and len(value) != 64:
-            raise serializers.ValidationError("sha256 must be 64 characters.")
-        return value
+        normalized = value.strip().lower()
+        if normalized and not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise serializers.ValidationError("sha256 must be 64 hexadecimal characters.")
+        return normalized
+
+    def validate(self, attrs):
+        if self.context.get("require_sha256") and not attrs.get("sha256"):
+            raise serializers.ValidationError(
+                {"sha256": "SHA-256 is required for APK uploads."}
+            )
+        return attrs
 
 
 class APKUploadInitiateResponseSerializer(serializers.Serializer):
@@ -138,9 +147,10 @@ class APKUploadConfirmRequestSerializer(serializers.Serializer):
     sha256 = serializers.CharField(required=False, allow_blank=True, max_length=64)
 
     def validate_sha256(self, value):
-        if value and len(value) != 64:
-            raise serializers.ValidationError("sha256 must be 64 characters.")
-        return value
+        normalized = value.strip().lower()
+        if normalized and not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise serializers.ValidationError("sha256 must be 64 hexadecimal characters.")
+        return normalized
 
 
 class AnalysisJobSerializer(serializers.ModelSerializer):

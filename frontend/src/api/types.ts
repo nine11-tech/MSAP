@@ -459,6 +459,108 @@ export interface DynamicJobCreateRequest {
 
 export interface DynamicRunMvpResponse {
   job: DynamicAnalysisJob;
-  task_id: string;
+  task_id: string | null;
+  execution_mode: "celery" | "synchronous";
   include_platform_tls_probe: boolean;
+  result?: Record<string, unknown>;
+}
+
+export interface DynamicRunnerReadiness {
+  runner_enabled: boolean;
+  sync_demo_enabled: boolean;
+  execution_mode: "celery" | "synchronous";
+  worker_status: "ONLINE" | "OFFLINE" | "UNKNOWN";
+  workers_responding: number;
+  ready: boolean;
+  code: string;
+  detail: string;
+}
+
+export interface DynamicHostAgentDevice {
+  serial: string;
+  state: string;
+  adb_path_present: boolean;
+  root_uid: number | null;
+  api_level: number | null;
+  android_version: string;
+  abi: string;
+  selinux: string;
+  proxy: string;
+  focused_app: string;
+  frida_server_running: boolean;
+  frida_smoke: boolean | null;
+  mitmproxy_smoke: boolean | null;
+}
+
+export interface DynamicHostAgentStatus {
+  connected: boolean;
+  enabled: boolean;
+  code: string;
+  detail: string;
+  agent?: {
+    status: string;
+    version: string;
+    dynamic_env_detected: boolean;
+    adb_path_present: boolean;
+    serial: string;
+  };
+  device?: DynamicHostAgentDevice | null;
+  synced_device_id?: number;
+  last_sync_at?: string | null;
+}
+
+export interface DynamicHostAgentActionResult {
+  action: string;
+  success: boolean;
+  status: "PASS" | "FAIL" | string;
+  duration_seconds?: number;
+  return_code?: number;
+  package_name?: string;
+  focused_app?: string;
+  focused_activity?: string;
+  launchable_activity?: string;
+  evidence?: Record<string, unknown>;
+  detail?: string;
+  results?: Array<{
+    stage_name: string;
+    script_name: string;
+    return_code: number;
+    stdout_preview: string;
+    stderr_preview: string;
+    duration_seconds: number;
+    pass_markers: string[];
+    fail_markers: string[];
+    redaction_applied: boolean;
+    timed_out: boolean;
+    timeout_seconds: number | null;
+  }>;
+}
+
+export interface DynamicHostAgentPackages {
+  success: boolean;
+  serial: string;
+  count: number;
+  packages: string[];
+  truncated: boolean;
+  return_code: number;
+  duration_seconds: number;
+}
+
+export interface DynamicHostAgentInstallResult
+  extends DynamicHostAgentActionResult {
+  install_status: "PASS" | "FAIL" | string;
+  sha256: string;
+  size_bytes: number;
+  audit: number;
+  apk_file: number;
+  package_name: string;
+  package_metadata: {
+    package_name: string;
+    version_name: string;
+    version_code: string;
+    installed_apk_path: string;
+    launchable_activity: string;
+    requested_permission_count: number;
+    granted_permission_count: number;
+  };
 }

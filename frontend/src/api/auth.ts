@@ -1,4 +1,4 @@
-import { apiGet, apiPost, initializeCsrf } from "./client";
+import { ApiError, apiGet, apiPost, initializeCsrf } from "./client";
 import type { AuthUser } from "./types";
 
 export async function login(username: string, password: string) {
@@ -6,8 +6,15 @@ export async function login(username: string, password: string) {
   const response = await apiPost<
     { user: AuthUser },
     { username: string; password: string }
-  >("auth/login/", { username, password });
-  await initializeCsrf();
+  >("auth/login/", { username: username.trim(), password });
+  if (!response?.user || typeof response.user.username !== "string") {
+    throw new ApiError(
+      "Login response did not contain a valid user.",
+      200,
+      undefined,
+      "auth/login/",
+    );
+  }
   return response.user;
 }
 

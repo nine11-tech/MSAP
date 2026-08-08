@@ -1,4 +1,5 @@
 from pathlib import PurePosixPath
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import boto3
@@ -42,17 +43,24 @@ class MinIOStorageService:
         bucket,
         object_key,
         content_type,
+        sha256="",
         expires_in=900,
     ):
+        params = {
+            "Bucket": bucket,
+            "Key": object_key,
+            "ContentType": content_type,
+        }
+        if sha256:
+            params["Metadata"] = {"sha256": sha256}
         return self.presign_client.generate_presigned_url(
             "put_object",
-            Params={
-                "Bucket": bucket,
-                "Key": object_key,
-                "ContentType": content_type,
-            },
+            Params=params,
             ExpiresIn=expires_in,
         )
+
+    def public_endpoint_hostname(self):
+        return urlsplit(self._endpoint_url(settings.MINIO_PUBLIC_ENDPOINT)).hostname
 
     def generate_presigned_download_url(self, bucket, object_key, expires_in=900):
         return self.presign_client.generate_presigned_url(

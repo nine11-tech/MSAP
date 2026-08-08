@@ -1,4 +1,5 @@
 import logging
+from botocore.exceptions import BotoCoreError, ClientError
 
 from drf_spectacular.utils import extend_schema, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -34,6 +35,7 @@ from apps.api.permissions import (
     IsMSAPViewerOrAbove,
     IsReadOnlyViewerOrAbove,
 )
+from apps.api.renderers import PDFRenderer
 from apps.api.roles import user_role
 from apps.api.services.system_status import (
     collect_system_status,
@@ -130,11 +132,25 @@ class AuditViewSet(viewsets.ModelViewSet):
         audit = self.get_object()
         serializer = APKUploadInitiateRequestSerializer(
             data=request.data,
-            context={"max_size_bytes": settings.MSAP_MAX_APK_SIZE_BYTES},
+            context={
+                "max_size_bytes": settings.MSAP_MAX_APK_SIZE_BYTES,
+                "require_sha256": settings.MSAP_UPLOAD_REQUIRE_SHA256,
+            },
         )
         serializer.is_valid(raise_exception=True)
 
         storage_service = MinIOStorageService()
+        if storage_service.public_endpoint_hostname() == "minio":
+            return Response(
+                {
+                    "detail": (
+                        "The browser object-storage endpoint is configured as the "
+                        "Docker-only host minio. Set MINIO_PUBLIC_ENDPOINT to a "
+                        "browser-reachable URL such as http://127.0.0.1:9000."
+                    )
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         bucket = storage_service.get_apk_upload_bucket()
         object_key = storage_service.build_object_key(
             project_id=audit.project_id,
@@ -147,6 +163,7 @@ class AuditViewSet(viewsets.ModelViewSet):
             bucket=bucket,
             object_key=object_key,
             content_type=serializer.validated_data["content_type"],
+            sha256=serializer.validated_data.get("sha256", ""),
             expires_in=expires_in,
         )
 
@@ -178,6 +195,11 @@ class AuditViewSet(viewsets.ModelViewSet):
             "expires_in": expires_in,
             "required_headers": {
                 "Content-Type": serializer.validated_data["content_type"],
+                **(
+                    {"x-amz-meta-sha256": serializer.validated_data["sha256"]}
+                    if serializer.validated_data.get("sha256")
+                    else {}
+                ),
             },
         }
         return Response(response, status=status.HTTP_201_CREATED)
@@ -291,7 +313,12 @@ class AuditViewSet(viewsets.ModelViewSet):
             ),
         }
     )
-    @action(detail=True, methods=["get"], url_path="report/pdf")
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="report/pdf",
+        renderer_classes=[PDFRenderer],
+    )
     def pdf_report(self, request, pk=None):
         audit = self.get_object()
         try:
@@ -331,19 +358,62 @@ class APKFileViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if settings.MSAP_VERIFY_UPLOAD_WITH_HEAD:
-            storage_service = MinIOStorageService()
+        storage_service = MinIOStorageService()
+        try:
             metadata = storage_service.head_object(
                 storage_reference.bucket,
                 storage_reference.object_key,
             )
-            storage_reference.storage_status = (
-                ObjectStorageReference.StorageStatus.VERIFIED
+        except (BotoCoreError, ClientError, OSError):
+            return Response(
+                {
+                    "detail": (
+                        "The uploaded APK object could not be verified in object "
+                        "storage. Complete the browser PUT and retry confirmation."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
             )
-            if not serializer.validated_data.get("size_bytes"):
-                serializer.validated_data["size_bytes"] = metadata.get("ContentLength")
-        else:
-            storage_reference.storage_status = ObjectStorageReference.StorageStatus.UPLOADED
+
+        actual_size = metadata.get("ContentLength")
+        expected_size = storage_reference.size_bytes
+        confirmed_size = serializer.validated_data.get("size_bytes")
+        if (
+            not isinstance(actual_size, int)
+            or actual_size <= 0
+            or (expected_size is not None and actual_size != expected_size)
+            or (confirmed_size is not None and actual_size != confirmed_size)
+        ):
+            return Response(
+                {"detail": "Uploaded APK object size does not match the upload contract."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        actual_content_type = str(metadata.get("ContentType") or "").split(";", 1)[0]
+        if actual_content_type != storage_reference.content_type:
+            return Response(
+                {"detail": "Uploaded APK content type does not match the upload contract."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        expected_sha256 = storage_reference.sha256.strip().lower()
+        confirmed_sha256 = serializer.validated_data.get("sha256", "")
+        object_sha256 = str((metadata.get("Metadata") or {}).get("sha256") or "").lower()
+        if expected_sha256 and confirmed_sha256 and confirmed_sha256 != expected_sha256:
+            return Response(
+                {"detail": "Confirmed APK SHA-256 does not match the upload contract."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        if expected_sha256 and object_sha256 != expected_sha256:
+            return Response(
+                {"detail": "Uploaded APK SHA-256 metadata does not match the upload contract."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        storage_reference.storage_status = ObjectStorageReference.StorageStatus.VERIFIED
+        serializer.validated_data["size_bytes"] = actual_size
+        if expected_sha256:
+            serializer.validated_data["sha256"] = expected_sha256
 
         if "size_bytes" in serializer.validated_data:
             apk_file.size_bytes = serializer.validated_data["size_bytes"]

@@ -62,8 +62,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (username: string, password: string) => {
     const authenticatedUser = await loginRequest(username, password);
-    setUser(authenticatedUser);
-  }, []);
+    try {
+      const currentUser = await getCurrentUser();
+      setUser({ ...authenticatedUser, ...currentUser });
+    } catch (error) {
+      clearSession();
+      throw error;
+    }
+  }, [clearSession]);
 
   const logout = useCallback(async () => {
     try {

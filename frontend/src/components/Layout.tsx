@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { API_DOCS_URL } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { ArchitectureStatusBar } from "./ArchitectureStatusBar";
+import { BrandMark } from "./BrandMark";
 import { SystemStatusProvider } from "../status/SystemStatusContext";
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -38,7 +39,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""}`}>
         <aside className="sidebar">
           <NavLink to="/" className="brand" aria-label="MSAP overview">
-            <span className="brand-mark">M</span>
+            <BrandMark />
             <span className="brand-copy">
               <strong>MSAP</strong>
               <small>Security Assessment</small>

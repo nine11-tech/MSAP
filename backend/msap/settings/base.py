@@ -288,7 +288,50 @@ MSAP_DYNAMIC_MVP_DEVICE_POOL_SLUG = os.getenv(
     "local-android-lab",
 )
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://localhost:9000")
+# The dynamic host agent is an explicitly enabled, token-authenticated local
+# bridge. It stays disabled by default and binds to loopback unless an operator
+# deliberately chooses a different development topology.
+MSAP_DYNAMIC_HOST_AGENT_ENABLED = env_bool(
+    "MSAP_DYNAMIC_HOST_AGENT_ENABLED",
+    False,
+)
+MSAP_DYNAMIC_HOST_AGENT_URL = os.getenv("MSAP_DYNAMIC_HOST_AGENT_URL", "")
+MSAP_DYNAMIC_HOST_AGENT_TOKEN = os.getenv("MSAP_DYNAMIC_HOST_AGENT_TOKEN", "")
+MSAP_DYNAMIC_HOST_AGENT_TIMEOUT_SECONDS = int(
+    os.getenv("MSAP_DYNAMIC_HOST_AGENT_TIMEOUT_SECONDS", "120")
+)
+MSAP_DYNAMIC_HOST_AGENT_BIND = os.getenv(
+    "MSAP_DYNAMIC_HOST_AGENT_BIND",
+    "127.0.0.1",
+)
+MSAP_DYNAMIC_HOST_AGENT_PORT = int(
+    os.getenv("MSAP_DYNAMIC_HOST_AGENT_PORT", "8765")
+)
+MSAP_DYNAMIC_ADB_SERIAL = os.getenv(
+    "MSAP_DYNAMIC_ADB_SERIAL",
+    os.getenv("MSAP_ANDROID_SERIAL", "emulator-5554"),
+)
+MSAP_DYNAMIC_HOST_AGENT_MAX_APK_SIZE_BYTES = int(
+    os.getenv("MSAP_DYNAMIC_HOST_AGENT_MAX_APK_SIZE_BYTES", str(300 * 1024 * 1024))
+)
+MSAP_DYNAMIC_HOST_AGENT_KEEP_TEMP_APKS = env_bool(
+    "MSAP_DYNAMIC_HOST_AGENT_KEEP_TEMP_APKS",
+    False,
+)
+MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED = env_bool(
+    "MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED",
+    False,
+)
+MSAP_DYNAMIC_LAB_PROXY_VALUE = os.getenv(
+    "MSAP_DYNAMIC_LAB_PROXY_VALUE",
+    "10.0.2.2:18080",
+)
+MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME = os.getenv(
+    "MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME",
+    "msap-instrumented-base",
+)
+
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
 MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "")
@@ -329,7 +372,9 @@ MSAP_PRESIGNED_URL_EXPIRES_SECONDS = int(
     )
 )
 MSAP_PRESIGNED_URL_TTL_SECONDS = MSAP_PRESIGNED_URL_EXPIRES_SECONDS
-MSAP_VERIFY_UPLOAD_WITH_HEAD = env_bool("MSAP_VERIFY_UPLOAD_WITH_HEAD", False)
+# Upload confirmation always performs a server-side HEAD. This legacy setting
+# remains parseable for compatible deployments but no longer disables proof.
+MSAP_VERIFY_UPLOAD_WITH_HEAD = env_bool("MSAP_VERIFY_UPLOAD_WITH_HEAD", True)
 MSAP_DEFAULT_RETENTION_POLICY = os.getenv("MSAP_DEFAULT_RETENTION_POLICY", "active_audit")
 MSAP_REDACTION_ENABLED = env_bool("MSAP_REDACTION_ENABLED", True)
 

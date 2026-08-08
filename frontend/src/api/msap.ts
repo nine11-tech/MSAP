@@ -1,4 +1,4 @@
-import { apiDownload, apiGet, apiPost } from "./client";
+import { apiDownload, apiGet, apiPost, apiPostBlob } from "./client";
 import type {
   AnalysisStartResponse,
   AnalysisStatusResponse,
@@ -12,6 +12,11 @@ import type {
   DynamicEmulatorSnapshot,
   DynamicJobCreateRequest,
   DynamicRunMvpResponse,
+  DynamicRunnerReadiness,
+  DynamicHostAgentActionResult,
+  DynamicHostAgentInstallResult,
+  DynamicHostAgentPackages,
+  DynamicHostAgentStatus,
   DynamicSession,
   DynamicSessionArtifact,
   DynamicSessionEvent,
@@ -64,6 +69,19 @@ export async function uploadApkFile(
         "Check the presigned URL and MinIO CORS policy.",
     );
   }
+}
+
+export async function sha256File(file: File): Promise<string> {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("This browser cannot calculate the required APK SHA-256.");
+  }
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    await file.arrayBuffer(),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 export const confirmApkUpload = (
   apkFileId: number,
@@ -121,6 +139,17 @@ export const listDynamicJobs = (auditId?: number) =>
   );
 export const createDynamicJob = (data: DynamicJobCreateRequest) =>
   apiPost<DynamicAnalysisJob, DynamicJobCreateRequest>("dynamic/jobs/", data);
+export const getDynamicRunnerReadiness = () =>
+  apiGet<DynamicRunnerReadiness>("dynamic/jobs/readiness/");
+export const cancelDynamicJob = (jobId: number) =>
+  apiPost<DynamicAnalysisJob>(`dynamic/jobs/${jobId}/cancel/`);
+export const recoverStaleDynamicJobs = (olderThanMinutes = 5) =>
+  apiPost<{
+    recovered_count: number;
+    recovered_job_ids: number[];
+  }, { older_than_minutes: number }>("dynamic/jobs/recover-stale/", {
+    older_than_minutes: olderThanMinutes,
+  });
 export const runDynamicMvpJob = (
   jobId: number,
   data: { include_platform_tls_probe?: boolean } = {},
@@ -147,3 +176,47 @@ export const listDynamicSessionArtifacts = (sessionId: number) =>
   apiGet<DynamicSessionArtifact[]>(
     `dynamic/session-artifacts/?session=${encodeURIComponent(sessionId)}`,
   );
+
+export const getDynamicHostAgentStatus = () =>
+  apiGet<DynamicHostAgentStatus>("dynamic/host-agent/status/");
+export const syncDynamicHostAgent = () =>
+  apiPost<DynamicHostAgentStatus>("dynamic/host-agent/sync/", {});
+export const runDynamicHostAgentAction = (
+  action:
+    | "preflight"
+    | "restore-instrumented-snapshot"
+    | "frida-smoke"
+    | "mitmproxy-smoke"
+    | "platform-tls-probe"
+    | "verify-trust-state"
+    | "apply-lab-proxy"
+    | "clear-lab-proxy"
+    | "cleanup",
+) =>
+  apiPost<DynamicHostAgentActionResult>(
+    `dynamic/host-agent/${action}/`,
+    {},
+  );
+export const captureDynamicHostAgentScreenshot = () =>
+  apiPostBlob("dynamic/host-agent/screenshot/");
+export const listDynamicHostAgentPackages = () =>
+  apiGet<DynamicHostAgentPackages>("dynamic/host-agent/packages/");
+export const runDynamicHostAgentPackageAction = (
+  action: "launch-package" | "force-stop" | "clear-data" | "uninstall",
+  packageName: string,
+) =>
+  apiPost<
+    DynamicHostAgentActionResult,
+    { package_name: string }
+  >(`dynamic/host-agent/${action}/`, { package_name: packageName });
+export const installDynamicAuditApk = (
+  audit: number,
+  apkFile?: number,
+) =>
+  apiPost<
+    DynamicHostAgentInstallResult,
+    { audit: number; apk_file?: number }
+  >("dynamic/host-agent/install-audit-apk/", {
+    audit,
+    ...(apkFile === undefined ? {} : { apk_file: apkFile }),
+  });

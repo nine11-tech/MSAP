@@ -207,7 +207,10 @@ def test_pdf_report_endpoint_returns_attachment(audit, admin_client):
         snippet="permission=android.permission.READ_SMS",
     )
 
-    response = admin_client.get(f"/api/audits/{audit.id}/report/pdf/")
+    response = admin_client.get(
+        f"/api/audits/{audit.id}/report/pdf/",
+        HTTP_ACCEPT="application/pdf",
+    )
 
     assert response.status_code == 200
     assert response["Content-Type"] == "application/pdf"
@@ -218,6 +221,16 @@ def test_pdf_report_endpoint_returns_attachment(audit, admin_client):
         audit=audit,
         report_type=Report.ReportType.PDF,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_pdf_report_endpoint_rejects_unsupported_accept_header(audit, admin_client):
+    response = admin_client.get(
+        f"/api/audits/{audit.id}/report/pdf/",
+        HTTP_ACCEPT="image/png",
+    )
+
+    assert response.status_code == 406
 
 
 @pytest.mark.django_db
