@@ -27,6 +27,7 @@ class MinIOStorageServiceEndpointTests(SimpleTestCase):
             "msap-apk-uploads",
             "example.apk",
             "application/vnd.android.package-archive",
+            sha256="a" * 64,
         )
 
         self.assertEqual(
@@ -51,6 +52,16 @@ class MinIOStorageServiceEndpointTests(SimpleTestCase):
             ],
         )
         public_client.generate_presigned_url.assert_called_once()
+        public_client.generate_presigned_url.assert_called_once_with(
+            "put_object",
+            Params={
+                "Bucket": "msap-apk-uploads",
+                "Key": "example.apk",
+                "ContentType": "application/vnd.android.package-archive",
+                "Metadata": {"sha256": "a" * 64},
+            },
+            ExpiresIn=900,
+        )
         internal_client.generate_presigned_url.assert_not_called()
 
     @patch("apps.storage.services.minio_storage.boto3.client")

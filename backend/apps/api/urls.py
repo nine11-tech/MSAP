@@ -34,6 +34,7 @@ from apps.dynamic_analysis.views import (
     DynamicDevicePoolViewSet,
     DynamicDeviceViewSet,
     DynamicEmulatorSnapshotViewSet,
+    DynamicHostAgentViewSet,
     DynamicSessionArtifactViewSet,
     DynamicSessionEventViewSet,
     DynamicSessionStageViewSet,
@@ -129,6 +130,11 @@ router.register(
     "dynamic/session-artifacts",
     DynamicSessionArtifactViewSet,
     basename="dynamic-session-artifact",
+)
+router.register(
+    "dynamic/host-agent",
+    DynamicHostAgentViewSet,
+    basename="dynamic-host-agent",
 )
 
 urlpatterns = [

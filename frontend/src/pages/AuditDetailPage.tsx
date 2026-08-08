@@ -13,6 +13,7 @@ import {
   listFindings,
   listIndicators,
   listRiskScores,
+  sha256File,
   startAnalysis,
   uploadApkFile,
 } from "../api/msap";
@@ -45,6 +46,7 @@ import { useAuth } from "../auth/AuthContext";
 const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
 type UploadState =
   | "idle"
+  | "hashing"
   | "initiating"
   | "uploading"
   | "confirming"
@@ -53,6 +55,7 @@ type UploadState =
 
 const UPLOAD_STATE_LABELS: Record<UploadState, string> = {
   idle: "Select an APK to begin",
+  hashing: "Calculating APK SHA-256…",
   initiating: "Requesting upload contract…",
   uploading: "Uploading APK to MinIO…",
   confirming: "Confirming upload metadata…",
@@ -198,10 +201,14 @@ export function AuditDetailPage() {
     setNotice("");
     try {
       const contentType = selectedFile.type || APK_CONTENT_TYPE;
+      setUploadState("hashing");
+      const sha256 = await sha256File(selectedFile);
+      setUploadState("initiating");
       const contract = await initiateApkUpload(id, {
         filename: selectedFile.name,
         content_type: contentType,
         size_bytes: selectedFile.size,
+        sha256,
       });
       setUploadContract(contract);
       setUploadState("uploading");
@@ -209,6 +216,7 @@ export function AuditDetailPage() {
       setUploadState("confirming");
       const confirmedApk = await confirmApkUpload(contract.apk_file_id, {
         size_bytes: selectedFile.size,
+        sha256,
       });
       setUploadState("uploaded");
       setNotice(

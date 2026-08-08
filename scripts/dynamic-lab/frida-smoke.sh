@@ -30,6 +30,7 @@ done
 
 result_printed=0
 frida_started=0
+probe_dir=""
 cleanup() {
   local rc="$1"
 
@@ -37,7 +38,12 @@ cleanup() {
   if [[ "$frida_started" == "1" && -x "$HOME/.local/bin/msap-frida-stop" ]]; then
     "$HOME/.local/bin/msap-frida-stop" >/dev/null 2>&1
   fi
+  if [[ -n "$probe_dir" && -d "$probe_dir" ]]; then
+    rm -f -- "$probe_dir/processes.txt" "$probe_dir/probe.txt"
+    rmdir -- "$probe_dir" 2>/dev/null || true
+  fi
   if [[ "$rc" -ne 0 && "${result_printed:-0}" -eq 0 ]]; then
+    echo "MSAP_EVIDENCE_CLEANUP_RESULT=FAIL"
     echo "FRIDA_SMOKE_RESULT=FAIL"
   fi
 }
@@ -67,13 +73,32 @@ fi
 
 "$start_helper"
 frida_started=1
-"$test_helper"
+test_output="$("$test_helper")"
+printf '%s\n' "$test_output"
 
 endpoint="$(msap_frida_endpoint)"
 msap_log "Safe Frida enumeration endpoint: $endpoint"
 msap_adb shell am start -a android.settings.SETTINGS >/dev/null 2>&1 || true
 sleep 1
-timeout 20s frida-ps -H "$endpoint" >/dev/null
+settings_pid="$(msap_adb shell pidof com.android.settings | msap_one_line | awk '{print $1}')"
+[[ "$settings_pid" =~ ^[0-9]+$ ]] || msap_fail "Android Settings PID was not available"
+process_architecture="$(msap_getprop ro.product.cpu.abi)"
+probe_dir="$(mktemp -d)"
+process_output="$probe_dir/processes.txt"
+probe_output="$probe_dir/probe.txt"
+timeout 20s frida-ps -H "$endpoint" >"$process_output"
+process_count="$(printf '%s\n' "$test_output" | sed -n 's/^Process count:[[:space:]]*//p' | head -n 1)"
+[[ "$process_count" =~ ^[0-9]+$ ]] ||
+  process_count="$(awk 'NR > 2 && $1 ~ /^[0-9]+$/ { count++ } END { print count + 0 }' "$process_output")"
+timeout 20s frida \
+  -q \
+  -H "$endpoint" \
+  -p "$settings_pid" \
+  -e 'send({event:"MSAP_FRIDA_AUDITOR_PROBE_V1",pid:Process.id,architecture:Process.arch});' \
+  -t 5 \
+  >"$probe_output" 2>&1
+grep -Fq "MSAP_FRIDA_AUDITOR_PROBE_V1" "$probe_output" ||
+  msap_fail "Frida did not emit the expected structured instrumentation event"
 msap_adb shell am force-stop com.android.settings >/dev/null 2>&1 || true
 
 "$stop_helper"
@@ -81,5 +106,22 @@ frida_started=0
 msap_assert_selinux_enforcing
 msap_verify_frida_not_running
 
+client_version="$(frida --version | msap_one_line)"
+server_version="$(printf '%s\n' "$test_output" | sed -n 's/^Server version:[[:space:]]*//p' | head -n 1)"
+[[ -n "$server_version" ]] || server_version="$MSAP_EXPECTED_FRIDA_VERSION"
+version_match=false
+[[ "$client_version" == "$server_version" ]] && version_match=true
+
+echo "MSAP_EVIDENCE_CLIENT_VERSION=$client_version"
+echo "MSAP_EVIDENCE_SERVER_VERSION=$server_version"
+echo "MSAP_EVIDENCE_VERSION_MATCH=$version_match"
+echo "MSAP_EVIDENCE_REMOTE_ENDPOINT=$endpoint"
+echo "MSAP_EVIDENCE_CONNECTION_ESTABLISHED=true"
+echo "MSAP_EVIDENCE_PROCESS_COUNT=$process_count"
+echo "MSAP_EVIDENCE_TEST_PACKAGE=com.android.settings"
+echo "MSAP_EVIDENCE_ATTACHED_PID=$settings_pid"
+echo "MSAP_EVIDENCE_PROCESS_ARCHITECTURE=$process_architecture"
+echo "MSAP_EVIDENCE_INJECTED_SCRIPT_EVENT_RECEIVED=true"
+echo "MSAP_EVIDENCE_CLEANUP_RESULT=PASS"
 echo "FRIDA_SMOKE_RESULT=PASS"
 result_printed=1

@@ -97,8 +97,10 @@ def run_dynamic_lab_script(
     script_name: str,
     timeout_seconds: int | None = None,
     extra_env: dict[str, str] | None = None,
+    *,
+    require_runner_enabled: bool = True,
 ) -> DynamicScriptResult:
-    if not settings.MSAP_DYNAMIC_RUNNER_ENABLED:
+    if require_runner_enabled and not settings.MSAP_DYNAMIC_RUNNER_ENABLED:
         raise DynamicScriptExecutionError("Dynamic MVP runner is disabled.")
 
     script_path = _resolve_allowed_script(script_name)

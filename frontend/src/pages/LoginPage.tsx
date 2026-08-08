@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { ApiError } from "../api/client";
+import { Navigate, useLocation } from "react-router-dom";
+import { API_BASE_URL, ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { BrandMark } from "../components/BrandMark";
 
 export function LoginPage() {
   const { user, login } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -13,7 +13,11 @@ export function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
-  if (user) return <Navigate to="/" replace />;
+  const destination =
+    (location.state as { from?: { pathname?: string } } | null)?.from
+      ?.pathname || "/";
+
+  if (user) return <Navigate to={destination} replace />;
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -21,17 +25,35 @@ export function LoginPage() {
     setError("");
     try {
       await login(username, password);
-      const from =
-        (location.state as { from?: { pathname?: string } } | null)?.from
-          ?.pathname || "/";
-      navigate(from, { replace: true });
     } catch (loginError) {
-      if (loginError instanceof ApiError && loginError.status === 429) {
-        setError(
-          "Too many login attempts. Wait 15 minutes before trying again.",
-        );
+      if (loginError instanceof ApiError) {
+        if (loginError.status === 400 && loginError.endpoint === "auth/login/") {
+          setError("Invalid username or password.");
+        } else if (
+          loginError.status === 403 &&
+          (loginError.endpoint === "auth/login/" ||
+            loginError.message.toLowerCase().includes("csrf"))
+        ) {
+          setError(
+            "Session security check failed. Refresh the page and try again.",
+          );
+        } else if (loginError.status === 429) {
+          setError(
+            "Too many login attempts. Wait 15 minutes before trying again.",
+          );
+        } else {
+          setError(
+            `MSAP backend returned ${loginError.status}: ${loginError.message}`,
+          );
+        }
+      } else if (loginError instanceof TypeError) {
+        setError(`Cannot reach MSAP backend at ${API_BASE_URL}.`);
       } else {
-        setError("Invalid username or password.");
+        setError(
+          loginError instanceof Error
+            ? `Login failed unexpectedly: ${loginError.message}`
+            : "Login failed unexpectedly.",
+        );
       }
     } finally {
       setSubmitting(false);
@@ -42,7 +64,7 @@ export function LoginPage() {
     <main className="login-page">
       <section className="login-panel" aria-labelledby="login-title">
         <div className="login-brand" aria-label="MSAP">
-          <span className="brand-mark">M</span>
+          <BrandMark />
           <strong>MSAP</strong>
         </div>
         <p className="eyebrow">Restricted internal platform</p>

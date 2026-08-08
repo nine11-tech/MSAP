@@ -1,3 +1,5 @@
+import re
+
 from rest_framework import serializers
 
 from apps.apk_files.models import APKFile
@@ -15,6 +17,25 @@ from apps.dynamic_analysis.models import (
     DynamicSessionEvent,
     DynamicSessionStage,
 )
+
+
+ANDROID_PACKAGE_NAME_RE = re.compile(
+    r"^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+$"
+)
+
+
+class DynamicHostAgentPackageActionSerializer(serializers.Serializer):
+    package_name = serializers.CharField(max_length=255)
+
+    def validate_package_name(self, value):
+        if not ANDROID_PACKAGE_NAME_RE.fullmatch(value):
+            raise serializers.ValidationError("Invalid Android package name.")
+        return value
+
+
+class DynamicHostAgentInstallSerializer(serializers.Serializer):
+    audit = serializers.IntegerField(min_value=1)
+    apk_file = serializers.IntegerField(required=False, min_value=1)
 
 
 SECRET_KEY_FRAGMENTS = {

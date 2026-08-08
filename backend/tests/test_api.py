@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+from botocore.exceptions import ClientError
 from rest_framework.test import APIClient
 
 from apps.analyzers.models import RawAnalyzerResult
@@ -270,7 +271,8 @@ def test_initiate_apk_upload_creates_metadata_and_returns_contract(
     data = response.json()
     assert data["upload_url"].startswith("http://localhost:9000/")
     assert data["required_headers"] == {
-        "Content-Type": "application/vnd.android.package-archive"
+        "Content-Type": "application/vnd.android.package-archive",
+        "x-amz-meta-sha256": "a" * 64,
     }
     assert data["bucket"] == "msap-apk-uploads"
     assert f"projects/{project_id}/audits/{audit_id}" in data["object_key"]
@@ -374,11 +376,23 @@ def test_initiate_apk_upload_rejects_missing_audit(
 
 
 @pytest.mark.django_db
-def test_confirm_apk_upload_updates_metadata(api_client):
+@patch("apps.api.views.MinIOStorageService")
+def test_confirm_apk_upload_updates_metadata(mock_storage_service, api_client):
     project_id = _create_project(api_client)
     audit_id = _create_audit(api_client, project_id)
     storage_reference_id = _create_storage_reference(api_client, project_id, audit_id)
     apk_file_id = _create_apk_file(api_client, audit_id, storage_reference_id)
+
+    storage_reference = ObjectStorageReference.objects.get(id=storage_reference_id)
+    storage_reference.content_type = "application/vnd.android.package-archive"
+    storage_reference.size_bytes = 4096
+    storage_reference.sha256 = "c" * 64
+    storage_reference.save()
+    mock_storage_service.return_value.head_object.return_value = {
+        "ContentLength": 4096,
+        "ContentType": "application/vnd.android.package-archive",
+        "Metadata": {"sha256": "c" * 64},
+    }
 
     response = api_client.post(
         f"/api/apk-files/{apk_file_id}/confirm-upload/",
@@ -390,12 +404,67 @@ def test_confirm_apk_upload_updates_metadata(api_client):
     data = response.json()
     assert data["size_bytes"] == 4096
     assert data["sha256"] == "c" * 64
-    storage_reference = ObjectStorageReference.objects.get(id=storage_reference_id)
+    storage_reference.refresh_from_db()
     assert storage_reference.size_bytes == 4096
     assert storage_reference.sha256 == "c" * 64
     assert storage_reference.storage_status == (
-        ObjectStorageReference.StorageStatus.UPLOADED
+        ObjectStorageReference.StorageStatus.VERIFIED
     )
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_confirm_apk_upload_refuses_missing_object(mock_storage_service, api_client):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    storage_reference_id = _create_storage_reference(api_client, project_id, audit_id)
+    apk_file_id = _create_apk_file(api_client, audit_id, storage_reference_id)
+    mock_storage_service.return_value.head_object.side_effect = ClientError(
+        {"Error": {"Code": "NoSuchKey", "Message": "missing"}},
+        "HeadObject",
+    )
+
+    response = api_client.post(
+        f"/api/apk-files/{apk_file_id}/confirm-upload/",
+        {"size_bytes": 4096, "sha256": "c" * 64},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    storage_reference = ObjectStorageReference.objects.get(id=storage_reference_id)
+    assert storage_reference.storage_status == ObjectStorageReference.StorageStatus.PENDING_UPLOAD
+
+
+@pytest.mark.django_db
+@patch("apps.api.views.MinIOStorageService")
+def test_confirm_apk_upload_refuses_size_or_hash_metadata_mismatch(
+    mock_storage_service,
+    api_client,
+):
+    project_id = _create_project(api_client)
+    audit_id = _create_audit(api_client, project_id)
+    storage_reference_id = _create_storage_reference(api_client, project_id, audit_id)
+    apk_file_id = _create_apk_file(api_client, audit_id, storage_reference_id)
+    storage_reference = ObjectStorageReference.objects.get(pk=storage_reference_id)
+    storage_reference.content_type = "application/vnd.android.package-archive"
+    storage_reference.size_bytes = 4096
+    storage_reference.sha256 = "a" * 64
+    storage_reference.save()
+    mock_storage_service.return_value.head_object.return_value = {
+        "ContentLength": 2048,
+        "ContentType": "application/vnd.android.package-archive",
+        "Metadata": {"sha256": "b" * 64},
+    }
+
+    response = api_client.post(
+        f"/api/apk-files/{apk_file_id}/confirm-upload/",
+        {"size_bytes": 4096, "sha256": "a" * 64},
+        format="json",
+    )
+
+    assert response.status_code == 409
+    storage_reference.refresh_from_db()
+    assert storage_reference.storage_status == ObjectStorageReference.StorageStatus.PENDING_UPLOAD
 
 
 @pytest.mark.django_db

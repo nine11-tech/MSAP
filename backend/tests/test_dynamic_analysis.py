@@ -1,7 +1,11 @@
+from contextlib import nullcontext
 from datetime import timedelta
+from hashlib import sha256 as file_sha256
 import inspect
 from io import StringIO
+import sys
 from unittest.mock import Mock, patch
+from urllib import error as urllib_error
 
 import pytest
 from django.contrib.auth.models import Group
@@ -12,7 +16,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.api.roles import VIEWER_GROUP
+from apps.api.roles import ANALYST_GROUP, VIEWER_GROUP
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
@@ -35,6 +39,9 @@ from apps.dynamic_analysis.services.leases import (
     quarantine_device,
     release_lease,
 )
+from apps.dynamic_analysis.services.host_agent_client import DynamicHostAgentClient
+from apps.dynamic_analysis.services.host_agent import _run_process
+from apps.dynamic_analysis.services.job_control import recover_stale_dynamic_jobs
 from apps.dynamic_analysis.services.local_scripts import (
     DynamicScriptExecutionError,
     DynamicScriptResult,
@@ -54,6 +61,8 @@ from apps.dynamic_analysis.services.state_machine import (
     transition_session,
 )
 from apps.projects.models import Project
+from apps.storage.models import ObjectStorageReference
+from apps.dynamic_analysis.services.runner_readiness import get_dynamic_runner_readiness
 
 
 PASSWORD = "Correct-Horse-Battery-Staple-42!"
@@ -370,21 +379,26 @@ def test_dynamic_api_creates_device(api_client):
     assert response.json()["serial"] == "emulator-api"
 
 
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
 @pytest.mark.django_db
 def test_dynamic_api_creates_job(api_client):
     audit, apk = _make_audit_with_apk()
 
-    response = api_client.post(
-        "/api/dynamic/jobs/",
-        {
-            "audit": audit.id,
-            "apk": apk.id,
-            "mode": DynamicAnalysisJob.Mode.COMBINED,
-            "requested_tool_profile": DynamicAnalysisJob.ToolProfile.ADB_ONLY,
-            "requested_interaction_mode": DynamicAnalysisJob.InteractionMode.PASSIVE,
-        },
-        format="json",
-    )
+    with patch(
+        "apps.dynamic_analysis.views.get_dynamic_runner_readiness",
+        return_value={"ready": True},
+    ):
+        response = api_client.post(
+            "/api/dynamic/jobs/",
+            {
+                "audit": audit.id,
+                "apk": apk.id,
+                "mode": DynamicAnalysisJob.Mode.COMBINED,
+                "requested_tool_profile": DynamicAnalysisJob.ToolProfile.ADB_ONLY,
+                "requested_interaction_mode": DynamicAnalysisJob.InteractionMode.PASSIVE,
+            },
+            format="json",
+        )
 
     assert response.status_code == 201
     assert response.json()["audit"] == audit.id
@@ -456,6 +470,381 @@ def test_dynamic_viewer_cannot_perform_unsafe_write(django_user_model):
     )
 
     assert response.status_code == 403
+
+
+def test_host_agent_client_disabled_returns_clear_status():
+    result = DynamicHostAgentClient(
+        enabled=False,
+        base_url="",
+        token="",
+    ).get_status()
+
+    assert result == {
+        "connected": False,
+        "enabled": False,
+        "code": "HOST_AGENT_DISABLED",
+        "detail": "Start the local dynamic host agent on WSL to control the emulator.",
+    }
+
+
+def test_host_agent_client_connection_error_is_structured_and_hides_token():
+    local_token = "never-print-this-local-token"
+    client = DynamicHostAgentClient(
+        enabled=True,
+        base_url="http://127.0.0.1:8765",
+        token=local_token,
+        timeout_seconds=1,
+    )
+
+    with patch(
+        "apps.dynamic_analysis.services.host_agent_client.urllib_request.urlopen",
+        side_effect=urllib_error.URLError("connection refused"),
+    ):
+        result = client.get_status()
+
+    assert result["connected"] is False
+    assert result["code"] == "HOST_AGENT_UNREACHABLE"
+    assert "Backend cannot reach host-agent" in result["detail"]
+    assert local_token not in str(result)
+
+
+def test_host_agent_binary_output_uses_screenshot_limit_not_text_preview_limit():
+    expected_size = 300 * 1024
+
+    result = _run_process(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.stdout.buffer.write(b'x' * {expected_size})",
+        ],
+        timeout_seconds=10,
+        binary=True,
+    )
+
+    assert result["return_code"] == 0
+    assert len(result["stdout"]) == expected_size
+
+
+@pytest.mark.django_db
+def test_host_agent_status_api_requires_authentication():
+    response = APIClient().get("/api/dynamic/host-agent/status/")
+
+    assert response.status_code in {401, 403}
+
+
+@override_settings(
+    MSAP_DYNAMIC_HOST_AGENT_ENABLED=True,
+    MSAP_DYNAMIC_HOST_AGENT_URL="http://127.0.0.1:8765",
+    MSAP_DYNAMIC_HOST_AGENT_TOKEN="test-only-token",
+)
+@pytest.mark.django_db
+def test_host_agent_screenshot_negotiates_binary_png(api_client):
+    png = b"\x89PNG\r\n\x1a\n" + b"bounded-test-png"
+    with patch(
+        "apps.dynamic_analysis.views.DynamicHostAgentClient.request_screenshot",
+        return_value=png,
+    ):
+        response = api_client.post(
+            "/api/dynamic/host-agent/screenshot/",
+            {},
+            format="json",
+            HTTP_ACCEPT="image/png",
+        )
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "image/png"
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+@override_settings(
+    MSAP_DYNAMIC_HOST_AGENT_ENABLED=True,
+    MSAP_DYNAMIC_HOST_AGENT_URL="http://127.0.0.1:8765",
+    MSAP_DYNAMIC_HOST_AGENT_TOKEN="test-only-token",
+)
+@pytest.mark.django_db
+def test_dynamic_analyst_can_call_safe_host_agent_action(django_user_model):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(
+        username="host-agent-analyst",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=ANALYST_GROUP))
+    client = APIClient()
+    client.force_authenticate(user=user)
+    _make_device("5554")
+    action_result = {
+        "action": "preflight",
+        "success": True,
+        "status": "PASS",
+        "duration_seconds": 1.25,
+        "results": [],
+    }
+
+    with patch(
+        "apps.dynamic_analysis.views.DynamicHostAgentClient.request_json",
+        return_value=action_result,
+    ) as request_json:
+        response = client.post(
+            "/api/dynamic/host-agent/preflight/",
+            {},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "PASS"
+    request_json.assert_called_once_with(
+        "/actions/preflight",
+        method="POST",
+        body={},
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "endpoint,payload",
+    [
+        ("force-stop", {"package_name": "com.example.safe"}),
+        ("launch-package", {"package_name": "com.example.safe"}),
+        ("clear-data", {"package_name": "com.example.safe"}),
+        ("uninstall", {"package_name": "com.example.safe"}),
+        ("install-audit-apk", {"audit": 1}),
+    ],
+)
+def test_dynamic_viewer_cannot_call_mutating_host_agent_actions(
+    django_user_model,
+    endpoint,
+    payload,
+):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(
+        username=f"host-agent-viewer-{endpoint}",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=VIEWER_GROUP))
+    client = APIClient()
+    client.force_authenticate(user=user)
+
+    response = client.post(
+        f"/api/dynamic/host-agent/{endpoint}/",
+        payload,
+        format="json",
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "package_name",
+    [
+        "com.example.app;id",
+        "../../data/local/tmp/app",
+        "com.example.$(id)",
+        "singlelabel",
+        "1com.example.app",
+    ],
+)
+def test_host_agent_package_name_validation_rejects_unsafe_input(
+    api_client,
+    package_name,
+):
+    with patch(
+        "apps.dynamic_analysis.views.DynamicHostAgentClient.request_json"
+    ) as request_json:
+        response = api_client.post(
+            "/api/dynamic/host-agent/force-stop/",
+            {"package_name": package_name},
+            format="json",
+        )
+
+    assert response.status_code == 400
+    request_json.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_install_audit_apk_refuses_missing_audit_or_apk(api_client):
+    missing_audit_response = api_client.post(
+        "/api/dynamic/host-agent/install-audit-apk/",
+        {"audit": 999999},
+        format="json",
+    )
+    project = Project.objects.create(name="No APK project")
+    audit = Audit.objects.create(project=project, name="No APK audit")
+    missing_apk_response = api_client.post(
+        "/api/dynamic/host-agent/install-audit-apk/",
+        {"audit": audit.id},
+        format="json",
+    )
+
+    assert missing_audit_response.status_code == 404
+    assert missing_apk_response.status_code == 400
+    assert "No uploaded APK" in missing_apk_response.json()["detail"]
+
+
+@override_settings(MSAP_DYNAMIC_HOST_AGENT_MAX_APK_SIZE_BYTES=1024 * 1024)
+@pytest.mark.django_db
+def test_install_verified_audit_apk_returns_and_persists_package_metadata(
+    api_client,
+    tmp_path,
+):
+    project = Project.objects.create(name="Install project")
+    audit = Audit.objects.create(project=project, name="Install audit")
+    apk_bytes = b"PK\x03\x04" + b"bounded-apk-test"
+    digest = file_sha256(apk_bytes).hexdigest()
+    storage_reference = ObjectStorageReference.objects.create(
+        project=project,
+        audit=audit,
+        bucket="msap-apk-uploads",
+        object_key="projects/1/audits/1/apk_upload/test.apk",
+        object_type=ObjectStorageReference.ObjectType.APK_UPLOAD,
+        storage_status=ObjectStorageReference.StorageStatus.VERIFIED,
+        content_type="application/vnd.android.package-archive",
+        size_bytes=len(apk_bytes),
+        sha256=digest,
+    )
+    apk_file = APKFile.objects.create(
+        audit=audit,
+        storage_reference=storage_reference,
+        size_bytes=len(apk_bytes),
+        sha256=digest,
+    )
+    local_apk = tmp_path / "verified.apk"
+    local_apk.write_bytes(apk_bytes)
+    _make_device("5554")
+    package_metadata = {
+        "package_name": "owasp.sat.agoat",
+        "version_name": "1.0",
+        "version_code": "1",
+        "installed_apk_path": "/data/app/owasp.sat.agoat/base.apk",
+        "launchable_activity": "owasp.sat.agoat/.MainActivity",
+        "requested_permission_count": 12,
+        "granted_permission_count": 8,
+    }
+
+    with patch(
+        "apps.dynamic_analysis.views.APKFileProvider.open_apk_local_copy",
+        return_value=nullcontext(local_apk),
+    ), patch(
+        "apps.dynamic_analysis.views.DynamicHostAgentClient.install_apk",
+        return_value={
+            "action": "install-apk",
+            "success": True,
+            "status": "PASS",
+            "install_status": "PASS",
+            "sha256": digest,
+            "size_bytes": len(apk_bytes),
+            "duration_seconds": 1.2,
+            "package_name": "owasp.sat.agoat",
+            "package_metadata": package_metadata,
+        },
+    ) as install_apk:
+        response = api_client.post(
+            "/api/dynamic/host-agent/install-audit-apk/",
+            {"audit": audit.id, "apk_file": apk_file.id},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["package_metadata"] == package_metadata
+    install_apk.assert_called_once_with(local_apk, expected_sha256=digest)
+    apk_file.refresh_from_db()
+    assert apk_file.package_name == "owasp.sat.agoat"
+    assert apk_file.version_name == "1.0"
+    event = DynamicDeviceEvent.objects.filter(
+        device__serial="emulator-5554",
+        metadata__action="install-apk",
+    ).latest("created_at")
+    assert event.metadata["package_metadata"]["launchable_activity"].endswith(
+        ".MainActivity"
+    )
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED=False,
+)
+def test_dynamic_runner_readiness_reports_worker_online():
+    inspector = Mock()
+    inspector.ping.return_value = {"worker@example": {"ok": "pong"}}
+    with patch(
+        "apps.dynamic_analysis.services.runner_readiness.current_app.control.inspect",
+        return_value=inspector,
+    ):
+        result = get_dynamic_runner_readiness()
+
+    assert result["ready"] is True
+    assert result["worker_status"] == "ONLINE"
+    assert result["workers_responding"] == 1
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED=False,
+)
+def test_dynamic_runner_readiness_reports_no_worker():
+    inspector = Mock()
+    inspector.ping.return_value = {}
+    with patch(
+        "apps.dynamic_analysis.services.runner_readiness.current_app.control.inspect",
+        return_value=inspector,
+    ):
+        result = get_dynamic_runner_readiness()
+
+    assert result["ready"] is False
+    assert result["worker_status"] == "OFFLINE"
+    assert result["code"] == "CELERY_WORKER_OFFLINE"
+
+
+@pytest.mark.django_db
+def test_sync_dynamic_host_agent_command_updates_device():
+    output = StringIO()
+    agent_response = {
+        "connected": True,
+        "enabled": True,
+        "code": "HOST_AGENT_CONNECTED",
+        "detail": "Dynamic host agent is connected.",
+        "agent": {
+            "version": "1.0",
+            "dynamic_env_detected": True,
+            "adb_path_present": True,
+            "serial": "emulator-5554",
+        },
+        "device": {
+            "serial": "emulator-5554",
+            "state": "device",
+            "adb_path_present": True,
+            "root_uid": 0,
+            "api_level": 35,
+            "android_version": "15",
+            "abi": "x86_64",
+            "selinux": "Enforcing",
+            "proxy": ":0",
+            "focused_app": "com.android.settings",
+            "frida_server_running": False,
+            "frida_smoke": True,
+            "mitmproxy_smoke": True,
+        },
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.host_agent_sync."
+        "DynamicHostAgentClient.get_status",
+        return_value=agent_response,
+    ):
+        call_command("sync_dynamic_host_agent", stdout=output)
+
+    device = DynamicDevice.objects.get(serial="emulator-5554")
+    assert device.status == DynamicDevice.Status.AVAILABLE
+    assert device.api_level == 35
+    assert device.android_version == "15"
+    assert device.abi == "x86_64"
+    assert device.is_rooted is True
+    assert device.selinux_mode == "Enforcing"
+    assert device.has_frida is True
+    assert device.has_mitm_ready is True
+    assert device.last_seen_at is not None
+    assert device.last_health_check_at is not None
+    assert "SYNC_DYNAMIC_HOST_AGENT_RESULT=PASS" in output.getvalue()
 
 
 @pytest.mark.django_db
@@ -869,6 +1258,9 @@ def test_dynamic_api_run_mvp_action_queues_when_enabled(api_client):
     async_result = Mock(id="task-dynamic-mvp")
 
     with patch(
+        "apps.dynamic_analysis.views.get_dynamic_runner_readiness",
+        return_value={"ready": True},
+    ), patch(
         "apps.dynamic_analysis.views.run_dynamic_mvp_job_task.delay",
         return_value=async_result,
     ) as delay:
@@ -881,6 +1273,121 @@ def test_dynamic_api_run_mvp_action_queues_when_enabled(api_client):
     assert response.status_code == 202
     assert response.json()["task_id"] == "task-dynamic-mvp"
     delay.assert_called_once_with(job.id, include_platform_tls_probe=False)
+
+
+@override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=True)
+@pytest.mark.django_db
+def test_dynamic_api_does_not_create_job_without_worker(api_client):
+    audit, apk = _make_audit_with_apk("no-worker")
+    readiness = {
+        "ready": False,
+        "runner_enabled": True,
+        "sync_demo_enabled": False,
+        "execution_mode": "celery",
+        "worker_status": "OFFLINE",
+        "workers_responding": 0,
+        "code": "CELERY_WORKER_OFFLINE",
+        "detail": "No Celery worker responded.",
+    }
+    with patch(
+        "apps.dynamic_analysis.views.get_dynamic_runner_readiness",
+        return_value=readiness,
+    ):
+        response = api_client.post(
+            "/api/dynamic/jobs/",
+            {
+                "audit": audit.id,
+                "apk": apk.id,
+                "mode": DynamicAnalysisJob.Mode.COMBINED,
+                "requested_tool_profile": DynamicAnalysisJob.ToolProfile.ADB_ONLY,
+                "requested_interaction_mode": DynamicAnalysisJob.InteractionMode.PASSIVE,
+            },
+            format="json",
+        )
+
+    assert response.status_code == 503
+    assert response.json()["worker_status"] == "OFFLINE"
+    assert not DynamicAnalysisJob.objects.filter(audit=audit).exists()
+
+
+@override_settings(
+    MSAP_DYNAMIC_RUNNER_ENABLED=True,
+    MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED=True,
+    MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED=False,
+)
+@pytest.mark.django_db
+def test_dynamic_api_synchronous_demo_invokes_runner(api_client):
+    audit, _apk = _make_audit_with_apk("sync-demo")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+    final_result = {"job_id": job.id, "job_status": DynamicAnalysisJob.Status.COMPLETED}
+
+    with patch(
+        "apps.dynamic_analysis.views.get_dynamic_runner_readiness",
+        return_value={"ready": True},
+    ), patch(
+        "apps.dynamic_analysis.views.run_dynamic_mvp_job",
+        return_value=final_result,
+    ) as runner:
+        response = api_client.post(
+            f"/api/dynamic/jobs/{job.id}/run-mvp/",
+            {},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["execution_mode"] == "synchronous"
+    assert response.json()["task_id"] is None
+    runner.assert_called_once_with(job.id, include_platform_tls_probe=False)
+
+
+@pytest.mark.django_db
+def test_stale_queued_job_recovery_cancels_without_deleting_evidence():
+    audit, _apk = _make_audit_with_apk("stale-queued")
+    job = DynamicAnalysisJob.objects.create(
+        audit=audit,
+        queued_at=timezone.now() - timedelta(minutes=30),
+    )
+    DynamicAnalysisJob.objects.filter(pk=job.pk).update(
+        updated_at=timezone.now() - timedelta(minutes=30)
+    )
+
+    result = recover_stale_dynamic_jobs(older_than_minutes=5)
+
+    job.refresh_from_db()
+    assert result["recovered_job_ids"] == [job.id]
+    assert job.status == DynamicAnalysisJob.Status.CANCELLED
+    assert job.failure_category == DynamicAnalysisJob.FailureCategory.OPERATOR_CANCELLED
+
+
+@pytest.mark.django_db
+def test_cancel_endpoint_allows_queued_job(api_client):
+    audit, _apk = _make_audit_with_apk("cancel-queued")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+
+    response = api_client.post(f"/api/dynamic/jobs/{job.id}/cancel/", {}, format="json")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == DynamicAnalysisJob.Status.CANCELLED
+
+
+@pytest.mark.django_db
+def test_viewer_cannot_cancel_queued_job(django_user_model):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(
+        username="dynamic-job-viewer",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=VIEWER_GROUP))
+    client = APIClient()
+    client.force_authenticate(user=user)
+    audit, _apk = _make_audit_with_apk("viewer-cancel")
+    job = DynamicAnalysisJob.objects.create(audit=audit)
+
+    response = client.post(f"/api/dynamic/jobs/{job.id}/cancel/", {}, format="json")
+
+    assert response.status_code == 403
+    job.refresh_from_db()
+    assert job.status == DynamicAnalysisJob.Status.QUEUED
 
 
 def _make_audit_with_apk(suffix: str = "default") -> tuple[Audit, APKFile]:

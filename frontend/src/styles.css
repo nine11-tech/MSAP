@@ -151,6 +151,24 @@ h3 {
   box-shadow: 0 0 0 1px rgb(94 234 212 / 25%);
 }
 
+.brand-mark-icon {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+  fill: currentColor;
+}
+
+.brand-mark-icon > path:first-child {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.5;
+}
+
+.brand-mark-eye {
+  fill: #ff9b55;
+}
+
 .brand-copy {
   min-width: 0;
 }
@@ -458,8 +476,10 @@ h3 {
 }
 
 .status-operational {
-  background: var(--green);
-  box-shadow: 0 0 0 3px rgb(45 212 168 / 10%);
+  background: #55f0a5;
+  box-shadow:
+    0 0 0 3px rgb(85 240 165 / 22%),
+    0 0 11px rgb(85 240 165 / 72%);
 }
 
 .status-degraded {
@@ -2131,6 +2151,14 @@ select:focus {
   border-color: rgb(57 217 138 / 22%);
 }
 
+.status-dot.status-operational {
+  background: #55f0a5;
+  border-color: transparent;
+  box-shadow:
+    0 0 0 3px rgb(85 240 165 / 22%),
+    0 0 11px rgb(85 240 165 / 72%);
+}
+
 .status-running,
 .status-queued,
 .status-preparing,
@@ -2590,16 +2618,338 @@ tbody tr:hover td {
   font-size: 0.7rem;
 }
 
+.emulator-control-panel {
+  margin-bottom: 0.9rem;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 86% 5%, rgb(255 77 29 / 13%), transparent 32%),
+    linear-gradient(145deg, rgb(28 18 14 / 96%), rgb(12 10 9 / 98%));
+  border-color: rgb(255 138 64 / 20%);
+  box-shadow:
+    0 18px 50px rgb(0 0 0 / 28%),
+    inset 0 1px 0 rgb(255 255 255 / 3%);
+}
+
+.emulator-header-actions,
+.agent-install-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.agent-connection-help {
+  margin: 0.8rem 0;
+  padding: 0.8rem 0.9rem;
+  display: grid;
+  gap: 0.25rem;
+  color: #c9b8aa;
+  background: rgb(255 77 29 / 7%);
+  border: 1px solid rgb(255 138 64 / 17%);
+  border-radius: 8px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.agent-connection-help strong {
+  color: #ffd0a6;
+}
+
+.emulator-status-grid {
+  margin: 0.9rem 0;
+  display: grid;
+  grid-template-columns: repeat(9, minmax(90px, 1fr));
+  background: rgb(5 5 5 / 36%);
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.agent-stat {
+  min-width: 0;
+  padding: 0.65rem 0.7rem;
+  display: grid;
+  gap: 0.25rem;
+  border-right: 1px solid rgb(255 255 255 / 6%);
+}
+
+.agent-stat:last-child {
+  border-right: 0;
+}
+
+.agent-stat span,
+.agent-section-heading span {
+  color: #8f8178;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+}
+
+.agent-stat strong {
+  color: #f4e7da;
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emulator-control-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 0.55fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.emulator-actions-pane,
+.emulator-evidence-pane {
+  min-width: 0;
+  padding: 0.9rem;
+  background: rgb(7 6 6 / 38%);
+  border: 1px solid rgb(255 255 255 / 6%);
+  border-radius: 9px;
+}
+
+.agent-section-heading {
+  margin-bottom: 0.65rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+.agent-section-heading > div {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.agent-section-heading strong {
+  color: #f4dfce;
+  font-size: 0.76rem;
+}
+
+.screenshot-download {
+  align-self: center;
+  padding: 0.35rem 0.55rem;
+  color: #ffd6bd;
+  background: rgb(255 77 29 / 8%);
+  border: 1px solid rgb(255 138 64 / 24%);
+  border-radius: 6px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.screenshot-download:hover {
+  color: #fff4ec;
+  background: rgb(255 77 29 / 15%);
+  border-color: rgb(255 138 64 / 42%);
+}
+
+.agent-action-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.agent-action-button {
+  min-height: 48px;
+  padding: 0.6rem 0.7rem;
+  display: grid;
+  place-items: center;
+  gap: 0.1rem;
+  color: #f0d7c2;
+  background:
+    linear-gradient(180deg, rgb(255 138 64 / 7%), transparent),
+    rgb(255 255 255 / 3%);
+  border: 1px solid rgb(255 138 64 / 16%);
+  border-radius: 7px;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.agent-action-button:hover:not(:disabled) {
+  color: #fff3e8;
+  background: rgb(255 77 29 / 11%);
+  border-color: rgb(255 138 64 / 34%);
+}
+
+.agent-action-button small {
+  color: #ff916e;
+  font-size: 0.55rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-apk-controls {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgb(255 255 255 / 6%);
+}
+
+.agent-install-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr) auto;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.agent-install-row label,
+.agent-package-controls label {
+  min-width: 0;
+}
+
+.agent-install-result {
+  margin-top: 0.55rem;
+  padding: 0.5rem 0.65rem;
+  color: #bba99a;
+  background: rgb(255 255 255 / 3%);
+  border-radius: 6px;
+  font-size: 0.65rem;
+}
+
+.agent-install-result code {
+  color: #ffba7f;
+}
+
+.agent-package-controls {
+  margin-top: 0.75rem;
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) repeat(4, auto);
+  gap: 0.5rem;
+  align-items: end;
+}
+
+.emulator-evidence-pane {
+  background:
+    linear-gradient(180deg, rgb(255 77 29 / 5%), transparent 24%),
+    rgb(4 4 4 / 52%);
+}
+
+.emulator-screen-frame {
+  width: min(100%, 300px);
+  aspect-ratio: 9 / 20;
+  margin: 0 auto 0.75rem;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #8e7868;
+  background:
+    linear-gradient(rgb(255 255 255 / 2%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 2%) 1px, transparent 1px),
+    #050505;
+  background-size: 20px 20px;
+  border: 1px solid rgb(255 138 64 / 17%);
+  border-radius: 12px;
+  box-shadow: inset 0 0 40px rgb(0 0 0 / 70%);
+}
+
+.emulator-screen-frame.has-capture {
+  aspect-ratio: auto;
+  min-height: 0;
+}
+
+.emulator-screen-frame img {
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: contain;
+}
+
+.emulator-screen-frame > div {
+  padding: 1rem;
+  display: grid;
+  gap: 0.35rem;
+  text-align: center;
+}
+
+.emulator-screen-frame span {
+  color: #ff8f65;
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.16em;
+}
+
+.emulator-screen-frame small {
+  max-width: 190px;
+  line-height: 1.5;
+}
+
+.agent-activity-list {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.agent-activity-list > div {
+  padding: 0.42rem 0.5rem;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  gap: 0.45rem;
+  align-items: center;
+  background: rgb(255 255 255 / 3%);
+  border-radius: 6px;
+  font-size: 0.62rem;
+}
+
+.agent-activity-list strong {
+  overflow: hidden;
+  color: #dbc9ba;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-activity-list small {
+  color: #8f8178;
+}
+
+.agent-event-dot {
+  width: 7px;
+  height: 7px;
+  display: block;
+  background: #766c64;
+  border-radius: 50%;
+  box-shadow: 0 0 8px currentColor;
+}
+
+.agent-event-dot.pass {
+  color: #74d99f;
+  background: #74d99f;
+}
+
+.agent-event-dot.fail {
+  color: #ff6e57;
+  background: #ff6e57;
+}
+
 @media (max-width: 1280px) {
   .dynamic-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .emulator-status-grid {
+    grid-template-columns: repeat(5, minmax(110px, 1fr));
+  }
+
+  .agent-action-grid {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+  }
+
+  .agent-package-controls {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .agent-package-controls label {
+    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 980px) {
   .dynamic-workspace-grid,
-  .dynamic-session-grid {
+  .dynamic-session-grid,
+  .emulator-control-grid {
     grid-template-columns: 1fr;
+  }
+
+  .emulator-status-grid {
+    grid-template-columns: repeat(3, minmax(100px, 1fr));
   }
 }
 
@@ -2615,4 +2965,116 @@ tbody tr:hover td {
     align-items: flex-start;
     flex-direction: column;
   }
+
+  .emulator-header-actions {
+    width: 100%;
+  }
+
+  .emulator-status-grid,
+  .agent-action-grid,
+  .agent-install-row,
+  .agent-package-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-package-controls label {
+    grid-column: auto;
+  }
+}
+.dynamic-dependency-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin: 0 0 1rem;
+}
+
+.dependency-chip {
+  align-items: center;
+  background: color-mix(in srgb, var(--surface-raised) 86%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 0.45rem;
+  padding: 0.35rem 0.65rem;
+}
+
+.dependency-chip span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.dependency-chip strong {
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.dependency-online strong,
+.dependency-ready strong {
+  color: var(--green);
+}
+
+.dependency-offline strong {
+  color: var(--red);
+}
+
+.dependency-unknown strong {
+  color: var(--amber);
+}
+
+.dependency-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0.65rem 0 0;
+}
+
+.installed-package-card,
+.structured-evidence {
+  background: rgb(8 7 6 / 54%);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+}
+
+.installed-package-card dl,
+.evidence-section dl {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.65rem 0 0;
+}
+
+.installed-package-card dl > div,
+.evidence-section dl > div {
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: minmax(7rem, 0.4fr) minmax(0, 1fr);
+}
+
+.installed-package-card dt,
+.evidence-section dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.installed-package-card dd,
+.evidence-section dd {
+  font-size: 0.74rem;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.structured-evidence {
+  margin-top: 1rem;
+}
+
+.evidence-section {
+  border-top: 1px solid var(--border-soft);
+  padding: 0.65rem 0;
+}
+
+.evidence-section > strong {
+  color: var(--cyan);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
