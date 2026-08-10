@@ -7,6 +7,7 @@ import {
   listProjects,
 } from "../api/msap";
 import type { Audit, Evidence, Indicator, Project } from "../api/types";
+import { AttackIndicatorGuidance } from "../components/AttackIndicatorGuidance";
 import {
   Card,
   EmptyState,
@@ -79,10 +80,9 @@ export function AttackTriagePage() {
                         <details key={indicator.id}>
                           <summary><span><strong>{indicator.title}</strong><small>{indicator.confidence} confidence · {audit?.name || `Audit #${indicator.audit}`} · {project?.name || "Unknown project"}</small></span><span>Review evidence</span></summary>
                           <div className="indicator-detail">
-                            <p><strong>Mapping rationale:</strong> {indicator.mapping_rationale || indicator.triage_interpretation}</p>
-                            <p><strong>Evidence:</strong></p>
+                            <AttackIndicatorGuidance indicator={indicator} />
+                            <p><strong>Static detection summary:</strong></p>
                             {linked.length ? linked.map((item) => <code key={item.id}>{item.source}: {item.snippet}</code>) : <span className="muted">No linked evidence returned.</span>}
-                            <p><strong>False-positive considerations:</strong> {indicator.false_positive_considerations || "Legitimate applications may expose the same capability. Validate business purpose and surrounding code."}</p>
                             {audit ? <Link to={`/audits/${audit.id}`}>Open audit workspace →</Link> : null}
                           </div>
                         </details>

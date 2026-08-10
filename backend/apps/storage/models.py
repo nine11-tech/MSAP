@@ -13,6 +13,7 @@ class ObjectStorageReference(models.Model):
         PDF_REPORT = "PDF_REPORT", "PDF report"
         JSON_EXPORT = "JSON_EXPORT", "JSON export"
         AI_REDACTED_CONTEXT = "AI_REDACTED_CONTEXT", "AI redacted context"
+        SOURCE_DOCUMENT = "SOURCE_DOCUMENT", "Indexed source document"
 
     class RetentionPolicy(models.TextChoices):
         ACTIVE_AUDIT = "active_audit", "Active audit"

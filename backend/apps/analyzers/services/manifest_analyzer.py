@@ -8,10 +8,12 @@ from apps.analyzers.services.manifest_metadata_adapter import (
     ManifestParsingError,
 )
 from apps.normalization.services.schemas import (
+    SourceLocatorHint,
     components_payload,
     manifest_payload,
     permissions_payload,
 )
+from apps.evidence.models import SourceDocument
 from apps.storage.services.file_provider import (
     APKChecksumMismatchError,
     APKDownloadError,
@@ -99,6 +101,7 @@ class ManifestMetadataAnalyzer:
                     application=metadata.application,
                     shared_user_id=metadata.shared_user_id,
                     parsing_status="PARSED",
+                    source_locators=_manifest_source_locators(metadata),
                 ),
                 permissions_payload(
                     source=self.name,
@@ -148,3 +151,112 @@ class ManifestMetadataAnalyzer:
             },
             error_message=message,
         )
+
+
+def _manifest_source_locators(metadata) -> tuple[SourceLocatorHint, ...]:
+    representation = SourceDocument.RepresentationType.MANIFEST_XML
+    path = "AndroidManifest.xml"
+    hints: list[SourceLocatorHint] = []
+
+    def add(
+        semantic_key: str,
+        *terms: str,
+        locator: dict | None = None,
+        class_name: str = "",
+    ) -> None:
+        clean_terms = tuple(term for term in terms if term)
+        hints.append(
+            SourceLocatorHint(
+                representation=representation,
+                semantic_key=semantic_key,
+                logical_path=path,
+                class_name=class_name,
+                search_terms=clean_terms,
+                confidence="HIGH",
+                locator={"match_all": True, **(locator or {})},
+            )
+        )
+
+    application_attributes = {
+        "manifest_debuggable": ("android:debuggable", "true"),
+        "manifest_allow_backup": ("android:allowBackup", "true"),
+        "manifest_cleartext": ("android:usesCleartextTraffic", "true"),
+        "manifest_test_only": ("android:testOnly", "true"),
+        "request_legacy_storage": (
+            "android:requestLegacyExternalStorage",
+            "true",
+        ),
+    }
+    for semantic_key, terms in application_attributes.items():
+        add(semantic_key, *terms)
+    add("shared_user_id", "android:sharedUserId")
+    add("custom_task_affinity", "android:taskAffinity")
+    add("old_target_sdk", "android:targetSdkVersion")
+    for metadata_item in metadata.application.get("metadata", []):
+        if (
+            metadata_item.get("name") == "android.webkit.WebView.EnableSafeBrowsing"
+            and str(metadata_item.get("value") or "").lower() == "false"
+        ):
+            add(
+                "safebrowsing_disabled",
+                "android.webkit.WebView.EnableSafeBrowsing",
+                "false",
+            )
+
+    for component in metadata.components:
+        component_type = component.get("type")
+        if not component.get("exported") or component_type not in {
+            "activity",
+            "service",
+            "receiver",
+            "provider",
+        }:
+            continue
+        if any(
+            component.get(field)
+            for field in ("permission", "read_permission", "write_permission")
+        ):
+            continue
+        component_name = str(component.get("name") or "")
+        add(
+            f"exported_{component_type}_unprotected",
+            f"<{component_type}",
+            component_name.rsplit(".", 1)[-1],
+            "android:exported",
+            class_name=component_name,
+        )
+
+    for permission in metadata.declared_permissions:
+        protection = str(permission.get("protection_level") or "").lower()
+        if protection not in {"signature", "signatureorsystem"}:
+            add(
+                "weak_custom_permission",
+                "<permission",
+                str(permission.get("name") or ""),
+            )
+    for deep_link in metadata.deep_links:
+        scheme = str(deep_link.get("scheme") or "")
+        if scheme and scheme not in {"http", "https"}:
+            add("custom_uri_scheme", "android:scheme", scheme)
+        if scheme in {"http", "https"} and not deep_link.get("auto_verify"):
+            add(
+                "unverified_app_link",
+                "android:scheme",
+                scheme,
+                str(deep_link.get("host") or ""),
+            )
+    for permission in metadata.permissions:
+        if permission in {
+            "android.permission.READ_CALENDAR",
+            "android.permission.WRITE_CALENDAR",
+            "android.permission.CAMERA",
+            "android.permission.READ_CONTACTS",
+            "android.permission.WRITE_CONTACTS",
+            "android.permission.ACCESS_FINE_LOCATION",
+            "android.permission.ACCESS_BACKGROUND_LOCATION",
+            "android.permission.RECORD_AUDIO",
+            "android.permission.READ_CALL_LOG",
+            "android.permission.READ_SMS",
+        }:
+            add("privacy_permission_review", "<uses-permission", permission)
+    return tuple(hints)

@@ -103,6 +103,7 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(
     _create_evaluation(audit, "MSAP-AND-001", RuleEvaluation.Result.FAIL)
     _create_evaluation(audit, "MSAP-AND-002", RuleEvaluation.Result.PASS)
     indicator = _create_indicator(audit, "MSAP-MOB-001", "Medium")
+    _add_attck_guidance(indicator)
     Evidence.objects.create(
         audit=audit,
         finding=finding,
@@ -152,6 +153,9 @@ def test_json_report_endpoint_returns_results_without_raw_manifest(
     assert data["apk"]["package_name"] == "com.example.scored"
     assert len(data["findings"]) == 1
     assert len(data["indicators"]) == 1
+    assert "READ_SMS" in data["indicators"][0]["auditor_explanation"]
+    assert data["indicators"][0]["dynamic_verification_scenario"]
+    assert data["indicators"][0]["source_evidence"][0]["start_line"] == 7
     assert len(data["evidence"]) == 2
     assert data["summary"]["risk"]["score"] == 70
     assert data["summary"]["masvs_compliance"]["score"] == 50
@@ -192,6 +196,7 @@ def test_pdf_report_endpoint_returns_attachment(audit, admin_client):
     finding.recommendation = "Disable the insecure release configuration."
     finding.save(update_fields=["recommendation"])
     indicator = _create_indicator(audit, "MSAP-MOB-001", "Medium")
+    _add_attck_guidance(indicator)
     Evidence.objects.create(
         audit=audit,
         finding=finding,
@@ -274,6 +279,39 @@ def _create_indicator(
         severity=severity,
         confidence="Medium",
         triage_interpretation="Review in application context.",
+    )
+
+
+def _add_attck_guidance(indicator: SuspiciousIndicator) -> None:
+    indicator.auditor_explanation = "READ_SMS permits SMS provider access."
+    indicator.dynamic_verification_scenario = (
+        "Deliver a synthetic SMS on a disposable emulator and trace provider access."
+    )
+    indicator.source_evidence = [
+        {
+            "source_document": 42,
+            "representation": "MANIFEST_XML",
+            "representation_label": "Decoded AndroidManifest.xml",
+            "path": "AndroidManifest.xml",
+            "class_name": "",
+            "method_name": "",
+            "start_line": 7,
+            "end_line": 7,
+            "excerpt": (
+                '<uses-permission android:name="android.permission.READ_SMS" />'
+            ),
+            "confidence": "HIGH",
+            "is_primary": True,
+            "source_lines_available": True,
+            "provenance": "Lines refer to decoded AndroidManifest.xml.",
+        }
+    ]
+    indicator.save(
+        update_fields=[
+            "auditor_explanation",
+            "dynamic_verification_scenario",
+            "source_evidence",
+        ]
     )
 
 

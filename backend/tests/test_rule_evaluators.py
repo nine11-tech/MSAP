@@ -1,3 +1,5 @@
+from hashlib import sha256
+
 import pytest
 
 from apps.analyzers.models import RawAnalyzerResult
@@ -8,7 +10,7 @@ from apps.appsec_rules.models import RuleEvaluation
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.audits.services.analysis_orchestrator import AnalysisOrchestrator
-from apps.evidence.models import Evidence
+from apps.evidence.models import Evidence, SourceDocument
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
@@ -49,12 +51,12 @@ def test_masvs_evaluator_creates_debuggable_finding_and_evidence(audit_and_apk):
 
     finding = Finding.objects.get(audit=audit, rule_id="MSAP-AND-001")
     evidence = Evidence.objects.get(finding=finding)
-    assert summary["catalog_rules"] == 36
-    assert summary["evaluated_rules"] == 16
-    assert summary["not_evaluated"] == 20
+    assert summary["catalog_rules"] == 44
+    assert summary["evaluated_rules"] == 17
+    assert summary["not_evaluated"] == 27
     assert summary["findings_created"] == 1
     assert summary["failed"] == 1
-    assert RuleEvaluation.objects.filter(audit=audit).count() == 36
+    assert RuleEvaluation.objects.filter(audit=audit).count() == 44
     assert evidence.snippet == "application.debuggable=true"
     assert evidence.redacted is False
 
@@ -71,6 +73,27 @@ def test_masvs_evaluator_creates_allow_backup_finding(audit_and_apk):
         audit=audit,
         rule_id="MSAP-AND-002",
     ).exists()
+
+
+@pytest.mark.django_db
+def test_masvs_evaluator_collapses_duplicate_finding_evidence(audit_and_apk):
+    audit, apk_file = audit_and_apk
+    _create_manifest(audit, apk_file, application={"debuggable": True})
+    evaluate_masvs_rules(audit)
+    finding = Finding.objects.get(audit=audit, rule_id="MSAP-AND-001")
+    original = finding.evidence.get()
+    Evidence.objects.create(
+        audit=audit,
+        finding=finding,
+        evidence_type=original.evidence_type,
+        source=original.source,
+        snippet="stale duplicate",
+    )
+
+    evaluate_masvs_rules(audit)
+
+    assert finding.evidence.count() == 1
+    assert finding.evidence.get().snippet == "application.debuggable=true"
 
 
 @pytest.mark.django_db
@@ -98,6 +121,131 @@ def test_attck_evaluator_creates_sms_indicator_and_evidence(audit_and_apk):
         "declared permission capability: android.permission.READ_SMS"
     )
     assert evidence.redacted is False
+    assert "permission" in indicator.auditor_explanation.lower()
+    assert "disposable emulator" in indicator.dynamic_verification_scenario
+    assert indicator.source_evidence[0]["source_lines_available"] is False
+
+
+@pytest.mark.django_db
+def test_attck_evaluator_resolves_exact_decoded_manifest_line(audit_and_apk):
+    audit, apk_file = audit_and_apk
+    manifest = (
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n'
+        '    <uses-permission android:name="android.permission.READ_SMS" />\n'
+        "</manifest>\n"
+    )
+    _create_manifest(
+        audit,
+        apk_file,
+        permissions=["android.permission.READ_SMS"],
+    )
+    document = SourceDocument.objects.create(
+        audit=audit,
+        apk_file=apk_file,
+        representation_type=SourceDocument.RepresentationType.MANIFEST_XML,
+        logical_path="AndroidManifest.xml",
+        display_path="Decoded AndroidManifest.xml",
+        sha256=sha256(manifest.encode()).hexdigest(),
+        line_count=3,
+        generated_by="test decoder",
+        metadata={
+            "provenance_note": "Lines refer to decoded AndroidManifest.xml."
+        },
+    )
+
+    class StaticContentService:
+        def read_text(self, requested_document):
+            assert requested_document.id == document.id
+            return manifest
+
+    evaluate_attck_indicators(
+        audit,
+        content_service=StaticContentService(),
+    )
+
+    indicator = SuspiciousIndicator.objects.get(
+        audit=audit,
+        indicator_id="MSAP-MOB-001",
+    )
+    reference = indicator.source_evidence[0]
+    assert reference["source_document"] == document.id
+    assert reference["representation_label"] == "Decoded AndroidManifest.xml"
+    assert reference["start_line"] == 2
+    assert reference["end_line"] == 2
+    assert reference["excerpt"] == (
+        '    <uses-permission android:name="android.permission.READ_SMS" />'
+    )
+    assert reference["source_lines_available"] is True
+
+
+@pytest.mark.django_db
+def test_attck_evaluator_resolves_exact_jadx_code_line(audit_and_apk):
+    audit, apk_file = audit_and_apk
+    apk_file.package_name = "com.example"
+    apk_file.save(update_fields=["package_name"])
+    source = (
+        "package com.example;\n"
+        "public class ClipboardReader {\n"
+        "    public String readClipboard() {\n"
+        "        return clipboard.getPrimaryClip().toString();\n"
+        "    }\n"
+        "}\n"
+    )
+    NormalizedArtifact.objects.create(
+        audit=audit,
+        apk_file=apk_file,
+        artifact_type=NormalizedArtifact.ArtifactType.CODE_REFERENCES,
+        source="advanced_static_analyzer",
+        normalized_data={
+            "matches": [
+                {
+                    "category": "clipboard",
+                    "value": "Landroid/content/ClipboardManager;->getPrimaryClip",
+                    "locator_terms": ["getPrimaryClip"],
+                }
+            ]
+        },
+    )
+    document = SourceDocument.objects.create(
+        audit=audit,
+        apk_file=apk_file,
+        representation_type=SourceDocument.RepresentationType.JADX_JAVA,
+        logical_path="sources/com/example/ClipboardReader.java",
+        display_path="sources/com/example/ClipboardReader.java",
+        language="Java",
+        class_name="com.example.ClipboardReader",
+        package_name="com.example",
+        sha256=sha256(source.encode()).hexdigest(),
+        line_count=6,
+        generated_by="JADX",
+        tool_version="test",
+    )
+
+    class StaticContentService:
+        def read_text(self, requested_document):
+            assert requested_document.id == document.id
+            return source
+
+    evaluate_attck_indicators(
+        audit,
+        content_service=StaticContentService(),
+    )
+
+    indicator = SuspiciousIndicator.objects.get(
+        audit=audit,
+        indicator_id="MSAP-MOB-012",
+    )
+    reference = indicator.source_evidence[0]
+    assert reference["representation_label"] == "JADX decompiled Java"
+    assert reference["path"] == "sources/com/example/ClipboardReader.java"
+    assert reference["method_name"] == "readClipboard"
+    assert reference["start_line"] == 4
+    assert reference["excerpt"] == (
+        "        return clipboard.getPrimaryClip().toString();"
+    )
+    assert "ClipboardManager.getPrimaryClip" in (
+        indicator.dynamic_verification_scenario
+    )
 
 
 @pytest.mark.django_db
@@ -180,17 +328,17 @@ def test_orchestrator_evaluates_created_manifest_artifact(audit_and_apk):
         },
         "masvs_compliance": {
             "standard": "MASVS",
-            "score": 87.5,
-            "evaluated_rules": 16,
-            "applicable_rules": 16,
+            "score": 88.24,
+            "evaluated_rules": 17,
+            "applicable_rules": 17,
             "failed_rules": 2,
-            "passed_rules": 14,
+            "passed_rules": 15,
             "review_required": 0,
-            "not_evaluated": 20,
+            "not_evaluated": 27,
             "not_applicable": 0,
             "partial_coverage": True,
             "coverage_warning": (
-                "20 catalog rule(s) were not evaluated and are not counted as passing."
+                "27 catalog rule(s) were not evaluated and are not counted as passing."
             ),
         },
         "attack_mobile_triage": {

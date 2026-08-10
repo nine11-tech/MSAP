@@ -380,16 +380,16 @@ GET /api/audits/1/analysis/status/
 }
 ```
 
-The Celery task calls the internal `AnalysisOrchestrator` and runs the registered analyzers in deterministic order. It marks the audit and `AnalysisJob` as running, persists raw analyzer statuses and any normalized artifacts, evaluates the implemented MASVS and ATT&CK Mobile manifest rules, then marks the job completed. The manifest analyzer parses only when the file provider can supply a local APK path.
+The Celery task calls the internal `AnalysisOrchestrator` and runs the registered analyzers in deterministic order. It marks the audit and `AnalysisJob` as running, persists raw analyzer statuses and normalized artifacts, indexes bounded source/configuration representations, evaluates the implemented MASVS and ATT&CK Mobile rules, resolves finding evidence, and then marks the job completed. APK-backed stages run only when the file provider can supply validated bytes.
 
 ## Analysis Orchestration
-The Celery analysis task delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, selects the latest linked `APKFile`, verifies its object storage reference, and asks `AnalyzerRegistry` for supported analyzers. The default order is `PlaceholderMetadataAnalyzer` followed by `ManifestMetadataAnalyzer`.
+The Celery analysis task delegates internal work to `AnalysisOrchestrator`. The orchestrator loads the audit, selects the latest linked `APKFile`, verifies its object storage reference, and asks `AnalyzerRegistry` for supported analyzers. The default order is `PlaceholderMetadataAnalyzer`, `ManifestMetadataAnalyzer`, then `AdvancedStaticAnalyzer`.
 
 Every invoked analyzer produces a `RawAnalyzerResult`, including `SKIPPED` and `FAILED` analyzers. A skipped manifest analyzer does not fail the audit or job. `NormalizedArtifact` rows are created only when an analyzer result contains normalized artifacts.
 
 `NormalizedArtifact` represents canonical data that rule evaluators can consume without depending on parser-specific output. The placeholder analyzer creates `APK_METADATA`; successful manifest parsing creates `MANIFEST`. Analyzer summaries contain counts and status, not raw XML.
 
-After analyzer execution, the orchestrator runs the focused MASVS and ATT&CK evaluators against the latest `MANIFEST` artifact for the audit, then calculates risk, MASVS compliance, and ATT&CK triage summaries. Evaluator summaries, scoring summaries, and aggregate finding, indicator, and evidence creation counts are included in `AnalysisJob.result_summary`. The orchestrator does not run apktool, jadx, MobSF, Frida, unimplemented catalog rules, or report generation.
+After analyzer execution, the orchestrator indexes deterministic decoded XML and, when deliberately enabled and installed, runs bounded JADX source generation. A first-party source-verification stage turns exact code observations into rule inputs; DEX token-only observations remain review signals. The MASVS and ATT&CK evaluators then run against artifacts for the latest APK, source references are resolved, and risk/compliance/triage summaries are calculated. Evaluator, indexing, verification, and evidence summaries are included in `AnalysisJob.result_summary`. Missing JADX fails safely to decoded configuration or honest non-line metadata evidence. The orchestrator does not download tools, execute APK code, run Frida, or generate reports automatically.
 
 This prepares the future pipeline by separating:
 - analyzer plugin execution into the `apps.analyzers` contract,

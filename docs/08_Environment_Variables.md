@@ -73,6 +73,13 @@
 | `MSAP_MAX_APK_COMPRESSION_RATIO` | Yes | No |
 | `MSAP_MAX_DEX_BYTES` | Yes | No |
 | `MSAP_MAX_NORMALIZED_MATCHES` | Yes | No |
+| `MSAP_SOURCE_INDEX_ENABLED` | Optional (default true) | No |
+| `MSAP_JADX_ENABLED` | Optional (base/production default false; local development default true; executable must already exist) | No |
+| `MSAP_SOURCE_INDEX_TIMEOUT_SECONDS` | Optional (default 300) | No |
+| `MSAP_SOURCE_INDEX_MAX_DOCUMENTS` | Optional (default 5000) | No |
+| `MSAP_SOURCE_INDEX_MAX_DOCUMENT_BYTES` | Optional (default 2 MiB) | No |
+| `MSAP_SOURCE_INDEX_MAX_TOTAL_BYTES` | Optional (default 100 MiB) | No |
+| `MSAP_SOURCE_LINE_RANGE_LIMIT` | Optional (default 200) | No |
 
 ## Analyzer and Reports
 | Variable | Required | Secret |

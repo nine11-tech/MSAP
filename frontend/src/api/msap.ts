@@ -23,12 +23,15 @@ import type {
   DynamicSessionStage,
   Evidence,
   Finding,
+  FindingSourceReference,
   Indicator,
   JsonReport,
   Project,
   RiskScore,
   RuleCoverage,
   SystemStatus,
+  SourceDocument,
+  SourceLineRange,
   UploadContract,
   UploadInitiateRequest,
 } from "./types";
@@ -104,6 +107,22 @@ const auditQuery = (auditId?: number) =>
 
 export const listFindings = (auditId?: number) =>
   apiGet<Finding[]>(`findings/${auditQuery(auditId)}`);
+export const getFindingSourceReferences = (findingId: number) =>
+  apiGet<FindingSourceReference[]>(
+    `findings/${findingId}/source-references/`,
+  );
+export const listSourceDocuments = (auditId?: number) =>
+  apiGet<SourceDocument[]>(`source-documents/${auditQuery(auditId)}`);
+export const getSourceDocument = (documentId: number) =>
+  apiGet<SourceDocument>(`source-documents/${documentId}/`);
+export const getSourceLines = (
+  documentId: number,
+  start: number,
+  end: number,
+) =>
+  apiGet<SourceLineRange>(
+    `source-documents/${documentId}/lines/?start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`,
+  );
 export const listIndicators = (auditId?: number) =>
   apiGet<Indicator[]>(`indicators/${auditQuery(auditId)}`);
 export const listEvidence = (auditId?: number) =>

@@ -5,7 +5,7 @@ from apps.analyzers.models import RawAnalyzerResult
 from apps.appsec_rules.models import RuleEvaluation
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
-from apps.evidence.models import Evidence
+from apps.evidence.models import Evidence, FindingSourceReference, SourceDocument
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
@@ -13,6 +13,7 @@ from apps.projects.models import Project
 from apps.reports.models import Report
 from apps.scoring.models import ComplianceScore, RiskScore
 from apps.storage.models import ObjectStorageReference
+from apps.triage_rules.services.triage_rule_loader import default_attck_rules_by_id
 
 
 APK_CONTENT_TYPES = {
@@ -208,6 +209,7 @@ class FindingSerializer(serializers.ModelSerializer):
     masvs_controls = serializers.SerializerMethodField()
     maswe_ids = serializers.SerializerMethodField()
     mastg_references = serializers.SerializerMethodField()
+    source_reference_count = serializers.SerializerMethodField()
 
     @staticmethod
     def _mapping(obj, key):
@@ -221,6 +223,9 @@ class FindingSerializer(serializers.ModelSerializer):
 
     def get_mastg_references(self, obj):
         return self._mapping(obj, "mastg_references")
+
+    def get_source_reference_count(self, obj):
+        return obj.source_references.count()
 
     class Meta:
         model = Finding
@@ -238,6 +243,7 @@ class FindingSerializer(serializers.ModelSerializer):
             "masvs_controls",
             "maswe_ids",
             "mastg_references",
+            "source_reference_count",
             "recommendation",
             "false_positive_guidance",
             "requires_manual_validation",
@@ -248,6 +254,23 @@ class FindingSerializer(serializers.ModelSerializer):
 
 
 class SuspiciousIndicatorSerializer(serializers.ModelSerializer):
+    auditor_explanation = serializers.SerializerMethodField()
+    dynamic_verification_scenario = serializers.SerializerMethodField()
+
+    @staticmethod
+    def _catalog_rule(obj):
+        return default_attck_rules_by_id().get(obj.indicator_id, {})
+
+    def get_auditor_explanation(self, obj):
+        return obj.auditor_explanation or self._catalog_rule(obj).get(
+            "auditor_explanation", obj.triage_interpretation
+        )
+
+    def get_dynamic_verification_scenario(self, obj):
+        return obj.dynamic_verification_scenario or self._catalog_rule(obj).get(
+            "dynamic_verification_scenario", ""
+        )
+
     class Meta:
         model = SuspiciousIndicator
         fields = [
@@ -261,6 +284,9 @@ class SuspiciousIndicatorSerializer(serializers.ModelSerializer):
             "severity",
             "confidence",
             "triage_interpretation",
+            "auditor_explanation",
+            "dynamic_verification_scenario",
+            "source_evidence",
             "mapping_rationale",
             "false_positive_considerations",
             "requires_manual_validation",
@@ -283,6 +309,94 @@ class EvidenceSerializer(serializers.ModelSerializer):
             "source",
             "snippet",
             "redacted",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class SourceDocumentSerializer(serializers.ModelSerializer):
+    representation_label = serializers.CharField(
+        source="get_representation_type_display",
+        read_only=True,
+    )
+    storage_available = serializers.SerializerMethodField()
+
+    def get_storage_available(self, obj):
+        return bool(obj.storage_reference_id)
+
+    class Meta:
+        model = SourceDocument
+        fields = [
+            "id",
+            "audit",
+            "apk_file",
+            "representation_type",
+            "representation_label",
+            "logical_path",
+            "display_path",
+            "language",
+            "class_name",
+            "package_name",
+            "sha256",
+            "line_count",
+            "generated_by",
+            "tool_version",
+            "storage_available",
+            "metadata",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class FindingSourceReferenceSerializer(serializers.ModelSerializer):
+    representation_label = serializers.CharField(
+        source="get_representation_type_display",
+        read_only=True,
+    )
+    source_document_sha256 = serializers.CharField(
+        source="source_document.sha256",
+        read_only=True,
+        allow_null=True,
+    )
+    source_document_display_path = serializers.CharField(
+        source="source_document.display_path",
+        read_only=True,
+        allow_null=True,
+    )
+    source_document_line_count = serializers.IntegerField(
+        source="source_document.line_count",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = FindingSourceReference
+        fields = [
+            "id",
+            "finding",
+            "source_document",
+            "representation_type",
+            "representation_label",
+            "logical_path",
+            "source_document_display_path",
+            "source_document_sha256",
+            "source_document_line_count",
+            "class_name",
+            "method_name",
+            "method_descriptor",
+            "symbol_name",
+            "start_line",
+            "end_line",
+            "start_offset",
+            "end_offset",
+            "excerpt",
+            "excerpt_sha256",
+            "locator",
+            "confidence",
+            "is_primary",
+            "provenance",
+            "source_lines_available",
+            "unavailable_reason",
             "created_at",
         ]
         read_only_fields = fields

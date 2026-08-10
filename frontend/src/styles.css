@@ -1417,6 +1417,39 @@ details summary {
   overflow-wrap: anywhere;
 }
 
+.attack-source-support {
+  margin: 0.75rem 0;
+}
+
+.attack-source-reference {
+  margin-top: 0.45rem;
+  padding: 0.6rem;
+  background: #06111c;
+  border: 1px solid #1c3043;
+  border-radius: 5px;
+}
+
+.attack-source-reference code {
+  display: grid;
+  grid-template-columns: 2.8rem minmax(0, 1fr);
+  gap: 0.65rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.attack-source-reference code span {
+  color: #6d8497;
+  text-align: right;
+  user-select: none;
+}
+
+.attack-verification-scenario {
+  padding: 0.65rem;
+  color: #bddbd7;
+  background: rgb(38 166 154 / 8%);
+  border-left: 2px solid #38bfb4;
+}
+
 .detail-overlay {
   position: fixed;
   inset: 0;
@@ -1485,6 +1518,213 @@ details summary {
   color: #9fcbd5;
   overflow-wrap: anywhere;
   font-size: 0.68rem;
+}
+
+.finding-source-section {
+  margin-top: 1.5rem;
+}
+
+.source-evidence-stack {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.source-evidence-card {
+  padding: 0.85rem;
+  background: #06121d;
+  border: 1px solid #1c3447;
+  border-radius: 8px;
+}
+
+.source-evidence-card.primary {
+  border-color: #287b79;
+  box-shadow: inset 3px 0 #34d5c9;
+}
+
+.source-evidence-card > header,
+.source-browser-viewer > header {
+  margin-bottom: 0.7rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.source-representation,
+.source-primary,
+.source-confidence {
+  display: inline-flex;
+  margin-right: 0.35rem;
+  padding: 0.2rem 0.42rem;
+  color: #8eece4;
+  background: #123333;
+  border: 1px solid #286e6b;
+  border-radius: 4px;
+  font-size: 0.58rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.source-primary {
+  color: #b9ccda;
+  background: #172a3c;
+  border-color: #31506a;
+}
+
+.source-confidence {
+  color: #7f98ab;
+  background: transparent;
+  border-color: #263e51;
+}
+
+.source-reference-meta {
+  margin: 0 0 0.75rem;
+  display: grid;
+  gap: 0.42rem;
+}
+
+.source-reference-meta > div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.source-reference-meta dt {
+  color: #627d91;
+  font-size: 0.62rem;
+}
+
+.source-reference-meta dd {
+  margin: 0;
+  color: #b2c2cf;
+  overflow-wrap: anywhere;
+  font-size: 0.66rem;
+}
+
+.code-evidence-panel {
+  max-height: 430px;
+  overflow: auto;
+  background: #030b12;
+  border: 1px solid #1a3041;
+  border-radius: 6px;
+  font: 0.68rem/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.code-line {
+  min-width: max-content;
+  display: grid;
+  grid-template-columns: 52px minmax(500px, 1fr);
+}
+
+.code-line.evidence-line {
+  background: rgb(28 105 101 / 30%);
+  box-shadow: inset 3px 0 #42d9cd;
+}
+
+.line-number {
+  padding: 0 0.65rem;
+  color: #4f687a;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid #142635;
+}
+
+.code-line code {
+  padding: 0 0.8rem;
+  color: #abc5d1;
+  white-space: pre;
+}
+
+.source-provenance,
+.source-unavailable {
+  margin: 0.65rem 0 0;
+  color: #7f96a8;
+  font-size: 0.64rem;
+  line-height: 1.5;
+}
+
+.source-unavailable {
+  padding: 0.7rem;
+  color: #c2b18c;
+  background: #241e12;
+  border: 1px solid #574a2c;
+  border-radius: 5px;
+}
+
+.source-actions {
+  margin-top: 0.7rem;
+}
+
+.source-browser {
+  min-height: 520px;
+  display: grid;
+  grid-template-columns: minmax(230px, 30%) minmax(0, 1fr);
+  border: 1px solid #20384b;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.source-document-list {
+  max-height: 640px;
+  overflow: auto;
+  background: #071420;
+  border-right: 1px solid #20384b;
+}
+
+.source-document-list button {
+  width: 100%;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.3rem;
+  color: #9bb0c0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #162c3d;
+  cursor: pointer;
+}
+
+.source-document-list button.active {
+  color: #d2e8e7;
+  background: #123034;
+  box-shadow: inset 3px 0 #34d5c9;
+}
+
+.source-document-list strong {
+  overflow-wrap: anywhere;
+  font-size: 0.66rem;
+}
+
+.source-document-list span {
+  color: #648094;
+  font-size: 0.58rem;
+}
+
+.source-browser-viewer {
+  min-width: 0;
+  padding: 0.8rem;
+  background: #06111b;
+}
+
+.source-browser-viewer > header > div {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.audit-source-code {
+  max-height: 560px;
+}
+
+@media (max-width: 840px) {
+  .source-browser {
+    grid-template-columns: 1fr;
+  }
+
+  .source-document-list {
+    max-height: 220px;
+    border-right: 0;
+    border-bottom: 1px solid #20384b;
+  }
 }
 
 .report-card {

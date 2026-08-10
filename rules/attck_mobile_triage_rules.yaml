@@ -1,6 +1,6 @@
 catalog:
   name: MSAP ATT&CK Mobile Android static triage catalog
-  version: "2.0.0"
+  version: "2.1.0"
   snapshot_date: "2026-07-26"
   platform: Android
 defaults: &defaults
@@ -12,6 +12,8 @@ defaults: &defaults
   detection_type: deterministic_static_triage
   prerequisites: [MANIFEST]
   triage_interpretation: Static capability evidence requires application-context and call-path validation.
+  auditor_explanation: The APK contains a static capability associated with this ATT&CK technique. This confirms capability, not execution or malicious intent.
+  dynamic_verification_scenario: Exercise the related feature in an authorized test device while observing the relevant Android APIs, permissions, files, and network traffic. Confirm whether the capability is actually reached and whether its behavior matches the application purpose.
   mapping_rationale: Static capability evidence can support triage for this technique but cannot establish execution.
   false_positive_considerations: Legitimate applications may expose this capability for their documented purpose.
   requires_manual_validation: true
@@ -28,6 +30,8 @@ rules:
     values: [android.permission.READ_SMS, android.permission.RECEIVE_SMS]
     pattern_or_condition: READ_SMS or RECEIVE_SMS
     triage_interpretation: The package declares SMS collection capability; this does not prove messages were accessed.
+    auditor_explanation: READ_SMS or RECEIVE_SMS allows the application to receive or query SMS data after Android grants the permission. The declaration alone does not show that a message was read or transmitted.
+    dynamic_verification_scenario: On a disposable emulator, grant the SMS permission, deliver a synthetic test SMS, exercise the relevant feature, and observe Telephony/SMS provider access plus outbound traffic. Use only test messages.
 
   - <<: *defaults
     id: MSAP-MOB-002
@@ -42,6 +46,8 @@ rules:
     severity: High
     confidence: High
     triage_interpretation: Accessibility capability warrants contextual review and is not proof of abuse.
+    auditor_explanation: An accessibility service can observe UI events and perform actions across applications once the user enables it. This is legitimate for assistive software but powerful enough to require call-path review.
+    dynamic_verification_scenario: Enable the service on a disposable emulator, navigate through a synthetic login screen, and record which accessibility events, window content, and actions the service receives or performs.
 
   - <<: *defaults
     id: MSAP-MOB-003
@@ -54,6 +60,8 @@ rules:
     values: [android.permission.SEND_SMS, android.permission.WRITE_SMS]
     pattern_or_condition: SEND_SMS or WRITE_SMS
     triage_interpretation: The declaration can support SMS-control triage but does not prove unauthorized messaging.
+    auditor_explanation: SEND_SMS or WRITE_SMS gives the application the ability to send or modify SMS data when granted. Static permission evidence does not prove that messages are sent without user intent.
+    dynamic_verification_scenario: Grant the permission on a test emulator, exercise the messaging feature with a test destination, and monitor SmsManager/provider calls and resulting SMS events. Do not use a real subscriber number.
 
   - &permission
     <<: *defaults
@@ -67,6 +75,8 @@ rules:
     values: [android.permission.READ_CONTACTS, android.permission.WRITE_CONTACTS]
     pattern_or_condition: contact permission declaration
     triage_interpretation: Contact capability must be assessed against application purpose.
+    auditor_explanation: Contact permissions allow querying or modifying the device contact provider. This may be expected for communication features but should match the stated product purpose.
+    dynamic_verification_scenario: Seed a disposable emulator with a canary contact, grant contact access, exercise the feature, and observe ContactsProvider queries or changes and any outbound transmission of the canary value.
 
   - <<: *permission
     id: MSAP-MOB-005
@@ -76,6 +86,8 @@ rules:
     technique_name: "Protected User Data: Call Log"
     values: [android.permission.READ_CALL_LOG, android.permission.WRITE_CALL_LOG]
     pattern_or_condition: call-log permission declaration
+    auditor_explanation: Call-log permissions allow access to dialed, received, or missed-call records. A declaration establishes potential access, not actual collection.
+    dynamic_verification_scenario: Seed a test emulator with synthetic call-log entries, grant the permission, exercise the relevant flow, and monitor CallLog provider queries and outbound traffic for the canary data.
 
   - <<: *permission
     id: MSAP-MOB-006
@@ -85,6 +97,8 @@ rules:
     technique_name: "Protected User Data: Calendar Entries"
     values: [android.permission.READ_CALENDAR, android.permission.WRITE_CALENDAR]
     pattern_or_condition: calendar permission declaration
+    auditor_explanation: Calendar permissions allow reading or changing calendar entries. This capability should be traceable to an expected scheduling feature.
+    dynamic_verification_scenario: Add a uniquely named test event, grant calendar access, exercise the feature, and monitor CalendarProvider reads or writes and any transmission of the test event.
 
   - <<: *permission
     id: MSAP-MOB-007
@@ -94,6 +108,8 @@ rules:
     technique_name: Location Tracking
     values: [android.permission.ACCESS_FINE_LOCATION, android.permission.ACCESS_COARSE_LOCATION, android.permission.ACCESS_BACKGROUND_LOCATION]
     pattern_or_condition: location permission declaration
+    auditor_explanation: Location permissions permit access to approximate, precise, or background device location depending on the granted permission and platform version.
+    dynamic_verification_scenario: Supply a mock location on an emulator, grant the requested location level, exercise foreground and background flows, and observe location API callbacks and outbound requests containing the mock coordinates.
 
   - <<: *permission
     id: MSAP-MOB-008
@@ -103,6 +119,8 @@ rules:
     technique_name: Audio Capture
     values: [android.permission.RECORD_AUDIO, android.permission.CAPTURE_AUDIO_OUTPUT]
     pattern_or_condition: audio capture permission declaration
+    auditor_explanation: RECORD_AUDIO enables microphone capture after permission is granted. The manifest declaration does not prove recording starts or that audio leaves the device.
+    dynamic_verification_scenario: Use synthetic audio on a disposable emulator, grant microphone access, exercise the feature, and monitor AudioRecord/MediaRecorder use, created files, microphone indicators, and related network traffic.
 
   - <<: *permission
     id: MSAP-MOB-009
@@ -112,6 +130,8 @@ rules:
     technique_name: Video Capture
     values: [android.permission.CAMERA]
     pattern_or_condition: camera permission declaration
+    auditor_explanation: CAMERA permits image or video capture after permission is granted. The capability may be expected, but activation and data handling need runtime confirmation.
+    dynamic_verification_scenario: Grant camera access on a test device, exercise the relevant feature, and observe Camera/Camera2 calls, privacy indicators, generated media, and whether captured test imagery is transmitted.
 
   - <<: *permission
     id: MSAP-MOB-010
@@ -122,6 +142,8 @@ rules:
     technique_name: "Input Capture: GUI Input Capture"
     values: [android.permission.SYSTEM_ALERT_WINDOW]
     pattern_or_condition: SYSTEM_ALERT_WINDOW declaration
+    auditor_explanation: Overlay permission allows application windows to appear above other apps. Legitimate floating controls use it, but overlays can also obscure or capture user interaction.
+    dynamic_verification_scenario: Grant overlay access on a disposable emulator, exercise the feature while viewing a synthetic login app, and record created overlay windows, their bounds, touch handling, and displayed content.
 
   - <<: *permission
     id: MSAP-MOB-011
@@ -131,6 +153,8 @@ rules:
     technique_name: Access Notifications
     values: [android.permission.BIND_NOTIFICATION_LISTENER_SERVICE]
     pattern_or_condition: notification listener service declaration
+    auditor_explanation: A notification listener can receive notification metadata and content after the user grants access. This can expose sensitive messages even without opening the originating app.
+    dynamic_verification_scenario: Grant notification access, post a synthetic notification containing a canary value, exercise the app, and observe listener callbacks, local persistence, and outbound traffic containing that value.
 
   - <<: *defaults
     id: MSAP-MOB-012
@@ -145,6 +169,8 @@ rules:
     pattern_or_condition: clipboard code reference
     confidence: Low
     triage_interpretation: Clipboard API references are common and require call-path validation.
+    auditor_explanation: The decompiled code references clipboard read APIs. This proves an API dependency or call site, but not that clipboard content is read during normal use.
+    dynamic_verification_scenario: Copy a harmless canary string, exercise the suspected flow, and hook or trace ClipboardManager.getPrimaryClip. Check whether the canary is stored, logged, or transmitted.
 
   - <<: *defaults
     id: MSAP-MOB-013
@@ -158,6 +184,8 @@ rules:
     values: [screen_capture]
     pattern_or_condition: screen capture reference
     triage_interpretation: The API reference indicates capability only and often requires user consent.
+    auditor_explanation: Screen-capture APIs can obtain display content after Android consent or through privileged contexts. A static reference alone does not prove a capture occurred.
+    dynamic_verification_scenario: On a disposable emulator, exercise the feature and grant capture consent only when prompted. Trace MediaProjection/ImageReader activity and inspect generated files or network uploads for a synthetic screen marker.
 
   - <<: *defaults
     id: MSAP-MOB-014
@@ -170,6 +198,8 @@ rules:
     values: [android.app.device_admin, android.permission.BIND_DEVICE_ADMIN]
     pattern_or_condition: device-admin declaration
     severity: High
+    auditor_explanation: Device-administrator capability can enforce policies such as locking or wiping after explicit activation. It is expected for device-management products but unusually powerful elsewhere.
+    dynamic_verification_scenario: Activate the component only on a disposable emulator, exercise the related flow, trace DevicePolicyManager calls, verify the policies applied, and confirm that administrator access can be revoked cleanly.
 
   - <<: *defaults
     id: MSAP-MOB-015
@@ -184,6 +214,8 @@ rules:
     pattern_or_condition: DexClassLoader or related reference
     severity: High
     triage_interpretation: Dynamic loading may support legitimate plugin systems and does not prove remote code transfer.
+    auditor_explanation: Dynamic class-loading APIs can load DEX or APK code that was not part of the normal installed class path. This may support plugins, updates, or hidden runtime behavior.
+    dynamic_verification_scenario: Exercise update or plugin flows while monitoring downloads and writable files, then trace DexClassLoader/PathClassLoader construction. Record the loaded path and hash without executing unknown external content.
 
   - <<: *defaults
     id: MSAP-MOB-016
@@ -197,6 +229,8 @@ rules:
     values: [command_execution]
     pattern_or_condition: Runtime.exec or ProcessBuilder reference
     severity: High
+    auditor_explanation: Runtime.exec or ProcessBuilder references indicate the application can start operating-system commands. The risk depends on the reachable call path, command, arguments, and privileges.
+    dynamic_verification_scenario: On an isolated emulator, exercise the suspected feature and hook Runtime.exec and ProcessBuilder.start to record commands, arguments, and child processes. Do not substitute destructive commands.
 
   - <<: *defaults
     id: MSAP-MOB-017
@@ -210,6 +244,8 @@ rules:
     values: []
     pattern_or_condition: native library inventory is not empty
     triage_interpretation: Native code is common and is not suspicious without additional evidence.
+    auditor_explanation: Packaged native libraries execute machine code outside the managed Android runtime. Their presence is normal for many apps, but important behavior may not be visible in Java decompilation.
+    dynamic_verification_scenario: Exercise major app flows while monitoring System.loadLibrary and native library mappings. Record which libraries load and correlate native calls or symbols with the observed feature behavior.
 
   - <<: *defaults
     id: MSAP-MOB-018
@@ -222,6 +258,8 @@ rules:
     values: [android.permission.BIND_VPN_SERVICE]
     pattern_or_condition: VPN service declaration
     triage_interpretation: VPN applications legitimately expose this capability; execution is not observed.
+    auditor_explanation: A VPN service can route device traffic through an application-controlled tunnel after user approval. This is expected for VPN products but should be consistent with their disclosed behavior.
+    dynamic_verification_scenario: Approve the VPN on a disposable emulator, activate the feature, and inspect routes, DNS behavior, tunnel endpoints, and captured test traffic. Confirm the tunnel stops when the feature is disabled.
 
   - <<: *defaults
     id: MSAP-MOB-019
@@ -235,6 +273,8 @@ rules:
     pattern_or_condition: REQUEST_INSTALL_PACKAGES declaration
     confidence: Low
     triage_interpretation: Installer or updater functionality may be legitimate; no transfer or installation was observed.
+    auditor_explanation: REQUEST_INSTALL_PACKAGES allows an approved application to request installation of packages from outside the normal store flow. The declaration does not show that an APK is downloaded or installed.
+    dynamic_verification_scenario: Exercise the updater or import flow on an isolated emulator and monitor downloads, PackageInstaller sessions, and installation intents. Cancel before installing any untrusted package and record the candidate APK hash.
 
   - <<: *defaults
     id: MSAP-MOB-020
@@ -249,3 +289,5 @@ rules:
     pattern_or_condition: cryptographic API reference exists
     confidence: Low
     triage_interpretation: Cryptography is expected in secure applications and is only a contextual triage signal.
+    auditor_explanation: Cryptographic API references may protect normal local data or network sessions. They support encrypted-channel triage only when runtime calls correlate with communications behavior.
+    dynamic_verification_scenario: Exercise network features through an authorized test proxy while tracing Cipher initialization and use. Correlate algorithms, keys' origin, and encrypted buffers with specific outbound connections without extracting production secrets.

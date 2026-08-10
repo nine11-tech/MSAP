@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { downloadPdfReport, getJsonReport } from "../api/msap";
 import type { JsonReport } from "../api/types";
+import { AttackIndicatorGuidance } from "../components/AttackIndicatorGuidance";
 import {
   Card,
   EmptyState,
@@ -147,6 +148,7 @@ export function ReportPage() {
                   <th>Title</th>
                   <th>Technique</th>
                   <th>Severity</th>
+                  <th>Auditor guidance</th>
                 </tr>
               </thead>
               <tbody>
@@ -162,6 +164,14 @@ export function ReportPage() {
                     </td>
                     <td>
                       <SeverityBadge value={String(indicator.severity || "Low")} />
+                    </td>
+                    <td>
+                      <details>
+                        <summary>Explain and verify</summary>
+                        <div className="indicator-detail">
+                          <AttackIndicatorGuidance indicator={indicator} />
+                        </div>
+                      </details>
                     </td>
                   </tr>
                 ))}

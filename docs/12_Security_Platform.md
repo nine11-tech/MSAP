@@ -59,9 +59,12 @@ network-security configuration, signing and certificates, DEX metadata,
 bounded code references, redacted secret matches, crypto/WebView references,
 native libraries, probable third-party dependency inventory, URLs, package
 content, and resilience signals. Full decompiled source and full DEX string
-tables are not placed in PostgreSQL. Optional JADX, apktool, APKiD, YARA, and
-LIEF capabilities remain disabled/unavailable unless deliberately packaged;
-their absence skips capability-specific coverage rather than failing the audit.
+tables are not placed in PostgreSQL. Indexed source documents use object
+storage, with only bounded excerpts and locator metadata in PostgreSQL. Optional
+JADX may be deliberately enabled when its executable is already installed; it
+runs with time and output bounds and is never downloaded during analysis.
+Other optional tools remain disabled/unavailable unless deliberately packaged.
+Tool absence skips capability-specific coverage rather than failing the audit.
 
 ## Framework methodology and limitations
 
@@ -81,9 +84,11 @@ executed. Every matched indicator requires contextual/manual validation and is
 explicitly labeled “Triage signal — not a malware verdict.” ATT&CK indicators
 are excluded from the vulnerability risk score.
 
-Secret evidence contains hashes, counts, and redaction metadata only. Generic
-entropy, cryptographic API, WebView, native-hardening, and privacy-purpose
-signals normally require manual validation. Static analysis cannot observe
+Secret evidence contains hashes, counts, and redaction metadata only, and source
+excerpts are redacted before persistence or API/report serialization. Exact
+first-party JADX matches can verify narrowly defined crypto and WebView
+conditions; generic entropy, token-only API references, native-hardening, and
+privacy-purpose signals require manual validation. Static analysis cannot observe
 runtime control flow, server-side behavior, dynamically retrieved code,
 environmental TLS behavior, or actual user-data access. MSAP therefore does not
 claim complete OWASP compliance, complete ATT&CK detection, or malware
