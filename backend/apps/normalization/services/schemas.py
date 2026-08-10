@@ -1,4 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+
+from apps.evidence.models import SourceDocument
 
 from apps.apk_files.models import APKFile
 from apps.normalization.models import NormalizedArtifact
@@ -8,11 +10,54 @@ SCHEMA_VERSION = "2.0"
 
 
 @dataclass(frozen=True)
+class SourceLocatorHint:
+    """Analyzer-to-enricher contract for bounded source provenance resolution."""
+
+    representation: str
+    semantic_key: str
+    logical_path: str = ""
+    class_name: str = ""
+    method_name: str = ""
+    method_descriptor: str = ""
+    search_terms: tuple[str, ...] = ()
+    start_line: int | None = None
+    end_line: int | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
+    symbol: str = ""
+    confidence: str = "MEDIUM"
+    locator: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        value = asdict(self)
+        value["search_terms"] = list(self.search_terms)
+        return value
+
+    def __post_init__(self) -> None:
+        valid_representations = {
+            value for value, _ in SourceDocument.RepresentationType.choices
+        }
+        if self.representation not in valid_representations:
+            raise ValueError("Unknown source representation type.")
+        if not self.semantic_key:
+            raise ValueError("Source locator hint requires a semantic key.")
+        if (self.start_line is None) != (self.end_line is None):
+            raise ValueError("Source locator line bounds must be provided together.")
+        if (
+            self.start_line is not None
+            and self.end_line is not None
+            and self.start_line > self.end_line
+        ):
+            raise ValueError("Source locator start line cannot exceed end line.")
+
+
+@dataclass(frozen=True)
 class NormalizedArtifactPayload:
     artifact_type: str
     source: str
     normalized_data: dict = field(default_factory=dict)
     storage_reference_id: int | None = None
+    source_locators: tuple[SourceLocatorHint, ...] = ()
 
 
 def build_apk_metadata_schema(apk_file: APKFile) -> dict:
@@ -148,6 +193,7 @@ def manifest_payload(
     application: dict | None = None,
     shared_user_id: str | None = None,
     parsing_status: str = "NOT_IMPLEMENTED",
+    source_locators: tuple[SourceLocatorHint, ...] = (),
 ) -> NormalizedArtifactPayload:
     return NormalizedArtifactPayload(
         artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
@@ -168,6 +214,7 @@ def manifest_payload(
             shared_user_id=shared_user_id,
             parsing_status=parsing_status,
         ),
+        source_locators=source_locators,
     )
 
 

@@ -8,6 +8,7 @@ from django.db import transaction
 from apps.appsec_rules.models import RuleEvaluation
 from apps.appsec_rules.services.rule_loader import load_masvs_rules
 from apps.audits.models import Audit
+from apps.apk_files.models import APKFile
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.normalization.models import NormalizedArtifact
@@ -49,6 +50,10 @@ def evaluate_masvs_rules(
         "findings_existing": 0,
         "evidence_created": 0,
     }
+    catalog_rule_ids = {rule["id"] for rule in rules}
+    Finding.objects.filter(audit_id=audit_id, rule_id__startswith="MSAP-AND-").exclude(
+        rule_id__in=catalog_rule_ids
+    ).delete()
 
     for rule in rules:
         missing = [name for name in rule["prerequisites"] if name not in artifacts]
@@ -63,6 +68,16 @@ def evaluate_masvs_rules(
                     if rule["requires_manual_validation"]
                     else RuleEvaluation.Result.FAIL
                 )
+            elif rule.get("review_condition"):
+                review_matched, review_summary = _evaluate_condition(
+                    rule["review_condition"], artifacts
+                )
+                if review_matched:
+                    result = RuleEvaluation.Result.REVIEW_REQUIRED
+                    evidence_summary = review_summary
+                else:
+                    result = RuleEvaluation.Result.PASS
+                    evidence_summary = review_summary
             else:
                 result = RuleEvaluation.Result.PASS
 
@@ -87,7 +102,10 @@ def evaluate_masvs_rules(
                 "mapping_data": mapping_data,
                 "evidence_summary": evidence_summary,
                 "remediation": rule["recommendation"],
-                "requires_manual_validation": rule["requires_manual_validation"],
+                "requires_manual_validation": (
+                    result == RuleEvaluation.Result.REVIEW_REQUIRED
+                    or rule["requires_manual_validation"]
+                ),
                 "evaluator_version": EVALUATOR_VERSION,
             },
         )
@@ -115,10 +133,9 @@ def evaluate_masvs_rules(
             },
         )
         summary["findings_created" if created else "findings_existing"] += 1
-        _, evidence_created = Evidence.objects.get_or_create(
+        evidence_created = _upsert_finding_evidence(
             audit_id=audit_id,
             finding=finding,
-            indicator=None,
             evidence_type=rule["detection_type"],
             source=rule["source"],
             snippet=evidence_summary[:500],
@@ -141,7 +158,11 @@ def _summary_key(result: str) -> str:
 
 def _artifact_map(audit_id: int) -> dict[str, dict]:
     artifacts: dict[str, dict] = {}
-    queryset = NormalizedArtifact.objects.filter(audit_id=audit_id).order_by("created_at", "id")
+    apk_file = APKFile.objects.filter(audit_id=audit_id).order_by("-created_at", "-id").first()
+    queryset = NormalizedArtifact.objects.filter(
+        audit_id=audit_id,
+        apk_file=apk_file,
+    ).order_by("created_at", "id")
     for artifact in queryset:
         value = artifact.normalized_data if isinstance(artifact.normalized_data, dict) else {}
         data = value.get("data") if isinstance(value.get("data"), dict) else value
@@ -169,6 +190,8 @@ def _evaluate_condition(condition: str, artifacts: dict[str, dict]) -> tuple[boo
     webview = artifacts.get("WEBVIEW_USAGE", {}).get("matches", [])
     native = artifacts.get("NATIVE_LIBRARIES", {})
     references = artifacts.get("CODE_REFERENCES", {}).get("matches", [])
+    source_matches = artifacts.get("SOURCE_VERIFICATION", {}).get("matches", [])
+    resources = artifacts.get("RESOURCES", {})
 
     scalar_conditions = {
         "manifest_debuggable": (application.get("debuggable") is True, "application.debuggable=true"),
@@ -231,6 +254,50 @@ def _evaluate_condition(condition: str, artifacts: dict[str, dict]) -> tuple[boo
     }
     if condition in scalar_conditions:
         return scalar_conditions[condition]
+
+    verified_source_conditions = {
+        "verified_contextual_secret": {"verified_contextual_secret"},
+        "verified_risky_crypto": {"verified_risky_crypto"},
+        "verified_insecure_tls_protocol": {"verified_insecure_tls_protocol"},
+        "verified_hardcoded_crypto_key": {"verified_hardcoded_crypto_key"},
+        "verified_hardcoded_http_url": {"verified_hardcoded_http_url"},
+        "verified_webview_file_access": {"verified_webview_file_access"},
+        "verified_webview_debug": {"verified_webview_debug"},
+        "verified_webview_ssl_proceed": {"verified_webview_ssl_proceed"},
+        "verified_webview_mixed_content": {"verified_webview_mixed_content"},
+    }
+    if condition in verified_source_conditions:
+        return _source_condition(
+            source_matches,
+            verified_source_conditions[condition],
+            require_verified=True,
+        )
+    if condition == "webview_javascript_bridge_review":
+        return _source_condition(source_matches, {condition}, require_verified=False)
+    if condition == "insecure_random_review":
+        return _source_condition(source_matches, {condition}, require_verified=False)
+    if condition == "external_storage_api_review":
+        return _source_condition(source_matches, {condition}, require_verified=False)
+    if condition == "safebrowsing_disabled":
+        metadata = application.get("metadata", [])
+        manifest_disabled = any(
+            isinstance(item, dict)
+            and item.get("name") == "android.webkit.WebView.EnableSafeBrowsing"
+            and str(item.get("value") or "").lower() == "false"
+            for item in metadata
+        )
+        code_match, code_summary = _source_condition(
+            source_matches,
+            {"verified_safebrowsing_disabled"},
+            require_verified=True,
+        )
+        if manifest_disabled:
+            return True, "AndroidManifest.xml explicitly disables WebView Safe Browsing"
+        return code_match, code_summary
+    if condition == "broad_file_provider_path":
+        matches = resources.get("file_provider_paths", [])
+        risky = [item for item in matches if item.get("oversharing") is True]
+        return bool(risky), f"broad FileProvider path declarations: {len(risky)}"
 
     if condition.startswith("exported_") and condition.endswith("_unprotected"):
         component_type = condition.removeprefix("exported_").removesuffix("_unprotected")
@@ -302,11 +369,22 @@ def _evaluate_condition(condition: str, artifacts: dict[str, dict]) -> tuple[boo
     if condition == "permissive_tls_reference":
         matches = [item for item in crypto if item.get("type") == "PERMISSIVE_TRUST_REFERENCE"]
         return bool(matches), f"TrustManager/HostnameVerifier references: {len(matches)}"
+    if condition == "insecure_tls_reference":
+        matches = [item for item in crypto if item.get("type") == "INSECURE_TLS_REFERENCE"]
+        return bool(matches), f"deprecated TLS/SSL references: {len(matches)}"
+    if condition == "hardcoded_http_url_review":
+        matches = [
+            item
+            for item in artifacts.get("URLS_AND_ENDPOINTS", {}).get("urls", [])
+            if item.get("cleartext") is True
+        ]
+        return bool(matches), f"hardcoded cleartext URL observations: {len(matches)}"
     webview_types = {
         "webview_file_access": {"FILE_ACCESS_REFERENCE", "UNIVERSAL_FILE_ACCESS_REFERENCE"},
         "webview_js_bridge": {"JAVASCRIPT_BRIDGE_REFERENCE"},
         "webview_debug": {"WEBVIEW_DEBUG_REFERENCE"},
         "webview_ssl_handler": {"SSL_ERROR_HANDLER_REFERENCE"},
+        "webview_mixed_content": {"MIXED_CONTENT_REFERENCE"},
     }
     if condition in webview_types:
         matches = [item for item in webview if item.get("type") in webview_types[condition]]
@@ -314,4 +392,82 @@ def _evaluate_condition(condition: str, artifacts: dict[str, dict]) -> tuple[boo
     if condition == "logging_reference_review":
         matches = [item for item in references if item.get("category") == "logging"]
         return bool(matches), f"logging API references: {len(matches)}"
+    if condition == "insecure_random_reference_review":
+        source_match, source_summary = _source_condition(
+            source_matches,
+            {"insecure_random_review"},
+            require_verified=False,
+        )
+        dex_matches = [item for item in crypto if item.get("type") == "WEAK_RANDOM_REFERENCE"]
+        if source_match:
+            return True, source_summary
+        return bool(dex_matches), f"java.util.Random references: {len(dex_matches)}"
+    if condition == "external_storage_api_reference_review":
+        source_match, source_summary = _source_condition(
+            source_matches,
+            {"external_storage_api_review"},
+            require_verified=False,
+        )
+        dex_matches = [item for item in references if item.get("category") == "external_storage"]
+        if source_match:
+            return True, source_summary
+        return bool(dex_matches), f"external storage API references: {len(dex_matches)}"
     return False, f"condition '{condition}' produced no match"
+
+
+def _source_condition(
+    matches: list[dict],
+    semantic_keys: set[str],
+    *,
+    require_verified: bool,
+) -> tuple[bool, str]:
+    selected = [
+        item
+        for item in matches
+        if isinstance(item, dict)
+        and item.get("semantic_key") in semantic_keys
+        and (not require_verified or item.get("verified") is True)
+    ]
+    locations = [
+        f"{item.get('logical_path')}:{item.get('start_line')}-{item.get('end_line')}"
+        for item in selected[:5]
+    ]
+    suffix = f" at {', '.join(locations)}" if locations else ""
+    return bool(selected), f"source observations: {len(selected)}{suffix}"
+
+
+def _upsert_finding_evidence(
+    *,
+    audit_id: int,
+    finding: Finding,
+    evidence_type: str,
+    source: str,
+    snippet: str,
+    redacted: bool,
+) -> bool:
+    existing = list(
+        Evidence.objects.filter(
+            audit_id=audit_id,
+            finding=finding,
+            indicator=None,
+            evidence_type=evidence_type,
+            source=source,
+        ).order_by("id")
+    )
+    if existing:
+        evidence = existing[0]
+        evidence.snippet = snippet
+        evidence.redacted = redacted
+        evidence.save(update_fields=["snippet", "redacted"])
+        if len(existing) > 1:
+            Evidence.objects.filter(id__in=[item.id for item in existing[1:]]).delete()
+        return False
+    Evidence.objects.create(
+        audit_id=audit_id,
+        finding=finding,
+        evidence_type=evidence_type,
+        source=source,
+        snippet=snippet,
+        redacted=redacted,
+    )
+    return True

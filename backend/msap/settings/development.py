@@ -21,3 +21,6 @@ CORS_ALLOWED_ORIGINS = env_list(  # noqa: F405
 )
 SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", False)  # noqa: F405
 CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", False)  # noqa: F405
+# The local development profile uses an already-installed JADX executable when
+# present. Production/base settings remain opt-in and never download tooling.
+MSAP_JADX_ENABLED = env_bool("MSAP_JADX_ENABLED", True)  # noqa: F405

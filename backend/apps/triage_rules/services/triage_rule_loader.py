@@ -1,8 +1,10 @@
 from pathlib import Path
+from functools import lru_cache
 import re
 from typing import Any
 
 import yaml
+from django.conf import settings
 from django.core.exceptions import ValidationError
 
 
@@ -24,6 +26,8 @@ REQUIRED_FIELDS = {
     "condition",
     "pattern_or_condition",
     "triage_interpretation",
+    "auditor_explanation",
+    "dynamic_verification_scenario",
     "prerequisites",
     "mapping_rationale",
     "false_positive_considerations",
@@ -44,6 +48,13 @@ def load_attck_triage_rules(path: str | Path) -> list[dict[str, Any]]:
     for index, rule in enumerate(rules, start=1):
         _validate_rule(rule, index)
     return rules
+
+
+@lru_cache(maxsize=1)
+def default_attck_rules_by_id() -> dict[str, dict[str, Any]]:
+    """Return validated catalog guidance for existing persisted indicators."""
+    path = Path(settings.ANALYZER_RULES_PATH) / "attck_mobile_triage_rules.yaml"
+    return {rule["id"]: rule for rule in load_attck_triage_rules(path)}
 
 
 def _load_rules_document(path: str | Path) -> list[dict[str, Any]]:

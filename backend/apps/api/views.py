@@ -21,6 +21,7 @@ from apps.api.serializers import (
     AuditSerializer,
     ComplianceScoreSerializer,
     EvidenceSerializer,
+    FindingSourceReferenceSerializer,
     FindingSerializer,
     ObjectStorageReferenceSerializer,
     NormalizedArtifactSerializer,
@@ -30,6 +31,7 @@ from apps.api.serializers import (
     RiskScoreSerializer,
     RuleEvaluationSerializer,
     SuspiciousIndicatorSerializer,
+    SourceDocumentSerializer,
 )
 from apps.api.permissions import (
     IsMSAPViewerOrAbove,
@@ -48,7 +50,11 @@ from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
-from apps.evidence.models import Evidence
+from apps.evidence.models import Evidence, SourceDocument
+from apps.evidence.services.source_content import (
+    SourceDocumentContentError,
+    SourceDocumentContentService,
+)
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
@@ -446,9 +452,67 @@ class AuditScopedQuerysetMixin:
 
 
 class FindingViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = Finding.objects.select_related("audit").all()
+    queryset = Finding.objects.select_related("audit").prefetch_related(
+        "source_references"
+    ).all()
     serializer_class = FindingSerializer
     permission_classes = [IsMSAPViewerOrAbove]
+
+    @action(detail=True, methods=["get"], url_path="source-references")
+    def source_references(self, request, pk=None):
+        finding = self.get_object()
+        references = finding.source_references.select_related(
+            "source_document"
+        ).all()
+        return Response(FindingSourceReferenceSerializer(references, many=True).data)
+
+
+class SourceDocumentViewSet(
+    AuditScopedQuerysetMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
+    queryset = SourceDocument.objects.select_related(
+        "audit",
+        "apk_file",
+        "storage_reference",
+    ).all()
+    serializer_class = SourceDocumentSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+
+    @action(detail=True, methods=["get"], url_path="lines")
+    def lines(self, request, pk=None):
+        document = self.get_object()
+        try:
+            start_line = int(request.query_params.get("start", "1"))
+            default_end = min(
+                document.line_count,
+                start_line + settings.MSAP_SOURCE_LINE_RANGE_LIMIT - 1,
+            )
+            end_line = int(request.query_params.get("end", str(default_end)))
+            lines = SourceDocumentContentService().read_lines(
+                document,
+                start_line,
+                end_line,
+            )
+        except (TypeError, ValueError) as exc:
+            return Response(
+                {"detail": str(exc) or "Invalid source line range."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SourceDocumentContentError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {
+                "document": SourceDocumentSerializer(document).data,
+                "start_line": start_line,
+                "end_line": end_line,
+                "lines": lines,
+                "redaction_applied": True,
+            }
+        )
 
 
 class RawAnalyzerResultViewSet(

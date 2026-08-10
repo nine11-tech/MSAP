@@ -82,6 +82,79 @@ export interface Finding {
   requires_manual_validation?: boolean;
   status?: string;
   created_at: string;
+  source_reference_count?: number;
+}
+
+export type SourceRepresentation =
+  | "JADX_SOURCE"
+  | "JADX_JAVA"
+  | "JADX_KOTLIN"
+  | "SMALI"
+  | "DEX_DISASSEMBLY"
+  | "DEX_METADATA"
+  | "MANIFEST_XML"
+  | "RESOURCE_XML"
+  | "NETWORK_SECURITY_XML"
+  | "NATIVE_SYMBOL"
+  | "APK_SIGNING_METADATA"
+  | "CERTIFICATE_METADATA"
+  | "OTHER_TEXT";
+
+export interface SourceDocument {
+  id: number;
+  audit: number;
+  apk_file: number;
+  representation_type: SourceRepresentation;
+  representation_label: string;
+  logical_path: string;
+  display_path: string;
+  language: string;
+  class_name: string;
+  package_name: string;
+  sha256: string;
+  line_count: number;
+  generated_by: string;
+  tool_version: string;
+  storage_available: boolean;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface FindingSourceReference {
+  id: number;
+  finding: number;
+  source_document: number | null;
+  representation_type: SourceRepresentation;
+  representation_label: string;
+  logical_path: string;
+  source_document_display_path: string | null;
+  source_document_sha256: string | null;
+  source_document_line_count: number | null;
+  class_name: string;
+  method_name: string;
+  method_descriptor: string;
+  symbol_name: string;
+  start_line: number | null;
+  end_line: number | null;
+  start_offset: number | null;
+  end_offset: number | null;
+  excerpt: string;
+  excerpt_sha256: string;
+  locator: Record<string, unknown>;
+  confidence: string;
+  is_primary: boolean;
+  provenance: string;
+  source_lines_available: boolean;
+  unavailable_reason: string;
+  created_at: string;
+}
+
+export interface SourceLineRange {
+  document: SourceDocument;
+  start_line: number;
+  end_line: number;
+  lines: Array<{ number: number; text: string }>;
+  redaction_applied: boolean;
 }
 
 export interface Indicator {
@@ -95,11 +168,33 @@ export interface Indicator {
   severity: string;
   confidence: string;
   triage_interpretation: string;
+  auditor_explanation?: string;
+  dynamic_verification_scenario?: string;
+  source_evidence?: IndicatorSourceEvidence[];
   mapping_rationale?: string;
   false_positive_considerations?: string;
   requires_manual_validation?: boolean;
   non_malware_verdict_note?: string;
   created_at: string;
+}
+
+export interface IndicatorSourceEvidence {
+  source_document: number | null;
+  representation: string;
+  representation_label: string;
+  path: string;
+  class_name: string;
+  method_name: string;
+  start_line: number | null;
+  end_line: number | null;
+  excerpt: string;
+  confidence: string;
+  is_primary: boolean;
+  source_lines_available: boolean;
+  provenance: string;
+  reason?: string;
+  candidate_count?: number;
+  manual_validation_required?: boolean;
 }
 
 export interface Evidence {
@@ -259,13 +354,17 @@ export interface JsonReport {
     coverage: RuleCoverage;
   };
   findings: Array<Record<string, unknown>>;
-  indicators: Array<Record<string, unknown>>;
+  indicators: Array<Omit<Indicator, "audit" | "created_at">>;
   evidence: Array<Record<string, unknown>>;
   rule_evaluations: Array<Record<string, unknown>>;
   analyzer_results: Array<Record<string, unknown>>;
   normalized_artifacts: {
     count: number;
     by_type: Record<string, number>;
+    items: Array<Record<string, unknown>>;
+  };
+  source_documents: {
+    count: number;
     items: Array<Record<string, unknown>>;
   };
   analysis_job: Record<string, unknown> | null;

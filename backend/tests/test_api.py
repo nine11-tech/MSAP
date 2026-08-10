@@ -230,6 +230,9 @@ def test_indicators_endpoint_filters_by_audit(api_client):
     assert [item["title"] for item in response.json()] == [
         "Selected indicator"
     ]
+    assert "READ_SMS" in response.json()[0]["auditor_explanation"]
+    assert response.json()[0]["dynamic_verification_scenario"]
+    assert response.json()[0]["source_evidence"] == []
 
 
 @pytest.mark.django_db

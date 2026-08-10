@@ -32,6 +32,8 @@ REQUIRED_FIELDS = {
     "test_type",
 }
 
+OPTIONAL_CONDITION_FIELDS = {"review_condition"}
+
 RULE_ID_PATTERN = re.compile(r"^MSAP-AND-\d{3}$")
 MASVS_PATTERN = re.compile(
     r"^MASVS-(STORAGE|CRYPTO|AUTH|NETWORK|PLATFORM|CODE|RESILIENCE|PRIVACY)-\d+$"
@@ -96,6 +98,13 @@ def _validate_rule(rule: dict[str, Any], index: int) -> None:
 
     if not RULE_ID_PATTERN.fullmatch(str(rule["id"])):
         raise ValidationError(f"MASVS rule {rule['id']} has an invalid internal rule ID.")
+
+    for field in OPTIONAL_CONDITION_FIELDS:
+        value = rule.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValidationError(
+                f"MASVS rule {rule['id']} field '{field}' must be a non-empty string."
+            )
 
     list_fields = ("prerequisites", "masvs_controls", "maswe_ids", "mastg_references")
     for field in list_fields:

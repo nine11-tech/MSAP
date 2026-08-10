@@ -1,12 +1,19 @@
 from dataclasses import dataclass
+from copy import deepcopy
+
+from django.conf import settings
 
 from apps.analyzers.models import RawAnalyzerResult
 from apps.analyzers.services.base import AnalyzerContext
 from apps.analyzers.services.registry import AnalyzerRegistry
+from apps.analyzers.services.source_index import SourceIndexService
+from apps.analyzers.services.source_verification import SourceVerificationService
 from apps.appsec_rules.services.masvs_evaluator import evaluate_masvs_rules
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.normalization.models import NormalizedArtifact
+from apps.evidence.services.source_resolution import enrich_finding_source_references
+from apps.evidence.models import FindingSourceReference, SourceDocument
 from apps.scoring.services.compliance_scoring import (
     calculate_masvs_compliance,
     summarize_attck_triage,
@@ -47,6 +54,10 @@ class AnalysisOrchestrator:
             raise ValueError("Latest APK file has no storage reference.")
 
         context = AnalyzerContext(audit=audit, apk_file=apk_file, job_id=job_id)
+        FindingSourceReference.objects.filter(finding__audit=audit).delete()
+        SourceDocument.objects.filter(audit=audit).exclude(apk_file=apk_file).delete()
+        NormalizedArtifact.objects.filter(audit=audit).exclude(apk_file=apk_file).delete()
+        RawAnalyzerResult.objects.filter(audit=audit).exclude(apk_file=apk_file).delete()
         registered_analyzers = self.registry.get_registered_analyzers()
         supported_analyzers = self.registry.get_supported_analyzers(context)
         skipped_analyzers = [
@@ -129,13 +140,21 @@ class AnalysisOrchestrator:
             )
 
             for artifact_payload in analyzer_result.normalized_artifacts:
+                normalized_data = deepcopy(artifact_payload.normalized_data)
+                if artifact_payload.source_locators:
+                    locator_target = normalized_data
+                    if isinstance(normalized_data.get("data"), dict):
+                        locator_target = normalized_data["data"]
+                    locator_target["_source_locators"] = [
+                        hint.as_dict() for hint in artifact_payload.source_locators
+                    ]
                 NormalizedArtifact.objects.update_or_create(
                     audit=audit,
                     apk_file=apk_file,
                     artifact_type=artifact_payload.artifact_type,
                     source=artifact_payload.source,
                     defaults={
-                        "normalized_data": artifact_payload.normalized_data,
+                        "normalized_data": normalized_data,
                         "storage_reference_id": artifact_payload.storage_reference_id,
                     },
                 )
@@ -147,8 +166,40 @@ class AnalysisOrchestrator:
                 analyzers_failed=len(errors),
             )
 
+        source_index = {"status": "DISABLED"}
+        if settings.MSAP_SOURCE_INDEX_ENABLED:
+            _update_progress(job_id, current_stage="SOURCE_INDEXING")
+            try:
+                source_index = SourceIndexService().index(context).as_dict()
+            except Exception:
+                source_index = {
+                    "status": "FAILED_SAFE",
+                    "warnings": [
+                        "Source indexing failed safely; metadata evidence remains available."
+                    ],
+                }
+
+        source_verification = {"status": "SOURCE_UNAVAILABLE"}
+        if source_index.get("jadx_status") == "COMPLETED":
+            _update_progress(job_id, current_stage="SOURCE_VERIFICATION")
+            try:
+                source_verification = SourceVerificationService().verify(context).as_dict()
+            except Exception:
+                NormalizedArtifact.objects.filter(
+                    audit=audit,
+                    apk_file=apk_file,
+                    artifact_type=NormalizedArtifact.ArtifactType.SOURCE_VERIFICATION,
+                ).delete()
+                source_verification = {
+                    "status": "FAILED_SAFE",
+                    "warnings": [
+                        "Source verification failed safely; DEX observations remain review-only."
+                    ],
+                }
+
         _update_progress(job_id, current_stage="RULE_EVALUATION")
         masvs_evaluation = evaluate_masvs_rules(audit)
+        source_evidence = enrich_finding_source_references(audit, apk_file)
         attck_evaluation = evaluate_attck_indicators(audit)
         scoring = {
             "risk": calculate_risk_score(audit.id),
@@ -170,6 +221,9 @@ class AnalysisOrchestrator:
             "skipped_analyzers": sorted(set(skipped_analyzers)),
             "errors": errors,
             "masvs_evaluation": masvs_evaluation,
+            "source_index": source_index,
+            "source_verification": source_verification,
+            "source_evidence": source_evidence,
             "attck_evaluation": attck_evaluation,
             "scoring": scoring,
             "created_raw_analyzer_results": raw_results_created,
@@ -183,7 +237,9 @@ class AnalysisOrchestrator:
                 + attck_evaluation["evidence_created"]
             ),
             "real_apk_parsing": real_apk_parsing,
-            "external_tools_executed": [],
+            "external_tools_executed": (
+                ["jadx"] if source_index.get("jadx_status") == "COMPLETED" else []
+            ),
         }
         _update_progress(job_id, **{
             key: summary[key]

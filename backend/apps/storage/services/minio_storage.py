@@ -79,6 +79,14 @@ class MinIOStorageService:
             Filename=str(destination),
         )
 
+    def upload_file(self, bucket, object_key, source, content_type="text/plain"):
+        return self.client.upload_file(
+            Filename=str(source),
+            Bucket=bucket,
+            Key=object_key,
+            ExtraArgs={"ContentType": content_type},
+        )
+
     def get_apk_upload_bucket(self):
         return settings.MINIO_BUCKET_APK_UPLOADS
 

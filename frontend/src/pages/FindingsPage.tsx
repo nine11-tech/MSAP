@@ -17,6 +17,7 @@ import {
   errorMessage,
   formatDate,
 } from "../components/Common";
+import { FindingSourceEvidence } from "../components/CodeEvidenceViewer";
 
 const PAGE_SIZE = 15;
 
@@ -136,6 +137,7 @@ export function FindingsPage() {
             <div className="inline-actions"><SeverityBadge value={selected.severity} /><span className="badge badge-neutral">{selected.confidence} confidence</span></div>
             <section><h3>Description</h3><p>{selected.description || "This deterministic check matched the normalized artifact evidence shown below."}</p></section>
             <section><h3>Evidence</h3>{linkedEvidence.length ? linkedEvidence.map((item) => <div className="evidence-block" key={item.id}><strong>{item.source}</strong><code>{item.snippet || "Evidence metadata recorded"}</code></div>) : <p className="muted">No linked evidence returned.</p>}</section>
+            <FindingSourceEvidence findingId={selected.id} />
             <section><h3>Mappings</h3><p>{selected.masvs_controls?.join(", ") || selected.category || "Mapping details pending catalog enrichment."}</p>{selected.maswe_ids?.length ? <p>MASWE: {selected.maswe_ids.join(", ")}</p> : null}</section>
             <section><h3>Remediation</h3><p>{selected.recommendation || "Review the affected configuration and apply platform security guidance."}</p></section>
             <section><h3>False-positive considerations</h3><p>{selected.false_positive_guidance || "Validate application context and the affected release configuration."}</p></section>

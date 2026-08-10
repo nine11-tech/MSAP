@@ -21,6 +21,8 @@ def test_attck_yaml_loads_successfully():
     rules = load_attck_triage_rules(RULES_DIR / "attck_mobile_triage_rules.yaml")
 
     assert rules
+    assert all(rule["auditor_explanation"] for rule in rules)
+    assert all(rule["dynamic_verification_scenario"] for rule in rules)
 
 
 def test_selected_masvs_rules_are_present():

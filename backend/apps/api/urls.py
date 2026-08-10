@@ -17,6 +17,7 @@ from apps.api.views import (
     RiskScoreViewSet,
     RuleEvaluationViewSet,
     SuspiciousIndicatorViewSet,
+    SourceDocumentViewSet,
     SystemStatusView,
 )
 from apps.api.auth_views import (
@@ -52,6 +53,11 @@ router.register(
     basename="storage-reference",
 )
 router.register("findings", FindingViewSet, basename="finding")
+router.register(
+    "source-documents",
+    SourceDocumentViewSet,
+    basename="source-document",
+)
 router.register(
     "raw-analyzer-results",
     RawAnalyzerResultViewSet,

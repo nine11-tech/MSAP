@@ -20,8 +20,16 @@ from apps.analyzers.services.safe_archive import (
     UnsafeAPKArchive,
     validate_apk_archive,
 )
+from apps.analyzers.services.manifest_metadata_adapter import (
+    ManifestMetadataAdapter,
+    ManifestParsingError,
+)
+from apps.evidence.models import SourceDocument
 from apps.normalization.models import NormalizedArtifact
-from apps.normalization.services.schemas import NormalizedArtifactPayload
+from apps.normalization.services.schemas import (
+    NormalizedArtifactPayload,
+    SourceLocatorHint,
+)
 from apps.storage.services.file_provider import (
     APKChecksumMismatchError,
     APKDownloadError,
@@ -71,6 +79,12 @@ REFERENCE_PATTERNS = {
     "screen_capture": ("MediaProjectionManager", "ImageReader", "screencap"),
     "package_installation": ("REQUEST_INSTALL_PACKAGES", "PackageInstaller"),
     "logging": ("android/util/Log", "Timber;->", "Logger;->"),
+    "external_storage": (
+        "getExternalStorageDirectory",
+        "getExternalStoragePublicDirectory",
+        "getExternalFilesDir",
+        "getExternalCacheDir",
+    ),
     "webview": ("android/webkit/WebView", "android/webkit/WebSettings"),
 }
 CRYPTO_PATTERNS = {
@@ -189,6 +203,7 @@ class AdvancedStaticAnalyzer:
             native = _native_inventory(archive_summary.native_entries)
             sdk_inventory = _sdk_inventory(class_names)
             network_security = _network_security_config(archive, warnings)
+            file_provider_paths = _file_provider_paths(path, archive, warnings)
             signing, certificates = _signing_metadata(path, warnings)
 
         suspicious_names = sorted(
@@ -261,6 +276,9 @@ class AdvancedStaticAnalyzer:
                 "query_values_persisted": False,
             },
             NormalizedArtifact.ArtifactType.NETWORK_SECURITY_CONFIG: network_security,
+            NormalizedArtifact.ArtifactType.RESOURCES: {
+                "file_provider_paths": file_provider_paths,
+            },
             NormalizedArtifact.ArtifactType.SIGNING: signing,
             NormalizedArtifact.ArtifactType.CERTIFICATE: {
                 "certificates": certificates,
@@ -293,6 +311,10 @@ class AdvancedStaticAnalyzer:
                         NormalizedArtifact.ArtifactType.NETWORK_SECURITY_CONFIG,
                         NormalizedArtifact.ArtifactType.SIGNING,
                     } else [],
+                ),
+                source_locators=_source_locators_for_artifact(
+                    artifact_type,
+                    data,
                 ),
             )
             for artifact_type, data in artifact_data.items()
@@ -375,6 +397,7 @@ def _artifact_source(artifact_type: str) -> str:
         "SIGNING": "APK signing blocks",
         "CERTIFICATE": "APK signer certificates",
         "RESILIENCE_SIGNALS": "DEX class and method metadata",
+        "RESOURCES": "Decoded APK resource XML",
     }.get(artifact_type, "APK")
 
 
@@ -382,9 +405,16 @@ def _matched_references(values: list[str]) -> list[dict]:
     matches = []
     for category, needles in REFERENCE_PATTERNS.items():
         for value in values:
-            if any(needle.lower() in value.lower() for needle in needles):
+            matched_needles = [
+                needle for needle in needles if needle.lower() in value.lower()
+            ]
+            if matched_needles:
                 matches.append(
-                    {"category": category, "value": _bounded(value, 220)}
+                    {
+                        "category": category,
+                        "value": _bounded(value, 220),
+                        "locator_terms": _source_search_terms(matched_needles),
+                    }
                 )
                 if len(matches) >= settings.MSAP_MAX_NORMALIZED_MATCHES:
                     return matches
@@ -396,22 +426,181 @@ def _pattern_matches(values: list[str], patterns: dict[str, tuple[str, ...]]) ->
     for category, needles in patterns.items():
         found = next(
             (
-                value
+                (value, needle)
                 for value in values
-                if any(needle.lower() in value.lower() for needle in needles)
+                for needle in needles
+                if needle.lower() in value.lower()
             ),
             None,
         )
         if found:
+            value, needle = found
             matches.append(
                 {
                     "type": category,
-                    "reference": _bounded(found, 220),
+                    "reference": _bounded(value, 220),
+                    "locator_terms": _source_search_terms([needle]),
                     "confidence": "MEDIUM",
                     "requires_manual_validation": True,
                 }
             )
     return matches
+
+
+def _source_search_terms(values: list[str]) -> list[str]:
+    terms: list[str] = []
+    for value in values:
+        candidates = []
+        if ";->" in value:
+            candidates.append(value.split(";->", 1)[1])
+        if "/" in value:
+            candidates.append(value.rsplit("/", 1)[-1].split(";", 1)[0])
+        candidates.append(value)
+        for candidate in candidates:
+            clean = candidate.strip('L;"')
+            if clean and clean not in terms:
+                terms.append(clean)
+    return terms[:4]
+
+
+def _source_locators_for_artifact(
+    artifact_type: str,
+    data: dict,
+) -> tuple[SourceLocatorHint, ...]:
+    hints: list[SourceLocatorHint] = []
+
+    def code_hint(semantic_key: str, match: dict, *, redacted: bool = False) -> None:
+        hints.append(
+            SourceLocatorHint(
+                representation=SourceDocument.RepresentationType.JADX_SOURCE,
+                semantic_key=semantic_key,
+                search_terms=tuple(match.get("locator_terms") or ()),
+                confidence=str(match.get("confidence") or "MEDIUM").upper(),
+                locator={
+                    "dex_fallback": True,
+                    "redact_excerpt": redacted,
+                    **(
+                        {
+                            "secret_fingerprint_sha256": match.get(
+                                "fingerprint_sha256"
+                            ),
+                            "source_value_fingerprint_sha256": match.get(
+                                "source_value_fingerprint_sha256"
+                            ),
+                        }
+                        if redacted
+                        else {}
+                    ),
+                },
+            )
+        )
+
+    if artifact_type == NormalizedArtifact.ArtifactType.SECRETS:
+        for match in data.get("matches", []):
+            code_hint(f"secret:{match.get('type')}", match, redacted=True)
+    elif artifact_type == NormalizedArtifact.ArtifactType.CRYPTO_USAGE:
+        for match in data.get("matches", []):
+            code_hint(f"crypto:{match.get('type')}", match)
+    elif artifact_type == NormalizedArtifact.ArtifactType.WEBVIEW_USAGE:
+        for match in data.get("matches", []):
+            code_hint(f"webview:{match.get('type')}", match)
+    elif artifact_type == NormalizedArtifact.ArtifactType.CODE_REFERENCES:
+        for match in data.get("matches", []):
+            if match.get("category") == "logging":
+                code_hint("logging_reference_review", match)
+    elif artifact_type == NormalizedArtifact.ArtifactType.NETWORK_SECURITY_CONFIG:
+        resource = str(data.get("resource") or "")
+        path = f"resources/{resource}" if resource else "resources/res/xml"
+        network_terms = {
+            "network_user_ca": ("certificates", 'src="user"'),
+            "network_debug_overrides": ("<debug-overrides",),
+            "expired_pin_set": ("<pin-set", "expiration"),
+            "network_domain_cleartext": (
+                "<domain-config",
+                "cleartextTrafficPermitted",
+            ),
+            "missing_pinning_review": ("<network-security-config",),
+        }
+        for semantic_key, terms in network_terms.items():
+            hints.append(
+                SourceLocatorHint(
+                    representation=(
+                        SourceDocument.RepresentationType.NETWORK_SECURITY_XML
+                    ),
+                    semantic_key=semantic_key,
+                    logical_path=path,
+                    search_terms=terms,
+                    confidence="HIGH",
+                    locator={"match_all": True},
+                )
+            )
+    elif artifact_type == NormalizedArtifact.ArtifactType.RESOURCES:
+        for match in data.get("file_provider_paths", []):
+            if not match.get("oversharing"):
+                continue
+            tag = str(match.get("tag") or "path")
+            terms = [f"<{tag}"]
+            path_value = str(match.get("path") or "")
+            if path_value:
+                terms.append(f'path="{path_value}"')
+            hints.append(
+                SourceLocatorHint(
+                    representation=SourceDocument.RepresentationType.RESOURCE_XML,
+                    semantic_key="broad_file_provider_path",
+                    logical_path=f"resources/{match.get('resource')}",
+                    search_terms=tuple(terms),
+                    confidence="HIGH",
+                    locator={
+                        "match_all": True,
+                        "provider": match.get("provider"),
+                        "oversharing_path_kind": tag,
+                    },
+                )
+            )
+    elif artifact_type == NormalizedArtifact.ArtifactType.NATIVE_LIBRARIES:
+        for library in data.get("libraries", [])[:20]:
+            hints.append(
+                SourceLocatorHint(
+                    representation=SourceDocument.RepresentationType.NATIVE_SYMBOL,
+                    semantic_key="native_hardening_review",
+                    logical_path=str(library.get("path") or "native/library.so"),
+                    confidence="HIGH",
+                    locator={
+                        "source_lines_available": False,
+                        "reason": (
+                            "Finding originates from native binary inventory and "
+                            "hardening metadata."
+                        ),
+                    },
+                )
+            )
+    elif artifact_type == NormalizedArtifact.ArtifactType.SIGNING:
+        hints.append(
+            SourceLocatorHint(
+                representation=SourceDocument.RepresentationType.APK_SIGNING_METADATA,
+                semantic_key="apk_signing_metadata",
+                logical_path="APK-SIGNING-METADATA",
+                confidence="HIGH",
+                locator={
+                    "source_lines_available": False,
+                    "reason": "Finding originates from APK signing block metadata.",
+                },
+            )
+        )
+    elif artifact_type == NormalizedArtifact.ArtifactType.CERTIFICATE:
+        hints.append(
+            SourceLocatorHint(
+                representation=SourceDocument.RepresentationType.CERTIFICATE_METADATA,
+                semantic_key="certificate_metadata",
+                logical_path="APK-SIGNER-CERTIFICATE",
+                confidence="HIGH",
+                locator={
+                    "source_lines_available": False,
+                    "reason": "Finding originates from APK signer certificate metadata.",
+                },
+            )
+        )
+    return tuple(hints)
 
 
 def _urls(strings: list[str]) -> list[dict]:
@@ -473,6 +662,9 @@ def _secret_matches(strings: list[str]) -> list[dict]:
             {
                 "type": match_type,
                 "fingerprint_sha256": digest,
+                "source_value_fingerprint_sha256": sha256(
+                    value.encode("utf-8", errors="ignore")
+                ).hexdigest(),
                 "length": len(candidate),
                 "redacted": True,
                 "confidence": (
@@ -568,22 +760,29 @@ def _network_security_config(archive: ZipFile, warnings: list[str]) -> dict:
             "pin_sets": [],
         }
     raw = archive.read(candidates[0])
-    if not raw.lstrip().startswith(b"<"):
-        warnings.append("Network security configuration is binary XML and was not decoded.")
-        return {
-            "status": "NOT_EVALUATED_BINARY_XML",
-            "resource": candidates[0].filename,
-            "cleartext_traffic_permitted": None,
-            "domains": [],
-            "trust_anchors": [],
-            "debug_overrides": None,
-            "pin_sets": [],
-        }
     try:
-        root = ElementTree.fromstring(raw)
-    except ElementTree.ParseError:
+        if raw.lstrip().startswith(b"<"):
+            if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+                raise ElementTree.ParseError("Prohibited XML declaration")
+            root = ElementTree.fromstring(raw)
+            decoded_by = "plain APK resource XML"
+        else:
+            from androguard.core.axml import AXMLPrinter
+
+            printer = AXMLPrinter(raw)
+            if not printer.is_valid():
+                raise ElementTree.ParseError("Invalid Android binary XML")
+            root = printer.get_xml_obj()
+            if root is None:
+                raise ElementTree.ParseError("Android binary XML has no root")
+            decoded_by = "Androguard binary XML decoder"
+    except Exception:
         warnings.append("Network security configuration XML is malformed.")
-        return {"status": "MALFORMED", "resource": candidates[0].filename}
+        return {
+            "status": "MALFORMED",
+            "resource": candidates[0].filename,
+            "decoded_by": "unavailable",
+        }
 
     domains = []
     trust_anchors = []
@@ -622,6 +821,7 @@ def _network_security_config(archive: ZipFile, warnings: list[str]) -> dict:
     return {
         "status": "PARSED",
         "resource": candidates[0].filename,
+        "decoded_by": decoded_by,
         "cleartext_traffic_permitted": (
             base.get("cleartextTrafficPermitted") == "true" if base is not None and base.get("cleartextTrafficPermitted") is not None else None
         ),
@@ -637,6 +837,98 @@ def _network_security_config(archive: ZipFile, warnings: list[str]) -> dict:
         ),
         "pin_sets": pin_sets,
     }
+
+
+def _file_provider_paths(
+    apk_path: Path,
+    archive: ZipFile,
+    warnings: list[str],
+) -> list[dict]:
+    try:
+        manifest = ManifestMetadataAdapter().parse(apk_path)
+    except ManifestParsingError:
+        warnings.append("FileProvider configuration could not be linked to the manifest.")
+        return []
+
+    providers = [
+        item
+        for item in manifest.components
+        if item.get("type") == "provider"
+        and str(item.get("name") or "").endswith("FileProvider")
+    ]
+    if not providers:
+        return []
+
+    archive_names = {item.filename for item in archive.infolist()}
+    results: list[dict] = []
+    for provider in providers:
+        resource_names: list[str] = []
+        for metadata in provider.get("metadata", []):
+            if metadata.get("name") not in {
+                "android.support.FILE_PROVIDER_PATHS",
+                "androidx.core.FILE_PROVIDER_PATHS",
+            }:
+                continue
+            resource = str(metadata.get("resource") or "")
+            if resource.startswith("@xml/"):
+                resource_names.append(f"res/xml/{resource.removeprefix('@xml/')}.xml")
+        if not resource_names:
+            resource_names = [
+                name
+                for name in sorted(archive_names)
+                if name.startswith("res/xml/") and name.endswith(".xml")
+            ]
+
+        for resource_name in resource_names:
+            if resource_name not in archive_names:
+                continue
+            try:
+                raw = archive.read(resource_name)
+                if raw.lstrip().startswith(b"<"):
+                    if b"<!DOCTYPE" in raw.upper() or b"<!ENTITY" in raw.upper():
+                        continue
+                    root = ElementTree.fromstring(raw)
+                else:
+                    from androguard.core.axml import AXMLPrinter
+
+                    printer = AXMLPrinter(raw)
+                    if not printer.is_valid():
+                        continue
+                    root = printer.get_xml_obj()
+                if root is None or root.tag.rsplit("}", 1)[-1] != "paths":
+                    continue
+            except Exception:
+                warnings.append(f"{resource_name}: FileProvider path XML could not be decoded")
+                continue
+
+            for element in root:
+                tag = element.tag.rsplit("}", 1)[-1]
+                path_value = str(element.get("path") or "")
+                oversharing = tag == "root-path" or path_value.strip() in {"", ".", "/"}
+                results.append(
+                    {
+                        "provider": provider.get("name"),
+                        "provider_exported": provider.get("exported"),
+                        "provider_permission": provider.get("permission"),
+                        "grant_uri_permissions": provider.get("grant_uri_permissions"),
+                        "resource": resource_name,
+                        "tag": tag,
+                        "name": str(element.get("name") or "")[:128],
+                        "path": path_value[:512],
+                        "oversharing": oversharing,
+                    }
+                )
+    deduplicated = {
+        (
+            item["provider"],
+            item["resource"],
+            item["tag"],
+            item["name"],
+            item["path"],
+        ): item
+        for item in results
+    }
+    return list(deduplicated.values())[: settings.MSAP_MAX_NORMALIZED_MATCHES]
 
 
 def _signing_metadata(path: Path, warnings: list[str]) -> tuple[dict, list[dict]]:

@@ -1,7 +1,7 @@
 catalog:
   name: MSAP deterministic Android MASVS evaluation catalog
-  version: "2.0.0"
-  snapshot_date: "2026-07-26"
+  version: "2.1.0"
+  snapshot_date: "2026-08-08"
   platform: Android
 defaults: &defaults
   standard: OWASP MASVS
@@ -319,16 +319,19 @@ rules:
 
   - <<: *defaults
     id: MSAP-AND-026
-    title: Embedded secret pattern detected
-    description: A contextual secret or private-key pattern was detected; values are irreversibly redacted.
+    title: Hardcoded secret confirmed in decompiled source
+    description: A redacted secret fingerprint from DEX was confirmed at an exact first-party JADX source location.
     masvs_category: MASVS-AUTH
     severity: High
     prerequisites: [SECRETS]
-    condition: contextual_secret
-    pattern_or_condition: non-entropy secret match exists
+    condition: verified_contextual_secret
+    review_condition: contextual_secret
+    pattern_or_condition: exact source literal fingerprint matches a contextual DEX secret fingerprint
     masvs_controls: [MASVS-AUTH-1, MASVS-CRYPTO-1]
     maswe_ids: [MASWE-0005, MASWE-0013]
     test_type: static/package
+    confidence: High
+    requires_manual_validation: false
 
   - <<: *defaults
     id: MSAP-AND-027
@@ -347,17 +350,20 @@ rules:
   - &code
     <<: *defaults
     id: MSAP-AND-028
-    title: Risky cryptographic API reference requires validation
-    description: Static references include ECB, DES, 3DES, RC4, or legacy hash primitives.
+    title: Broken symmetric cryptography confirmed in decompiled code
+    description: An exact Cipher.getInstance call selects ECB or a broken symmetric algorithm in first-party JADX source.
     masvs_category: MASVS-CRYPTO
     severity: High
     prerequisites: [CRYPTO_USAGE]
-    condition: risky_crypto_reference
-    pattern_or_condition: risky crypto reference match exists
+    condition: verified_risky_crypto
+    review_condition: risky_crypto_reference
+    pattern_or_condition: first-party JADX Cipher.getInstance literal selects ECB, DES, 3DES, RC2, or RC4
     masvs_controls: [MASVS-CRYPTO-1, MASVS-CRYPTO-2]
-    maswe_ids: [MASWE-0019, MASWE-0020, MASWE-0021]
-    mastg_references: [MASTG-BEST-0005, MASTG-BEST-0009]
+    maswe_ids: [MASWE-0007, MASWE-0020]
+    mastg_references: [MASTG-TEST-0221, MASTG-TEST-0232, MASTG-BEST-0005, MASTG-BEST-0009]
     test_type: static/code
+    confidence: High
+    requires_manual_validation: false
 
   - <<: *code
     id: MSAP-AND-029
@@ -372,17 +378,20 @@ rules:
   - &webview
     <<: *defaults
     id: MSAP-AND-030
-    title: WebView local-file access reference
-    description: WebView configuration references local or universal file access.
+    title: WebView local-file access explicitly enabled
+    description: First-party JADX source explicitly enables WebView local or universal file access.
     masvs_category: MASVS-PLATFORM
     severity: High
     prerequisites: [WEBVIEW_USAGE]
-    condition: webview_file_access
-    pattern_or_condition: file access reference exists
+    condition: verified_webview_file_access
+    review_condition: webview_file_access
+    pattern_or_condition: setAllow*FileAccess*(true) in first-party JADX source
     masvs_controls: [MASVS-PLATFORM-2]
     maswe_ids: [MASWE-0069, MASWE-0072]
     mastg_references: [MASTG-TEST-0252, MASTG-BEST-0011]
     test_type: static/code
+    confidence: High
+    requires_manual_validation: false
 
   - <<: *webview
     id: MSAP-AND-031
@@ -394,20 +403,27 @@ rules:
 
   - <<: *webview
     id: MSAP-AND-032
-    title: WebView debugging reference
-    description: Web contents debugging may be enabled in a release path.
-    condition: webview_debug
-    pattern_or_condition: setWebContentsDebuggingEnabled reference exists
+    title: WebView debugging explicitly enabled
+    description: First-party JADX source explicitly enables Web contents debugging.
+    condition: verified_webview_debug
+    review_condition: webview_debug
+    pattern_or_condition: setWebContentsDebuggingEnabled(true) in first-party JADX source
     maswe_ids: [MASWE-0074]
     mastg_references: [MASTG-TEST-0227, MASTG-BEST-0008]
+    confidence: High
+    requires_manual_validation: false
 
   - <<: *webview
     id: MSAP-AND-033
-    title: WebView SSL error handling requires validation
-    description: SSL error handler references can be unsafe when proceed() is invoked.
-    condition: webview_ssl_handler
-    pattern_or_condition: SSL error handler reference exists
-    maswe_ids: [MASWE-0071]
+    title: WebView ignores TLS certificate errors
+    description: An onReceivedSslError implementation invokes SslErrorHandler.proceed() in first-party JADX source.
+    condition: verified_webview_ssl_proceed
+    review_condition: webview_ssl_handler
+    pattern_or_condition: proceed() is called inside onReceivedSslError
+    maswe_ids: [MASWE-0027]
+    mastg_references: [MASTG-TEST-0284]
+    confidence: High
+    requires_manual_validation: false
 
   - <<: *defaults
     id: MSAP-AND-034
@@ -446,4 +462,144 @@ rules:
     masvs_controls: [MASVS-STORAGE-2, MASVS-PRIVACY-2]
     maswe_ids: [MASWE-0001]
     mastg_references: [MASTG-TEST-0231, MASTG-BEST-0002]
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-037
+    title: FileProvider path configuration overshares files
+    description: A FileProvider path resource uses root-path or a broad empty, dot, or slash path.
+    masvs_category: MASVS-PLATFORM
+    severity: High
+    confidence: High
+    prerequisites: [RESOURCES]
+    condition: broad_file_provider_path
+    pattern_or_condition: FileProvider path tag is root-path or path is empty, dot, or slash
+    recommendation: Restrict FileProvider paths to the smallest dedicated sharing directory and validate every file passed to getUriForFile.
+    masvs_controls: [MASVS-PLATFORM-1]
+    maswe_ids: [MASWE-0064]
+    mastg_references: [MASTG-TEST-0357, MASTG-BEST-0049]
+    false_positive_guidance: Confirm the provider grants URIs and that the broad path can reach data outside the intended share directory.
+    requires_manual_validation: false
+    test_type: static/config
+
+  - <<: *defaults
+    id: MSAP-AND-038
+    title: Deprecated TLS or SSL protocol explicitly enabled
+    description: First-party JADX code explicitly selects SSLv3, TLSv1, or TLSv1.0.
+    masvs_category: MASVS-NETWORK
+    severity: High
+    confidence: High
+    prerequisites: [CRYPTO_USAGE]
+    condition: verified_insecure_tls_protocol
+    review_condition: insecure_tls_reference
+    pattern_or_condition: deprecated protocol literal passed to SSLContext or enabled protocols
+    recommendation: Remove deprecated protocols and require a currently supported TLS configuration.
+    masvs_controls: [MASVS-NETWORK-1]
+    maswe_ids: [MASWE-0026]
+    mastg_references: [MASTG-TEST-0217]
+    requires_manual_validation: false
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-039
+    title: Hardcoded cryptographic key used in code
+    description: A source string literal is converted directly into a SecretKeySpec in first-party JADX code.
+    masvs_category: MASVS-CRYPTO
+    severity: High
+    confidence: High
+    prerequisites: [CRYPTO_USAGE]
+    condition: verified_hardcoded_crypto_key
+    pattern_or_condition: new SecretKeySpec("literal".getBytes(...), ...)
+    recommendation: Generate or retrieve keys from Android Keystore and never embed cryptographic key material in the APK.
+    masvs_controls: [MASVS-CRYPTO-1, MASVS-CRYPTO-2]
+    maswe_ids: [MASWE-0003]
+    mastg_references: [MASTG-TEST-0212]
+    false_positive_guidance: Validate that the literal is key material rather than a non-secret test fixture; the excerpt remains redacted.
+    requires_manual_validation: false
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-040
+    title: Hardcoded cleartext URL used by code
+    description: A hardcoded HTTP URL is passed directly to a URL, URI, WebView, or network-builder API in first-party JADX source.
+    masvs_category: MASVS-NETWORK
+    severity: High
+    confidence: High
+    prerequisites: [URLS_AND_ENDPOINTS]
+    condition: verified_hardcoded_http_url
+    review_condition: hardcoded_http_url_review
+    pattern_or_condition: http URL literal is passed directly to a URL/network API
+    recommendation: Replace cleartext endpoints with authenticated HTTPS and disallow cleartext traffic.
+    masvs_controls: [MASVS-NETWORK-1]
+    maswe_ids: [MASWE-0026]
+    mastg_references: [MASTG-TEST-0233]
+    false_positive_guidance: Confirm the URL is reachable in production and not an inert example or local-only endpoint.
+    requires_manual_validation: false
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-041
+    title: WebView Safe Browsing explicitly disabled
+    description: Safe Browsing is disabled in the decoded manifest or first-party JADX source.
+    masvs_category: MASVS-CODE
+    severity: Medium
+    confidence: High
+    prerequisites: [MANIFEST]
+    condition: safebrowsing_disabled
+    pattern_or_condition: EnableSafeBrowsing=false or setSafeBrowsingEnabled(false)
+    recommendation: Do not disable WebView Safe Browsing in production manifests or code.
+    masvs_controls: [MASVS-CODE-4]
+    maswe_ids: [MASWE-0071]
+    mastg_references: [MASTG-TEST-0399]
+    requires_manual_validation: false
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-042
+    title: WebView always permits mixed content
+    description: First-party JADX source sets MIXED_CONTENT_ALWAYS_ALLOW on a WebView.
+    masvs_category: MASVS-NETWORK
+    severity: High
+    confidence: High
+    prerequisites: [WEBVIEW_USAGE]
+    condition: verified_webview_mixed_content
+    review_condition: webview_mixed_content
+    pattern_or_condition: setMixedContentMode(MIXED_CONTENT_ALWAYS_ALLOW)
+    recommendation: Use MIXED_CONTENT_NEVER_ALLOW and migrate every embedded resource to HTTPS.
+    masvs_controls: [MASVS-NETWORK-1, MASVS-PLATFORM-2]
+    maswe_ids: [MASWE-0050]
+    mastg_references: []
+    requires_manual_validation: false
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-043
+    title: Non-cryptographic random API requires security-context review
+    description: java.util.Random construction was observed; source context must establish whether the value protects security-sensitive data.
+    masvs_category: MASVS-CRYPTO
+    severity: Medium
+    prerequisites: [CRYPTO_USAGE]
+    condition: insecure_random_reference_review
+    pattern_or_condition: java.util.Random construction/reference exists
+    recommendation: Use SecureRandom for nonces, tokens, identifiers, keys, and every security-sensitive random value.
+    masvs_controls: [MASVS-CRYPTO-1]
+    maswe_ids: [MASWE-0027]
+    mastg_references: [MASTG-TEST-0204, MASTG-BEST-0001]
+    requires_manual_validation: true
+    test_type: static/code
+
+  - <<: *defaults
+    id: MSAP-AND-044
+    title: External storage API use requires data-flow review
+    description: An API that can write to shared or external storage was observed; data sensitivity and encryption require validation.
+    masvs_category: MASVS-STORAGE
+    severity: Medium
+    prerequisites: [CODE_REFERENCES]
+    condition: external_storage_api_reference_review
+    pattern_or_condition: external/shared storage API reference exists
+    recommendation: Keep sensitive data in private storage or encrypt it before writing to shared storage.
+    masvs_controls: [MASVS-STORAGE-1]
+    maswe_ids: [MASWE-0002]
+    mastg_references: [MASTG-TEST-0202]
+    requires_manual_validation: true
     test_type: static/code

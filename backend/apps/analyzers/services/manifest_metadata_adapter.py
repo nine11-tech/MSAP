@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape, quoteattr
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -81,6 +82,13 @@ class ManifestMetadataAdapter:
         manifest_bytes = self._read_manifest(path)
         root = self._parse_manifest_xml(manifest_bytes)
         return self._extract_metadata(root)
+
+    def decode_xml(self, apk_path: str | Path) -> str:
+        """Return MSAP's deterministic decoded manifest representation."""
+        path = Path(apk_path)
+        manifest_bytes = self._read_manifest(path)
+        root = self._parse_manifest_xml(manifest_bytes)
+        return render_decoded_xml(root)
 
     def _read_manifest(self, apk_path: Path) -> bytes:
         if not apk_path.is_file():
@@ -464,3 +472,49 @@ def _qualified_component_name(
     if "." not in component_name:
         return f"{package_name}.{component_name}"
     return component_name
+
+
+def render_decoded_xml(root) -> str:
+    """Render stable, auditor-friendly XML with one attribute per line.
+
+    These line numbers intentionally describe this generated representation,
+    never the developer's original source tree.
+    """
+    lines: list[str] = []
+
+    def qname(value: str) -> str:
+        if value.startswith(ANDROID_ATTRIBUTE_PREFIX):
+            return f"android:{value[len(ANDROID_ATTRIBUTE_PREFIX):]}"
+        if value.startswith("{") and "}" in value:
+            return value.split("}", 1)[1]
+        return value
+
+    def render(element, depth: int = 0) -> None:
+        indent = "    " * depth
+        tag = qname(str(element.tag))
+        lines.append(f"{indent}<{tag}")
+        if depth == 0:
+            lines.append(
+                f"{indent}    xmlns:android={quoteattr(ANDROID_NAMESPACE)}"
+            )
+        for name, value in sorted(
+            ((qname(str(name)), str(value)) for name, value in element.attrib.items()),
+            key=lambda item: item[0],
+        ):
+            lines.append(f"{indent}    {name}={quoteattr(value)}")
+
+        children = list(element)
+        text = str(element.text or "").strip()
+        if not children and not text:
+            lines.append(f"{indent}/>")
+            return
+
+        lines.append(f"{indent}>")
+        if text:
+            lines.append(f"{indent}    {escape(text)}")
+        for child in children:
+            render(child, depth + 1)
+        lines.append(f"{indent}</{tag}>")
+
+    render(root)
+    return "\n".join(lines) + "\n"

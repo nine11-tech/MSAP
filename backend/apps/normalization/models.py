@@ -22,6 +22,7 @@ class NormalizedArtifact(models.Model):
         URLS_AND_ENDPOINTS = "URLS_AND_ENDPOINTS", "URLs and endpoints"
         PACKAGE_CONTENT = "PACKAGE_CONTENT", "Package content"
         RESILIENCE_SIGNALS = "RESILIENCE_SIGNALS", "Resilience signals"
+        SOURCE_VERIFICATION = "SOURCE_VERIFICATION", "Verified source observations"
 
     audit = models.ForeignKey(
         "audits.Audit",

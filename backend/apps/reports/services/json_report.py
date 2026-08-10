@@ -3,13 +3,14 @@ from pathlib import PurePosixPath
 import re
 
 from django.db import transaction
+from django.db.models import Prefetch
 
 from apps.analyzers.models import RawAnalyzerResult
 from apps.appsec_rules.models import RuleEvaluation
 from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
-from apps.evidence.models import Evidence
+from apps.evidence.models import Evidence, FindingSourceReference, SourceDocument
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
@@ -19,6 +20,7 @@ from apps.scoring.services.compliance_scoring import (
     summarize_attck_triage,
 )
 from apps.scoring.services.risk_scoring import calculate_risk_score
+from apps.triage_rules.services.triage_rule_loader import default_attck_rules_by_id
 
 
 REPORT_LIMITATIONS = [
@@ -40,7 +42,18 @@ def generate_json_report(audit_id: int) -> dict:
         .order_by("-created_at", "-id")
         .first()
     )
-    findings = list(Finding.objects.filter(audit_id=audit_id).order_by("id"))
+    findings = list(
+        Finding.objects.filter(audit_id=audit_id)
+        .prefetch_related(
+            Prefetch(
+                "source_references",
+                queryset=FindingSourceReference.objects.select_related(
+                    "source_document"
+                ).order_by("-is_primary", "id"),
+            )
+        )
+        .order_by("id")
+    )
     indicators = list(
         SuspiciousIndicator.objects.filter(audit_id=audit_id).order_by("id")
     )
@@ -60,6 +73,11 @@ def generate_json_report(audit_id: int) -> dict:
         AnalysisJob.objects.filter(audit_id=audit_id)
         .order_by("-created_at", "-id")
         .first()
+    )
+    source_documents = list(
+        SourceDocument.objects.filter(audit_id=audit_id).order_by(
+            "logical_path", "id"
+        )
     )
 
     risk = calculate_risk_score(audit_id)
@@ -131,6 +149,21 @@ def generate_json_report(audit_id: int) -> dict:
                 for artifact in artifacts
             ],
         },
+        "source_documents": {
+            "count": len(source_documents),
+            "items": [
+                {
+                    "id": document.id,
+                    "representation": document.representation_type,
+                    "path": document.logical_path,
+                    "sha256": document.sha256,
+                    "line_count": document.line_count,
+                    "generated_by": document.generated_by,
+                    "tool_version": document.tool_version,
+                }
+                for document in source_documents
+            ],
+        },
         "analysis_job": _analysis_job_data(latest_job),
         "limitations": REPORT_LIMITATIONS,
     }
@@ -170,10 +203,47 @@ def _finding_data(finding: Finding) -> dict:
         "recommendation": finding.recommendation,
         "false_positive_guidance": finding.false_positive_guidance,
         "requires_manual_validation": finding.requires_manual_validation,
+        "source_evidence": [
+            _source_reference_data(reference)
+            for reference in finding.source_references.all()
+        ],
+    }
+
+
+def _source_reference_data(reference: FindingSourceReference) -> dict:
+    document = reference.source_document
+    return {
+        "id": reference.id,
+        "source_document_id": reference.source_document_id,
+        "representation": reference.representation_type,
+        "representation_label": reference.get_representation_type_display(),
+        "path": reference.logical_path,
+        "class_name": reference.class_name,
+        "method_name": reference.method_name,
+        "method_descriptor": reference.method_descriptor,
+        "symbol": reference.symbol_name,
+        "start_line": reference.start_line,
+        "end_line": reference.end_line,
+        "start_offset": reference.start_offset,
+        "end_offset": reference.end_offset,
+        "excerpt": reference.excerpt,
+        "excerpt_sha256": reference.excerpt_sha256,
+        "source_document_sha256": document.sha256 if document else "",
+        "provenance": reference.provenance,
+        "provenance_chain": (
+            reference.locator.get("provenance_chain", {})
+            if isinstance(reference.locator, dict)
+            else {}
+        ),
+        "confidence": reference.confidence,
+        "is_primary": reference.is_primary,
+        "source_lines_available": reference.source_lines_available,
+        "reason": reference.unavailable_reason,
     }
 
 
 def _indicator_data(indicator: SuspiciousIndicator) -> dict:
+    catalog_rule = default_attck_rules_by_id().get(indicator.indicator_id, {})
     return {
         "id": indicator.id,
         "indicator_id": indicator.indicator_id,
@@ -184,6 +254,16 @@ def _indicator_data(indicator: SuspiciousIndicator) -> dict:
         "severity": indicator.severity,
         "confidence": indicator.confidence,
         "triage_interpretation": indicator.triage_interpretation,
+        "auditor_explanation": (
+            indicator.auditor_explanation
+            or catalog_rule.get("auditor_explanation")
+            or indicator.triage_interpretation
+        ),
+        "dynamic_verification_scenario": (
+            indicator.dynamic_verification_scenario
+            or catalog_rule.get("dynamic_verification_scenario", "")
+        ),
+        "source_evidence": indicator.source_evidence,
         "mapping_rationale": indicator.mapping_rationale,
         "false_positive_considerations": indicator.false_positive_considerations,
         "requires_manual_validation": indicator.requires_manual_validation,

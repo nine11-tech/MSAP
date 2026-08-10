@@ -13,6 +13,7 @@ import {
   listFindings,
   listIndicators,
   listRiskScores,
+  listSourceDocuments,
   sha256File,
   startAnalysis,
   uploadApkFile,
@@ -27,8 +28,10 @@ import type {
   Indicator,
   RiskScore,
   RuleCoverage,
+  SourceDocument,
   UploadContract,
 } from "../api/types";
+import { AttackIndicatorGuidance } from "../components/AttackIndicatorGuidance";
 import {
   Card,
   EmptyState,
@@ -41,6 +44,7 @@ import {
   formatBytes,
   formatDate,
 } from "../components/Common";
+import { AuditSourceBrowser } from "../components/CodeEvidenceViewer";
 import { useAuth } from "../auth/AuthContext";
 
 const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
@@ -74,6 +78,7 @@ export function AuditDetailPage() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [indicators, setIndicators] = useState<Indicator[]>([]);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
+  const [sourceDocuments, setSourceDocuments] = useState<SourceDocument[]>([]);
   const [riskScores, setRiskScores] = useState<RiskScore[]>([]);
   const [complianceScores, setComplianceScores] = useState<ComplianceScore[]>([]);
   const [analysisStatus, setAnalysisStatus] =
@@ -86,7 +91,7 @@ export function AuditDetailPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "overview" | "findings" | "attack" | "evidence" | "coverage"
+    "overview" | "findings" | "source" | "attack" | "evidence" | "coverage"
   >("overview");
   const { hasRole } = useAuth();
   const canOperate = hasRole("ADMIN", "ANALYST");
@@ -105,6 +110,7 @@ export function AuditDetailPage() {
         auditFindings,
         auditIndicators,
         auditEvidence,
+        auditSourceDocuments,
         auditRiskScores,
         auditComplianceScores,
         statusData,
@@ -115,6 +121,7 @@ export function AuditDetailPage() {
         listFindings(id),
         listIndicators(id),
         listEvidence(id),
+        listSourceDocuments(id),
         listRiskScores(id),
         listComplianceScores(id),
         getAnalysisStatus(id),
@@ -125,6 +132,7 @@ export function AuditDetailPage() {
       setFindings(auditFindings);
       setIndicators(auditIndicators);
       setEvidence(auditEvidence);
+      setSourceDocuments(auditSourceDocuments);
       setRiskScores(auditRiskScores);
       setComplianceScores(auditComplianceScores);
       setAnalysisStatus(statusData);
@@ -372,6 +380,7 @@ export function AuditDetailPage() {
         {[
           ["overview", "Overview"],
           ["findings", `Findings (${findings.length})`],
+          ["source", `Source (${sourceDocuments.length})`],
           ["attack", `ATT&CK (${indicators.length})`],
           ["evidence", `Evidence (${evidence.length})`],
           ["coverage", "Analyzer coverage"],
@@ -547,6 +556,7 @@ export function AuditDetailPage() {
                   <th>Category</th>
                   <th>Severity</th>
                   <th>Confidence</th>
+                  <th>Source evidence</th>
                 </tr>
               </thead>
               <tbody>
@@ -559,6 +569,7 @@ export function AuditDetailPage() {
                       <SeverityBadge value={finding.severity} />
                     </td>
                     <td>{finding.confidence}</td>
+                    <td>{finding.source_reference_count || 0} reference(s)</td>
                   </tr>
                 ))}
               </tbody>
@@ -568,6 +579,16 @@ export function AuditDetailPage() {
           <EmptyState message="No MASVS findings recorded." />
         )}
       </Card>
+      ) : null}
+
+      {activeTab === "source" ? (
+        <Card title={`Indexed source documents (${sourceDocuments.length})`}>
+          <p className="notice">
+            Line numbers identify MSAP-decoded or JADX-decompiled representations,
+            not the developer&apos;s original source tree.
+          </p>
+          <AuditSourceBrowser documents={sourceDocuments} />
+        </Card>
       ) : null}
 
       {activeTab === "attack" ? (
@@ -582,6 +603,7 @@ export function AuditDetailPage() {
                   <th>Technique</th>
                   <th>Tactic</th>
                   <th>Severity</th>
+                  <th>Auditor guidance</th>
                 </tr>
               </thead>
               <tbody>
@@ -595,6 +617,14 @@ export function AuditDetailPage() {
                     <td>{indicator.tactic || "—"}</td>
                     <td>
                       <SeverityBadge value={indicator.severity} />
+                    </td>
+                    <td>
+                      <details>
+                        <summary>Explain and verify</summary>
+                        <div className="indicator-detail">
+                          <AttackIndicatorGuidance indicator={indicator} />
+                        </div>
+                      </details>
                     </td>
                   </tr>
                 ))}
