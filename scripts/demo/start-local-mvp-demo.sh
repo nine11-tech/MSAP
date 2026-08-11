@@ -163,7 +163,7 @@ stop_managed_services() {
 export_backend_environment() {
   export DJANGO_SETTINGS_MODULE=msap.settings.development
   export DJANGO_DEBUG=true
-  export DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1
+  export DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,host.docker.internal
   export DJANGO_CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:8000,http://127.0.0.1:8000
   export DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
   export POSTGRES_HOST=127.0.0.1
@@ -191,6 +191,12 @@ export_backend_environment() {
   export MSAP_DYNAMIC_ADB_SERIAL=emulator-5554
   export MSAP_DYNAMIC_RUNNER_ENABLED=true
   export MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED=false
+  export MSAP_AGENT_CONTAINER_ENABLED="${MSAP_AGENT_CONTAINER_ENABLED:-false}"
+  export MSAP_AGENT_CONTAINER_IMAGE="${MSAP_AGENT_CONTAINER_IMAGE:-msap-agent-runtime:local}"
+  export MSAP_AGENT_CONTAINER_NETWORK="${MSAP_AGENT_CONTAINER_NETWORK:-}"
+  export MSAP_AGENT_GATEWAY_URL="${MSAP_AGENT_GATEWAY_URL:-http://host.docker.internal:8000}"
+  export MSAP_AGENT_RUN_TOKEN_TTL_SECONDS="${MSAP_AGENT_RUN_TOKEN_TTL_SECONDS:-300}"
+  export MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS="${MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS:-120}"
   export VITE_API_BASE_URL=http://127.0.0.1:8000/api
 }
 
@@ -249,12 +255,21 @@ up() {
   chmod 600 "$TOKEN_FILE"
   export_backend_environment
 
+  if [[ "$MSAP_AGENT_CONTAINER_ENABLED" == "true" ]]; then
+    printf 'Building the ephemeral agent runtime image...\n'
+    docker build -t "$MSAP_AGENT_CONTAINER_IMAGE" "$REPO_ROOT/agent_runtime"
+  fi
+
   printf 'Applying database migrations...\n'
   (cd "$BACKEND_DIR" && "$PYTHON" manage.py migrate --noinput)
   start_host_agent
   wait_for_host_agent
+  local backend_bind=127.0.0.1:8000
+  if [[ "$MSAP_AGENT_CONTAINER_ENABLED" == "true" ]]; then
+    backend_bind=0.0.0.0:8000
+  fi
   start_service backend "$BACKEND_DIR" \
-    "$PYTHON" manage.py runserver 127.0.0.1:8000 --noreload
+    "$PYTHON" manage.py runserver "$backend_bind" --noreload
   wait_for_url "Django backend" http://127.0.0.1:8000/api/health/ 60 backend
   start_service worker "$BACKEND_DIR" \
     "$CELERY" -A msap worker --loglevel=info --pool=solo --hostname=msap-demo@localhost

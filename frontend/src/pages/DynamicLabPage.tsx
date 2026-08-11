@@ -57,6 +57,8 @@ type PackageAction =
   | "clear-data"
   | "uninstall";
 
+type AgentRuntimeType = "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
+
 export function DynamicLabPage() {
   const [searchParams] = useSearchParams();
   const requestedAuditId = Number(searchParams.get("audit") || 0) || null;
@@ -75,6 +77,8 @@ export function DynamicLabPage() {
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentRunStep[]>([]);
   const [agentArtifacts, setAgentArtifacts] = useState<AgentRunArtifact[]>([]);
+  const [selectedAgentRuntime, setSelectedAgentRuntime] =
+    useState<AgentRuntimeType>("INTERNAL_CONTROLLER");
   const [screenshotUrl, setScreenshotUrl] = useState("");
   const screenshotUrlRef = useRef("");
   const [loading, setLoading] = useState(true);
@@ -167,13 +171,17 @@ export function DynamicLabPage() {
 
   const device = agentStatus?.device;
   const emulatorOnline = device?.state === "device";
-  const foundationRuntime = agentRuntimes.find(
-    (runtime) =>
-      runtime.enabled &&
-      runtime.status === "AVAILABLE" &&
-      runtime.runtime_type === "INTERNAL_CONTROLLER",
+  const internalRuntime = agentRuntimes.find(
+    (runtime) => runtime.runtime_type === "INTERNAL_CONTROLLER",
   );
-  const foundationAvailable = Boolean(foundationRuntime);
+  const containerRuntime = agentRuntimes.find(
+    (runtime) => runtime.runtime_type === "CONTAINER_SANDBOX",
+  );
+  const activeRuntime =
+    selectedAgentRuntime === "CONTAINER_SANDBOX"
+      ? containerRuntime
+      : internalRuntime;
+  const foundationAvailable = Boolean(activeRuntime?.available);
   const minio = componentById(systemStatus?.components, "minio");
   const celery = componentById(systemStatus?.components, "celery");
 
@@ -327,6 +335,7 @@ export function DynamicLabPage() {
     try {
       const run = await createAgentRun(
         selectedAuditId ? selectedAuditId : undefined,
+        selectedAgentRuntime,
       );
       const [steps, artifacts] = await Promise.all([
         listAgentRunSteps(run.id),
@@ -653,14 +662,58 @@ export function DynamicLabPage() {
               : "Foundation unavailable"}
           </span>
           <p>
-            Sprint B introduces a controlled agent runtime foundation. The
-            current agent can only run a device readiness check.
+            Sprint C keeps the run deterministic while adding an ephemeral
+            container boundary. The agent can only run a device readiness check.
           </p>
           {!canOperate ? (
             <p className="muted dynamic-role-note">
               Viewer access is read-only; only an Analyst or Admin can start a run.
             </p>
           ) : null}
+        </div>
+
+        <div className="agent-runtime-controls">
+          <label>
+            <span>Run mode</span>
+            <select
+              value={selectedAgentRuntime}
+              onChange={(event) =>
+                setSelectedAgentRuntime(event.target.value as AgentRuntimeType)
+              }
+              disabled={Boolean(working)}
+            >
+              <option
+                value="INTERNAL_CONTROLLER"
+                disabled={!internalRuntime?.available}
+              >
+                Internal Controller
+              </option>
+              <option
+                value="CONTAINER_SANDBOX"
+                disabled={!containerRuntime?.available}
+              >
+                Container Sandbox
+                {containerRuntime?.available ? "" : " (Unavailable)"}
+              </option>
+            </select>
+          </label>
+          <div className="dynamic-device-facts agent-runtime-facts">
+            <StatusFact
+              label="Active runtime"
+              value={runtimeTypeLabel(selectedAgentRuntime)}
+              state={foundationAvailable ? "online" : "offline"}
+            />
+            <StatusFact
+              label="Isolation level"
+              value={isolationLabel(activeRuntime?.isolation_level)}
+            />
+            <StatusFact label="Run mode" value="Deterministic readiness" />
+            <StatusFact
+              label="Container runtime enabled"
+              value={yesNo(containerRuntime?.configuration_enabled)}
+              state={containerRuntime?.configuration_enabled ? "online" : "neutral"}
+            />
+          </div>
         </div>
 
         {agentRun ? (
@@ -677,6 +730,11 @@ export function DynamicLabPage() {
               </div>
 
               <div className="dynamic-device-facts agent-result-facts">
+                <StatusFact
+                  label="Executed by"
+                  value={runtimeTypeLabel(agentRun.runtime_type)}
+                  detail={isolationLabel(agentRun.isolation_level)}
+                />
                 <StatusFact
                   label="Host agent reachable"
                   value={yesNo(agentRun.result_summary.host_agent_reachable)}
@@ -830,7 +888,7 @@ function AgentEvidenceCard({ artifact }: { artifact?: AgentRunArtifact }) {
         </div>
       </dl>
       <p className="muted agent-scope-note">
-        Sprint B retains validated metadata and the digest; screenshot bytes are
+        Sprint C retains validated metadata and the digest; screenshot bytes are
         not stored in PostgreSQL.
       </p>
     </section>
@@ -880,6 +938,24 @@ function packageActionLabel(action: PackageAction): string {
 
 function yesNo(value: boolean | undefined): string {
   return value ? "Yes" : "No";
+}
+
+function runtimeTypeLabel(
+  value: AgentRuntimeType | null | undefined,
+): string {
+  return value === "CONTAINER_SANDBOX"
+    ? "Container Sandbox"
+    : value === "INTERNAL_CONTROLLER"
+      ? "Internal Controller"
+      : "Unavailable";
+}
+
+function isolationLabel(value: string | null | undefined): string {
+  return {
+    INTERNAL_ONLY: "Internal process",
+    CONTAINER_PLANNED: "Container planned",
+    CONTAINER_ISOLATED: "Ephemeral container",
+  }[value || ""] || "Unavailable";
 }
 
 function deviceIdentity(run: AgentRun): string {

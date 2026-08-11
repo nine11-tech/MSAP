@@ -663,6 +663,8 @@ export interface AgentRuntime {
     | "CONTAINER_PLANNED"
     | "CONTAINER_ISOLATED";
   enabled: boolean;
+  configuration_enabled: boolean;
+  available: boolean;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -690,6 +692,9 @@ export interface AgentScreenshotSummary {
 
 export interface AgentRunResultSummary {
   objective?: string;
+  runtime_type?: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX" | "";
+  runtime_name?: string;
+  isolation_level?: string;
   host_agent_reachable?: boolean;
   emulator_reachable?: boolean;
   device?: AgentDeviceSummary;
@@ -707,6 +712,12 @@ export interface AgentRun {
   device_serial: string | null;
   runtime: number | null;
   runtime_name: string | null;
+  runtime_type: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX" | null;
+  isolation_level:
+    | "INTERNAL_ONLY"
+    | "CONTAINER_PLANNED"
+    | "CONTAINER_ISOLATED"
+    | null;
   objective: "DEVICE_READINESS_CHECK";
   status:
     | "QUEUED"

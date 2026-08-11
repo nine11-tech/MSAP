@@ -44,6 +44,10 @@ class DynamicHostAgentInstallSerializer(serializers.Serializer):
 
 class AgentRunCreateSerializer(serializers.Serializer):
     objective = serializers.ChoiceField(choices=AgentRun.Objective.choices)
+    runtime_type = serializers.ChoiceField(
+        choices=AgentRuntime.RuntimeType.choices,
+        default=AgentRuntime.RuntimeType.INTERNAL_CONTROLLER,
+    )
     audit = serializers.PrimaryKeyRelatedField(
         queryset=Audit.objects.all(),
         required=False,
@@ -53,7 +57,22 @@ class AgentRunCreateSerializer(serializers.Serializer):
     def to_internal_value(self, data):
         if not isinstance(data, dict):
             raise serializers.ValidationError("Request body must be a JSON object.")
-        unexpected = sorted(set(data) - {"objective", "audit"})
+        unexpected = sorted(set(data) - {"objective", "runtime_type", "audit"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+
+class AgentToolCallSerializer(serializers.Serializer):
+    tool_name = serializers.CharField(max_length=128)
+    arguments = serializers.JSONField()
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"tool_name", "arguments"})
         if unexpected:
             raise serializers.ValidationError(
                 {key: "This field is not permitted." for key in unexpected}
@@ -62,6 +81,24 @@ class AgentRunCreateSerializer(serializers.Serializer):
 
 
 class AgentRuntimeSerializer(serializers.ModelSerializer):
+    configuration_enabled = serializers.SerializerMethodField()
+    available = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_configuration_enabled(runtime):
+        if runtime.runtime_type == AgentRuntime.RuntimeType.CONTAINER_SANDBOX:
+            from django.conf import settings
+
+            return bool(settings.MSAP_AGENT_CONTAINER_ENABLED)
+        return True
+
+    def get_available(self, runtime):
+        return bool(
+            runtime.enabled
+            and runtime.status == AgentRuntime.Status.AVAILABLE
+            and self.get_configuration_enabled(runtime)
+        )
+
     class Meta:
         model = AgentRuntime
         fields = [
@@ -73,6 +110,8 @@ class AgentRuntimeSerializer(serializers.ModelSerializer):
             "capabilities",
             "isolation_level",
             "enabled",
+            "configuration_enabled",
+            "available",
             "last_seen_at",
             "created_at",
             "updated_at",
@@ -96,6 +135,16 @@ class AgentRunSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    runtime_type = serializers.CharField(
+        source="runtime.runtime_type",
+        read_only=True,
+        allow_null=True,
+    )
+    isolation_level = serializers.CharField(
+        source="runtime.isolation_level",
+        read_only=True,
+        allow_null=True,
+    )
 
     class Meta:
         model = AgentRun
@@ -106,6 +155,8 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "device_serial",
             "runtime",
             "runtime_name",
+            "runtime_type",
+            "isolation_level",
             "objective",
             "status",
             "requested_by",

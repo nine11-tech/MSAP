@@ -3500,6 +3500,27 @@ tbody tr:hover td {
   line-height: 1.5;
 }
 
+.agent-runtime-controls {
+  padding: 0.85rem;
+  display: grid;
+  grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 0.8rem;
+  background: #071521;
+  border: 1px solid #263d52;
+  border-radius: 7px;
+}
+
+.agent-runtime-controls label > span {
+  color: #7f94a7;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+}
+
+.agent-runtime-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .agent-foundation-status,
 .agent-run-state,
 .agent-step-status {
@@ -3715,8 +3736,13 @@ tbody tr:hover td {
 
   .dynamic-apk-controls,
   .installed-package-metadata dl,
+  .agent-runtime-controls,
   .agent-run-layout {
     grid-template-columns: 1fr;
+  }
+
+  .agent-runtime-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .agent-evidence-card dl {

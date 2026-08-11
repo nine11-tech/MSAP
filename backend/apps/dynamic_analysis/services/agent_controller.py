@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from types import MappingProxyType
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -17,6 +18,12 @@ from apps.dynamic_analysis.models import (
 from apps.dynamic_analysis.services.agent_tools import (
     AgentToolError,
     execute_agent_tool,
+)
+from apps.dynamic_analysis.services.agent_run_tokens import issue_agent_run_token
+from apps.dynamic_analysis.services.container_runtime import (
+    ContainerRuntimeError,
+    ContainerRuntimeTimeout,
+    run_container_sandbox,
 )
 
 
@@ -42,19 +49,36 @@ class AgentControllerPermissionError(AgentControllerError):
 
 
 class AgentController:
-    """Deterministic Sprint B runtime controller.
+    """Deterministic runtime controller with two bounded execution modes.
 
     The interface intentionally accepts an objective rather than a prompt or a
-    caller-provided tool sequence. A container-backed implementation can later
-    implement this boundary without changing the API contract.
+    caller-provided tool sequence. Both implementations execute the same fixed
+    objective plan and persist the same normalized evidence contract.
     """
 
-    def __init__(self, *, tool_executor=execute_agent_tool):
+    def __init__(
+        self,
+        *,
+        tool_executor=execute_agent_tool,
+        container_executor=run_container_sandbox,
+    ):
         self.tool_executor = tool_executor
+        self.container_executor = container_executor
 
-    def run(self, *, objective: str, requested_by, audit=None) -> AgentRun:
-        self._validate_request(objective=objective, requested_by=requested_by)
-        runtime = self._select_runtime()
+    def run(
+        self,
+        *,
+        objective: str,
+        requested_by,
+        audit=None,
+        runtime_type: str = AgentRuntime.RuntimeType.INTERNAL_CONTROLLER,
+    ) -> AgentRun:
+        self._validate_request(
+            objective=objective,
+            requested_by=requested_by,
+            runtime_type=runtime_type,
+        )
+        runtime = self._select_runtime(runtime_type)
         with transaction.atomic():
             run = AgentRun.objects.create(
                 audit=audit,
@@ -82,16 +106,38 @@ class AgentController:
             runtime.id if runtime else None,
         )
         if runtime is None:
+            runtime_label = (
+                "container sandbox"
+                if runtime_type == AgentRuntime.RuntimeType.CONTAINER_SANDBOX
+                else "internal agent"
+            )
             return self._fail_before_execution(
                 run,
                 steps,
                 category=AgentRun.FailureCategory.RUNTIME_UNAVAILABLE,
-                message="No enabled internal agent runtime is available.",
+                message=f"No enabled {runtime_label} runtime is available.",
             )
 
         run.status = AgentRun.Status.RUNNING
         run.started_at = timezone.now()
         run.save(update_fields=["status", "started_at", "updated_at"])
+        if runtime.runtime_type == AgentRuntime.RuntimeType.CONTAINER_SANDBOX:
+            return self._run_container(run=run, steps=steps)
+        return self._run_internal(
+            run=run,
+            steps=steps,
+            runtime=runtime,
+            requested_by=requested_by,
+        )
+
+    def _run_internal(
+        self,
+        *,
+        run: AgentRun,
+        steps: list[AgentRunStep],
+        runtime: AgentRuntime,
+        requested_by,
+    ) -> AgentRun:
         outputs: dict[str, dict] = {}
 
         for step in steps:
@@ -181,7 +227,11 @@ class AgentController:
 
         run.status = AgentRun.Status.SUCCEEDED
         run.finished_at = timezone.now()
-        run.result_summary = self._result_summary(outputs, succeeded=True)
+        run.result_summary = self._result_summary(
+            outputs,
+            succeeded=True,
+            runtime=runtime,
+        )
         runtime.last_seen_at = run.finished_at
         runtime.save(update_fields=["last_seen_at", "updated_at"])
         run.save(
@@ -196,22 +246,109 @@ class AgentController:
         security_logger.info("agent_run_completed run_id=%s status=SUCCEEDED", run.id)
         return run
 
+    def _run_container(
+        self,
+        *,
+        run: AgentRun,
+        steps: list[AgentRunStep],
+    ) -> AgentRun:
+        try:
+            run_token = issue_agent_run_token(run)
+            self.container_executor(run=run, run_token=run_token)
+        except ContainerRuntimeTimeout as exc:
+            run.refresh_from_db()
+            if run.status in self._terminal_statuses():
+                return run
+            self._mark_container_steps_failed(
+                steps,
+                status=AgentRunStep.Status.TIMEOUT,
+                message="The sandbox stopped before the tool sequence completed.",
+            )
+            return self._finish_failed_run(
+                run,
+                self._completed_outputs(run),
+                category=AgentRun.FailureCategory.TIMEOUT,
+                message=str(exc),
+            )
+        except ContainerRuntimeError as exc:
+            run.refresh_from_db()
+            if run.status in self._terminal_statuses():
+                return run
+            self._mark_container_steps_failed(
+                steps,
+                status=AgentRunStep.Status.FAILED,
+                message="The sandbox stopped before the tool sequence completed.",
+            )
+            return self._finish_failed_run(
+                run,
+                self._completed_outputs(run),
+                category=AgentRun.FailureCategory.RUNTIME_UNAVAILABLE,
+                message=str(exc),
+            )
+        except Exception as exc:  # pragma: no cover - defensive process boundary
+            logger.error(
+                "agent_container_unexpected_failure run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            run.refresh_from_db()
+            if run.status in self._terminal_statuses():
+                return run
+            self._mark_container_steps_failed(
+                steps,
+                status=AgentRunStep.Status.FAILED,
+                message="The sandbox stopped before the tool sequence completed.",
+            )
+            return self._finish_failed_run(
+                run,
+                self._completed_outputs(run),
+                category=AgentRun.FailureCategory.INTERNAL_ERROR,
+                message="The container sandbox failed unexpectedly.",
+            )
+
+        run.refresh_from_db()
+        if run.status in self._terminal_statuses():
+            return run
+        self._mark_container_steps_failed(
+            steps,
+            status=AgentRunStep.Status.FAILED,
+            message="The sandbox exited without completing the tool sequence.",
+        )
+        return self._finish_failed_run(
+            run,
+            self._completed_outputs(run),
+            category=AgentRun.FailureCategory.TOOL_EXECUTION_FAILED,
+            message="The container sandbox did not complete its controlled run.",
+        )
+
     @staticmethod
-    def _validate_request(*, objective: str, requested_by) -> None:
+    def _validate_request(
+        *,
+        objective: str,
+        requested_by,
+        runtime_type: str,
+    ) -> None:
         if user_role(requested_by) not in {"ADMIN", "ANALYST"}:
             raise AgentControllerPermissionError(
                 "Only an Analyst or Admin can start an agent run."
             )
         if objective not in OBJECTIVE_PLANS:
             raise AgentControllerError("The requested objective is not supported.")
+        if runtime_type not in AgentRuntime.RuntimeType.values:
+            raise AgentControllerError("The requested runtime type is not supported.")
 
     @staticmethod
-    def _select_runtime() -> AgentRuntime | None:
+    def _select_runtime(runtime_type: str) -> AgentRuntime | None:
+        if (
+            runtime_type == AgentRuntime.RuntimeType.CONTAINER_SANDBOX
+            and not settings.MSAP_AGENT_CONTAINER_ENABLED
+        ):
+            return None
         return (
             AgentRuntime.objects.filter(
                 enabled=True,
                 status=AgentRuntime.Status.AVAILABLE,
-                runtime_type=AgentRuntime.RuntimeType.INTERNAL_CONTROLLER,
+                runtime_type=runtime_type,
             )
             .order_by("id")
             .first()
@@ -268,7 +405,11 @@ class AgentController:
         run.finished_at = timezone.now()
         run.failure_category = category
         run.failure_message = message
-        run.result_summary = self._result_summary(outputs, succeeded=False)
+        run.result_summary = self._result_summary(
+            outputs,
+            succeeded=False,
+            runtime=run.runtime,
+        )
         run.save(
             update_fields=[
                 "status",
@@ -315,7 +456,12 @@ class AgentController:
             )
 
     @staticmethod
-    def _result_summary(outputs: dict[str, dict], *, succeeded: bool) -> dict:
+    def _result_summary(
+        outputs: dict[str, dict],
+        *,
+        succeeded: bool,
+        runtime: AgentRuntime | None = None,
+    ) -> dict:
         status_output = outputs.get("get_device_status", {})
         screenshot_output = outputs.get("take_screenshot", {})
         host_reachable = status_output.get("host_agent_status") == "REACHABLE"
@@ -328,6 +474,9 @@ class AgentController:
         )
         return {
             "objective": AgentRun.Objective.DEVICE_READINESS_CHECK,
+            "runtime_type": runtime.runtime_type if runtime else "",
+            "runtime_name": runtime.name if runtime else "",
+            "isolation_level": runtime.isolation_level if runtime else "",
             "host_agent_reachable": host_reachable,
             "emulator_reachable": emulator_reachable,
             "device": {
@@ -350,3 +499,52 @@ class AgentController:
             ),
             "assessment_scope": "Device readiness only; no vulnerability or malware verdict was produced.",
         }
+
+    @staticmethod
+    def _completed_outputs(run: AgentRun) -> dict[str, dict]:
+        return {
+            step.tool_name: step.output_summary
+            for step in run.steps.filter(status=AgentRunStep.Status.SUCCEEDED)
+        }
+
+    @staticmethod
+    def _terminal_statuses() -> set[str]:
+        return {
+            AgentRun.Status.SUCCEEDED,
+            AgentRun.Status.FAILED,
+            AgentRun.Status.CANCELLED,
+            AgentRun.Status.TIMEOUT,
+        }
+
+    @staticmethod
+    def _mark_container_steps_failed(
+        steps: list[AgentRunStep],
+        *,
+        status: str,
+        message: str,
+    ) -> None:
+        now = timezone.now()
+        marked_failure = False
+        for step in steps:
+            step.refresh_from_db()
+            if step.status == AgentRunStep.Status.SUCCEEDED:
+                continue
+            if not marked_failure:
+                step.status = status
+                step.failure_message = message
+                if step.started_at is None:
+                    step.started_at = now
+                marked_failure = True
+            else:
+                step.status = AgentRunStep.Status.SKIPPED
+                step.failure_message = "Skipped after the sandbox stopped."
+            step.finished_at = now
+            step.save(
+                update_fields=[
+                    "status",
+                    "failure_message",
+                    "started_at",
+                    "finished_at",
+                    "duration_seconds",
+                ]
+            )

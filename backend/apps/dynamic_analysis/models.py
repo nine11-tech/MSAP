@@ -974,6 +974,15 @@ class AgentRun(models.Model):
         blank=True,
     )
     failure_message = models.TextField(blank=True)
+    # The plaintext credential is returned only to the controller that launches
+    # the sandbox. Django persists a one-way digest and a short expiry so a
+    # database read cannot recover an active run credential.
+    run_token_hash = models.CharField(max_length=64, blank=True, editable=False)
+    run_token_expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        editable=False,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
