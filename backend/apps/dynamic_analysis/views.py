@@ -18,6 +18,8 @@ from apps.api.permissions import (
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
+    AgentRun,
+    AgentRuntime,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -31,6 +33,11 @@ from apps.dynamic_analysis.models import (
     DynamicSessionStage,
 )
 from apps.dynamic_analysis.serializers import (
+    AgentRunArtifactSerializer,
+    AgentRunCreateSerializer,
+    AgentRunSerializer,
+    AgentRuntimeSerializer,
+    AgentRunStepSerializer,
     DynamicAnalysisJobSerializer,
     DynamicDeviceCapabilitySerializer,
     DynamicDeviceEventSerializer,
@@ -54,6 +61,11 @@ from apps.dynamic_analysis.renderers import PNGRenderer
 from apps.dynamic_analysis.services.host_agent_client import (
     DynamicHostAgentClient,
     HostAgentClientError,
+)
+from apps.dynamic_analysis.services.agent_controller import (
+    AgentController,
+    AgentControllerError,
+    AgentControllerPermissionError,
 )
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
@@ -507,6 +519,75 @@ class DynamicSessionArtifactViewSet(
         "redaction_state",
         "confidence",
     )
+
+
+class AgentRuntimeViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = AgentRuntime.objects.all()
+    serializer_class = AgentRuntimeSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+
+
+class AgentRunViewSet(
+    DynamicFilterMixin,
+    mixins.CreateModelMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
+    queryset = AgentRun.objects.select_related(
+        "audit",
+        "device",
+        "runtime",
+        "requested_by",
+    ).all()
+    serializer_class = AgentRunSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+    filter_fields = ("audit", "status", "objective", "requested_by")
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsMSAPAnalystOrAdmin]
+            if self.action == "create"
+            else [IsMSAPViewerOrAbove]
+        )
+        return [permission() for permission in permission_classes]
+
+    @extend_schema(
+        request=AgentRunCreateSerializer,
+        responses={201: AgentRunSerializer},
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = AgentRunCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            run = AgentController().run(
+                objective=serializer.validated_data["objective"],
+                audit=serializer.validated_data.get("audit"),
+                requested_by=request.user,
+            )
+        except AgentControllerPermissionError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except AgentControllerError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            AgentRunSerializer(run, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(responses={200: AgentRunStepSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="steps")
+    def steps(self, request, pk=None):
+        run = self.get_object()
+        serializer = AgentRunStepSerializer(run.steps.all(), many=True)
+        return Response(serializer.data)
+
+    @extend_schema(responses={200: AgentRunArtifactSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="artifacts")
+    def artifacts(self, request, pk=None):
+        run = self.get_object()
+        serializer = AgentRunArtifactSerializer(
+            run.artifacts.select_related("step", "object_reference").all(),
+            many=True,
+        )
+        return Response(serializer.data)
 
 
 class DynamicHostAgentViewSet(viewsets.ViewSet):

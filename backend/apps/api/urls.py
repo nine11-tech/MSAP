@@ -28,6 +28,8 @@ from apps.api.auth_views import (
     MeView,
 )
 from apps.dynamic_analysis.views import (
+    AgentRunViewSet,
+    AgentRuntimeViewSet,
     DynamicAnalysisJobViewSet,
     DynamicDeviceCapabilityViewSet,
     DynamicDeviceEventViewSet,
@@ -136,6 +138,16 @@ router.register(
     "dynamic/session-artifacts",
     DynamicSessionArtifactViewSet,
     basename="dynamic-session-artifact",
+)
+router.register(
+    "dynamic/agent/runtimes",
+    AgentRuntimeViewSet,
+    basename="agent-runtime",
+)
+router.register(
+    "dynamic/agent/runs",
+    AgentRunViewSet,
+    basename="agent-run",
 )
 router.register(
     "dynamic/host-agent",

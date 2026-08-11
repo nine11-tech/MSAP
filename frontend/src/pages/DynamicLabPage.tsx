@@ -2,8 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   captureDynamicHostAgentScreenshot,
+  createAgentRun,
   getDynamicHostAgentStatus,
   installDynamicAuditApk,
+  listAgentRunArtifacts,
+  listAgentRuns,
+  listAgentRunSteps,
+  listAgentRuntimes,
   listApkFiles,
   listAudits,
   listDynamicHostAgentPackages,
@@ -11,6 +16,10 @@ import {
   syncDynamicHostAgent,
 } from "../api/msap";
 import type {
+  AgentRun,
+  AgentRunArtifact,
+  AgentRuntime,
+  AgentRunStep,
   ApkFile,
   Audit,
   DynamicHostAgentInstallResult,
@@ -39,7 +48,8 @@ type WorkingAction =
   | "launch-package"
   | "force-stop"
   | "clear-data"
-  | "uninstall";
+  | "uninstall"
+  | "agent-readiness";
 
 type PackageAction =
   | "launch-package"
@@ -61,6 +71,10 @@ export function DynamicLabPage() {
   const [packageName, setPackageName] = useState("");
   const [installResult, setInstallResult] =
     useState<DynamicHostAgentInstallResult | null>(null);
+  const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
+  const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
+  const [agentSteps, setAgentSteps] = useState<AgentRunStep[]>([]);
+  const [agentArtifacts, setAgentArtifacts] = useState<AgentRunArtifact[]>([]);
   const [screenshotUrl, setScreenshotUrl] = useState("");
   const screenshotUrlRef = useRef("");
   const [loading, setLoading] = useState(true);
@@ -76,14 +90,30 @@ export function DynamicLabPage() {
     setLoading(true);
     setError("");
     try {
-      const [auditData, apkData, hostData] = await Promise.all([
+      const [auditData, apkData, hostData, runtimeData, runData] = await Promise.all([
         listAudits(),
         listApkFiles(),
         getDynamicHostAgentStatus(),
+        listAgentRuntimes(),
+        listAgentRuns(),
       ]);
       setAudits(auditData);
       setApkFiles(apkData);
       setAgentStatus(hostData);
+      setAgentRuntimes(runtimeData);
+      const latestRun = runData[0] || null;
+      setAgentRun(latestRun);
+      if (latestRun) {
+        const [stepData, artifactData] = await Promise.all([
+          listAgentRunSteps(latestRun.id),
+          listAgentRunArtifacts(latestRun.id),
+        ]);
+        setAgentSteps(stepData);
+        setAgentArtifacts(artifactData);
+      } else {
+        setAgentSteps([]);
+        setAgentArtifacts([]);
+      }
       setSelectedAuditId((current) => {
         if (current && auditData.some((audit) => audit.id === current)) {
           return current;
@@ -137,6 +167,13 @@ export function DynamicLabPage() {
 
   const device = agentStatus?.device;
   const emulatorOnline = device?.state === "device";
+  const foundationRuntime = agentRuntimes.find(
+    (runtime) =>
+      runtime.enabled &&
+      runtime.status === "AVAILABLE" &&
+      runtime.runtime_type === "INTERNAL_CONTROLLER",
+  );
+  const foundationAvailable = Boolean(foundationRuntime);
   const minio = componentById(systemStatus?.components, "minio");
   const celery = componentById(systemStatus?.components, "celery");
 
@@ -276,6 +313,33 @@ export function DynamicLabPage() {
       setNotice(`${packageActionLabel(action)} completed.${focused}`);
       await refreshPackages(false);
       setAgentStatus(await getDynamicHostAgentStatus());
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleAgentReadinessCheck() {
+    setWorking("agent-readiness");
+    setError("");
+    setNotice("");
+    try {
+      const run = await createAgentRun(
+        selectedAuditId ? selectedAuditId : undefined,
+      );
+      const [steps, artifacts] = await Promise.all([
+        listAgentRunSteps(run.id),
+        listAgentRunArtifacts(run.id),
+      ]);
+      setAgentRun(run);
+      setAgentSteps(steps);
+      setAgentArtifacts(artifacts);
+      setNotice(
+        run.status === "SUCCEEDED"
+          ? "Device readiness check completed."
+          : "Device readiness check completed with a controlled failure.",
+      );
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -562,14 +626,144 @@ export function DynamicLabPage() {
         </div>
       </Card>
 
-      <Card className="dynamic-next-card">
-        <p className="eyebrow">Coming Next</p>
-        <h2>Agentic Dynamic Assessment</h2>
-        <strong>Coming in Sprint B.</strong>
-        <p>
-          The next dynamic engine will run controlled mobile security playbooks
-          inside an isolated agent runtime.
-        </p>
+      <Card className="dynamic-mvp-section agent-foundation-card">
+        <SectionHeader
+          title="Agentic Dynamic Assessment"
+          actions={
+            <button
+              className="button button-primary"
+              onClick={() => void handleAgentReadinessCheck()}
+              disabled={!canOperate || !foundationAvailable || Boolean(working)}
+            >
+              {working === "agent-readiness"
+                ? "Running Check..."
+                : "Run Device Readiness Check"}
+            </button>
+          }
+        />
+
+        <div className="agent-foundation-intro">
+          <span
+            className={`agent-foundation-status ${
+              foundationAvailable ? "is-available" : "is-unavailable"
+            }`}
+          >
+            {foundationAvailable
+              ? "Foundation available"
+              : "Foundation unavailable"}
+          </span>
+          <p>
+            Sprint B introduces a controlled agent runtime foundation. The
+            current agent can only run a device readiness check.
+          </p>
+          {!canOperate ? (
+            <p className="muted dynamic-role-note">
+              Viewer access is read-only; only an Analyst or Admin can start a run.
+            </p>
+          ) : null}
+        </div>
+
+        {agentRun ? (
+          <div className="agent-run-layout">
+            <section className="agent-run-result" aria-label="Latest agent run result">
+              <div className="agent-run-heading">
+                <div>
+                  <span className="eyebrow">Latest deterministic run</span>
+                  <h3>Device readiness check #{agentRun.id}</h3>
+                </div>
+                <span className={`agent-run-state state-${agentRun.status.toLowerCase()}`}>
+                  {agentRun.status}
+                </span>
+              </div>
+
+              <div className="dynamic-device-facts agent-result-facts">
+                <StatusFact
+                  label="Host agent reachable"
+                  value={yesNo(agentRun.result_summary.host_agent_reachable)}
+                  state={agentRun.result_summary.host_agent_reachable ? "online" : "offline"}
+                />
+                <StatusFact
+                  label="Emulator reachable"
+                  value={yesNo(agentRun.result_summary.emulator_reachable)}
+                  state={agentRun.result_summary.emulator_reachable ? "online" : "offline"}
+                />
+                <StatusFact
+                  label="Serial"
+                  value={agentRun.result_summary.device?.serial || "Unavailable"}
+                />
+                <StatusFact
+                  label="Android / API / ABI"
+                  value={deviceIdentity(agentRun)}
+                />
+                <StatusFact
+                  label="SELinux"
+                  value={agentRun.result_summary.device?.selinux || "Unavailable"}
+                />
+                <StatusFact
+                  label="Screenshot captured"
+                  value={yesNo(agentRun.result_summary.screenshot_captured)}
+                  state={agentRun.result_summary.screenshot_captured ? "online" : "offline"}
+                />
+                <StatusFact
+                  label="Environment ready"
+                  value={yesNo(agentRun.result_summary.environment_ready)}
+                  state={agentRun.result_summary.environment_ready ? "online" : "warning"}
+                />
+                <StatusFact
+                  label="Run duration"
+                  value={formatDuration(agentRun.duration_seconds)}
+                />
+              </div>
+
+              <p className="agent-result-summary">
+                {agentRun.result_summary.summary || agentRun.failure_message}
+              </p>
+              {agentRun.failure_message ? (
+                <p className="agent-failure-message">
+                  {agentRun.failure_category}: {agentRun.failure_message}
+                </p>
+              ) : null}
+              <p className="muted agent-scope-note">
+                {agentRun.result_summary.assessment_scope ||
+                  "Device readiness only; no vulnerability or malware verdict was produced."}
+              </p>
+            </section>
+
+            <section className="agent-step-card" aria-label="Agent run steps">
+              <div className="agent-subsection-heading">
+                <h3>Bounded tool sequence</h3>
+                <span>
+                  {agentSteps.filter((step) => step.status === "SUCCEEDED").length}
+                  {" / "}{agentSteps.length} succeeded
+                </span>
+              </div>
+              <ol className="agent-step-list">
+                {agentSteps.map((step) => (
+                  <li key={step.id}>
+                    <span className="agent-step-sequence">{step.sequence_number}</span>
+                    <div>
+                      <strong className="mono">{step.tool_name}</strong>
+                      {step.failure_message ? <small>{step.failure_message}</small> : null}
+                    </div>
+                    <span className={`agent-step-status state-${step.status.toLowerCase()}`}>
+                      {step.status}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </section>
+
+            <AgentEvidenceCard
+              artifact={agentArtifacts.find(
+                (artifact) => artifact.artifact_type === "SCREENSHOT",
+              )}
+            />
+          </div>
+        ) : (
+          <div className="agent-empty-result">
+            No device readiness run has been recorded yet.
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -592,6 +786,54 @@ function StatusFact({
       <strong>{value}</strong>
       {detail ? <small>{detail}</small> : null}
     </div>
+  );
+}
+
+function AgentEvidenceCard({ artifact }: { artifact?: AgentRunArtifact }) {
+  if (!artifact) {
+    return (
+      <section className="agent-evidence-card" aria-label="Agent run evidence">
+        <h3>Screenshot evidence</h3>
+        <p className="muted">No screenshot metadata was produced for this run.</p>
+      </section>
+    );
+  }
+
+  const width = metadataNumber(artifact.metadata.width);
+  const height = metadataNumber(artifact.metadata.height);
+  const sizeBytes = metadataNumber(artifact.metadata.size_bytes);
+  const digest = metadataString(artifact.metadata.sha256);
+  const capturedAt = metadataString(artifact.metadata.captured_at);
+
+  return (
+    <section className="agent-evidence-card" aria-label="Agent run evidence">
+      <div className="agent-subsection-heading">
+        <h3>Screenshot evidence</h3>
+        <span>{artifact.content_type}</span>
+      </div>
+      <dl>
+        <div>
+          <dt>Dimensions</dt>
+          <dd>{width && height ? `${width} × ${height}` : "Not detected"}</dd>
+        </div>
+        <div>
+          <dt>Size</dt>
+          <dd>{sizeBytes === null ? "Unavailable" : formatBytes(sizeBytes)}</dd>
+        </div>
+        <div>
+          <dt>Captured</dt>
+          <dd>{formatDate(capturedAt || null)}</dd>
+        </div>
+        <div className="agent-evidence-digest">
+          <dt>SHA-256</dt>
+          <dd className="mono">{digest || "Unavailable"}</dd>
+        </div>
+      </dl>
+      <p className="muted agent-scope-note">
+        Sprint B retains validated metadata and the digest; screenshot bytes are
+        not stored in PostgreSQL.
+      </p>
+    </section>
   );
 }
 
@@ -634,4 +876,36 @@ function packageActionLabel(action: PackageAction): string {
     "clear-data": "Clear Data",
     uninstall: "Uninstall",
   }[action];
+}
+
+function yesNo(value: boolean | undefined): string {
+  return value ? "Yes" : "No";
+}
+
+function deviceIdentity(run: AgentRun): string {
+  const device = run.result_summary.device;
+  if (!device) return "Unavailable";
+  const values = [
+    device.android_version || "Android unknown",
+    device.api_level === null ? "API unknown" : `API ${device.api_level}`,
+    device.abi || "ABI unknown",
+  ];
+  return values.join(" / ");
+}
+
+function formatDuration(value: number | null): string {
+  return value === null ? "Unavailable" : `${value.toFixed(3)} s`;
+}
+
+function metadataString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function metadataNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  return `${(value / 1024).toFixed(1)} KiB`;
 }

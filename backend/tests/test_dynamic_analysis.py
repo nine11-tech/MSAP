@@ -20,6 +20,10 @@ from apps.api.roles import ANALYST_GROUP, VIEWER_GROUP
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
+    AgentRun,
+    AgentRunArtifact,
+    AgentRuntime,
+    AgentRunStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -38,6 +42,13 @@ from apps.dynamic_analysis.services.leases import (
     heartbeat_lease,
     quarantine_device,
     release_lease,
+)
+from apps.dynamic_analysis.services.agent_controller import AgentController
+from apps.dynamic_analysis.services.agent_tools import (
+    AgentToolError,
+    TOOL_MANIFEST,
+    execute_agent_tool,
+    public_tool_manifest,
 )
 from apps.dynamic_analysis.services.host_agent_client import (
     DynamicHostAgentClient,
@@ -113,6 +124,262 @@ def viewer_client(django_user_model):
     client = APIClient()
     client.force_authenticate(user=user)
     return client
+
+
+@pytest.mark.django_db
+def test_agent_runtime_model_defaults_are_restricted():
+    runtime = AgentRuntime.objects.create(name="Restricted runtime defaults")
+
+    assert runtime.runtime_type == AgentRuntime.RuntimeType.INTERNAL_CONTROLLER
+    assert runtime.status == AgentRuntime.Status.AVAILABLE
+    assert runtime.isolation_level == AgentRuntime.IsolationLevel.INTERNAL_ONLY
+    assert runtime.enabled is True
+    assert runtime.capabilities == {
+        "objectives": ["DEVICE_READINESS_CHECK"],
+        "tools": ["get_device_status", "take_screenshot"],
+    }
+
+
+@pytest.mark.django_db
+def test_agent_run_model_lifecycle_calculates_duration(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-lifecycle")
+    started_at = timezone.now()
+    run = AgentRun.objects.create(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+        status=AgentRun.Status.QUEUED,
+    )
+
+    run.status = AgentRun.Status.RUNNING
+    run.started_at = started_at
+    run.save()
+    run.status = AgentRun.Status.SUCCEEDED
+    run.finished_at = started_at + timedelta(seconds=2.25)
+    run.save()
+
+    run.refresh_from_db()
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.duration_seconds == 2.25
+
+
+@pytest.mark.django_db
+def test_agent_run_step_sequence_is_unique(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-step-unique")
+    run = AgentRun.objects.create(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=1,
+        tool_name="get_device_status",
+    )
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            AgentRunStep.objects.create(
+                run=run,
+                sequence_number=1,
+                tool_name="take_screenshot",
+            )
+
+
+def test_agent_tool_manifest_only_exposes_allowlisted_tools():
+    assert set(TOOL_MANIFEST) == {"get_device_status", "take_screenshot"}
+    assert set(public_tool_manifest()) == {
+        "get_device_status",
+        "take_screenshot",
+    }
+    assert TOOL_MANIFEST["get_device_status"].input_schema[
+        "additionalProperties"
+    ] is False
+    assert TOOL_MANIFEST["take_screenshot"].timeout_seconds == 15
+
+
+def test_agent_tool_gateway_rejects_unknown_tool():
+    with pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool("run_shell", {"command": "id"})
+
+    assert exc_info.value.code == "UNKNOWN_TOOL"
+    assert "allowlisted" in str(exc_info.value)
+
+
+@pytest.mark.django_db
+def test_get_device_status_tool_normalizes_mocked_success():
+    client = Mock()
+    client.get_status.return_value = _agent_status_payload(serial="agent-tool-status")
+
+    output = execute_agent_tool("get_device_status", {}, client=client)
+
+    assert output == {
+        "host_agent_status": "REACHABLE",
+        "emulator_status": "REACHABLE",
+        "serial": "agent-tool-status",
+        "android_version": "15",
+        "api_level": 35,
+        "abi": "x86_64",
+        "root_uid": 0,
+        "selinux": "Enforcing",
+        "proxy": ":0",
+        "focused_app": "com.android.settings",
+        "ready": True,
+    }
+    assert DynamicDevice.objects.filter(serial="agent-tool-status").exists()
+
+
+def test_take_screenshot_tool_normalizes_mocked_success():
+    client = Mock()
+    client.request_screenshot.return_value = _agent_png(width=1080, height=1920)
+
+    output = execute_agent_tool(
+        "take_screenshot",
+        {"capture_reason": "device_readiness"},
+        client=client,
+    )
+
+    assert output["content_type"] == "image/png"
+    assert output["width"] == 1080
+    assert output["height"] == 1920
+    assert output["size_bytes"] == 24
+    assert len(output["sha256"]) == 64
+    assert output["captured_at"]
+
+
+@pytest.mark.django_db
+def test_agent_controller_marks_host_agent_unavailable(django_user_model):
+    user = _make_role_user(django_user_model, "agent-host-offline", ANALYST_GROUP)
+    _ensure_agent_runtime()
+    tool_executor = Mock(
+        side_effect=AgentToolError(
+            "The dynamic host agent is unavailable.",
+            code="HOST_AGENT_UNREACHABLE",
+            failure_category=AgentRun.FailureCategory.HOST_AGENT_UNAVAILABLE,
+        )
+    )
+
+    run = AgentController(tool_executor=tool_executor).run(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+    )
+
+    assert run.status == AgentRun.Status.FAILED
+    assert run.failure_category == AgentRun.FailureCategory.HOST_AGENT_UNAVAILABLE
+    assert list(run.steps.values_list("status", flat=True)) == [
+        AgentRunStep.Status.FAILED,
+        AgentRunStep.Status.SKIPPED,
+    ]
+
+
+@pytest.mark.django_db
+def test_agent_api_requires_authentication():
+    assert APIClient().get("/api/dynamic/agent/runs/").status_code in {401, 403}
+    assert APIClient().get("/api/dynamic/agent/runtimes/").status_code in {401, 403}
+
+
+@pytest.mark.django_db
+def test_agent_viewer_can_read_but_cannot_create(viewer_client, django_user_model):
+    user = django_user_model.objects.create_user(username="existing-agent-requester")
+    AgentRun.objects.create(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+    )
+
+    assert viewer_client.get("/api/dynamic/agent/runs/").status_code == 200
+    assert viewer_client.get("/api/dynamic/agent/runtimes/").status_code == 200
+    response = viewer_client.post(
+        "/api/dynamic/agent/runs/",
+        {"objective": "DEVICE_READINESS_CHECK"},
+        format="json",
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("client_fixture", ["analyst_client", "api_client"])
+def test_analyst_and_admin_can_create_device_readiness_run(
+    request,
+    client_fixture,
+):
+    client = request.getfixturevalue(client_fixture)
+    _ensure_agent_runtime()
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.DynamicHostAgentClient.get_status",
+        return_value=_agent_status_payload(serial=f"agent-api-{client_fixture}"),
+    ), patch(
+        "apps.dynamic_analysis.services.agent_tools.DynamicHostAgentClient.request_screenshot",
+        return_value=_agent_png(),
+    ):
+        response = client.post(
+            "/api/dynamic/agent/runs/",
+            {"objective": "DEVICE_READINESS_CHECK"},
+            format="json",
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == AgentRun.Status.SUCCEEDED
+    run = AgentRun.objects.get(pk=response.json()["id"])
+    assert list(run.steps.values_list("tool_name", flat=True)) == [
+        "get_device_status",
+        "take_screenshot",
+    ]
+    assert run.steps.filter(status=AgentRunStep.Status.SUCCEEDED).count() == 2
+    screenshot_artifact = run.artifacts.get(
+        artifact_type=AgentRunArtifact.ArtifactType.SCREENSHOT
+    )
+    assert screenshot_artifact.object_reference is None
+    assert "sha256" in screenshot_artifact.metadata
+
+
+@pytest.mark.django_db
+def test_agent_api_rejects_unknown_objective_and_caller_selected_tools(
+    analyst_client,
+):
+    unknown_response = analyst_client.post(
+        "/api/dynamic/agent/runs/",
+        {"objective": "AUTONOMOUS_PENTEST"},
+        format="json",
+    )
+    tools_response = analyst_client.post(
+        "/api/dynamic/agent/runs/",
+        {
+            "objective": "DEVICE_READINESS_CHECK",
+            "tools": ["run_shell"],
+        },
+        format="json",
+    )
+
+    assert unknown_response.status_code == 400
+    assert tools_response.status_code == 400
+    assert AgentRun.objects.count() == 0
+
+
+@override_settings(MSAP_DYNAMIC_HOST_AGENT_TOKEN="never-leak-agent-token")
+@pytest.mark.django_db
+def test_agent_failure_run_does_not_leak_host_agent_token(analyst_client):
+    _ensure_agent_runtime()
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.DynamicHostAgentClient.get_status",
+        return_value={
+            "connected": False,
+            "enabled": True,
+            "code": "HOST_AGENT_UNREACHABLE",
+            "detail": "token=never-leak-agent-token",
+        },
+    ):
+        response = analyst_client.post(
+            "/api/dynamic/agent/runs/",
+            {"objective": "DEVICE_READINESS_CHECK"},
+            format="json",
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == AgentRun.Status.FAILED
+    assert response.json()["failure_category"] == "HOST_AGENT_UNAVAILABLE"
+    steps_response = analyst_client.get(
+        f"/api/dynamic/agent/runs/{response.json()['id']}/steps/"
+    )
+    assert "never-leak-agent-token" not in str(response.json())
+    assert "never-leak-agent-token" not in str(steps_response.json())
 
 
 @pytest.mark.django_db
@@ -1571,6 +1838,65 @@ def test_viewer_cannot_cancel_queued_job(django_user_model):
     assert response.status_code == 403
     job.refresh_from_db()
     assert job.status == DynamicAnalysisJob.Status.QUEUED
+
+
+def _make_role_user(django_user_model, username: str, group_name: str):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(username=username)
+    user.groups.add(Group.objects.get(name=group_name))
+    return user
+
+
+def _ensure_agent_runtime() -> AgentRuntime:
+    runtime, _created = AgentRuntime.objects.get_or_create(
+        name="Sprint B Internal Controller",
+        defaults={
+            "runtime_type": AgentRuntime.RuntimeType.INTERNAL_CONTROLLER,
+            "status": AgentRuntime.Status.AVAILABLE,
+            "isolation_level": AgentRuntime.IsolationLevel.INTERNAL_ONLY,
+            "enabled": True,
+        },
+    )
+    runtime.status = AgentRuntime.Status.AVAILABLE
+    runtime.enabled = True
+    runtime.save(update_fields=["status", "enabled", "updated_at"])
+    return runtime
+
+
+def _agent_status_payload(*, serial: str = "agent-emulator") -> dict:
+    return {
+        "connected": True,
+        "enabled": True,
+        "code": "HOST_AGENT_CONNECTED",
+        "detail": "Dynamic host agent is connected.",
+        "agent": {
+            "version": "1.0",
+            "dynamic_env_detected": True,
+            "adb_path_present": True,
+            "serial": serial,
+        },
+        "device": {
+            "serial": serial,
+            "state": "device",
+            "adb_path_present": True,
+            "root_uid": 0,
+            "api_level": 35,
+            "android_version": "15",
+            "abi": "x86_64",
+            "selinux": "Enforcing",
+            "proxy": ":0",
+            "focused_app": "com.android.settings",
+        },
+    }
+
+
+def _agent_png(*, width: int = 1080, height: int = 1920) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + b"\x00\x00\x00\rIHDR"
+        + width.to_bytes(4, "big")
+        + height.to_bytes(4, "big")
+    )
 
 
 def _make_audit_with_apk(suffix: str = "default") -> tuple[Audit, APKFile]:

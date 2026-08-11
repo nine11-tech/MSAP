@@ -5,6 +5,10 @@ from rest_framework import serializers
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
+    AgentRun,
+    AgentRunArtifact,
+    AgentRuntime,
+    AgentRunStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -36,6 +40,123 @@ class DynamicHostAgentPackageActionSerializer(serializers.Serializer):
 class DynamicHostAgentInstallSerializer(serializers.Serializer):
     audit = serializers.IntegerField(min_value=1)
     apk_file = serializers.IntegerField(required=False, min_value=1)
+
+
+class AgentRunCreateSerializer(serializers.Serializer):
+    objective = serializers.ChoiceField(choices=AgentRun.Objective.choices)
+    audit = serializers.PrimaryKeyRelatedField(
+        queryset=Audit.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"objective", "audit"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+
+class AgentRuntimeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentRuntime
+        fields = [
+            "id",
+            "name",
+            "runtime_type",
+            "status",
+            "description",
+            "capabilities",
+            "isolation_level",
+            "enabled",
+            "last_seen_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentRunSerializer(serializers.ModelSerializer):
+    requested_by_username = serializers.CharField(
+        source="requested_by.username",
+        read_only=True,
+        allow_null=True,
+    )
+    device_serial = serializers.CharField(
+        source="device.serial",
+        read_only=True,
+        allow_null=True,
+    )
+    runtime_name = serializers.CharField(
+        source="runtime.name",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = AgentRun
+        fields = [
+            "id",
+            "audit",
+            "device",
+            "device_serial",
+            "runtime",
+            "runtime_name",
+            "objective",
+            "status",
+            "requested_by",
+            "requested_by_username",
+            "started_at",
+            "finished_at",
+            "duration_seconds",
+            "result_summary",
+            "failure_category",
+            "failure_message",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentRunStepSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentRunStep
+        fields = [
+            "id",
+            "run",
+            "sequence_number",
+            "tool_name",
+            "status",
+            "input_summary",
+            "output_summary",
+            "started_at",
+            "finished_at",
+            "duration_seconds",
+            "failure_message",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentRunArtifactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentRunArtifact
+        fields = [
+            "id",
+            "run",
+            "step",
+            "artifact_type",
+            "name",
+            "content_type",
+            "object_reference",
+            "metadata",
+            "created_at",
+        ]
+        read_only_fields = fields
 
 
 SECRET_KEY_FRAGMENTS = {
