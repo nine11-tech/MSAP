@@ -586,9 +586,6 @@ export interface DynamicHostAgentDevice {
   selinux: string;
   proxy: string;
   focused_app: string;
-  frida_server_running: boolean;
-  frida_smoke: boolean | null;
-  mitmproxy_smoke: boolean | null;
 }
 
 export interface DynamicHostAgentStatus {
@@ -620,19 +617,6 @@ export interface DynamicHostAgentActionResult {
   launchable_activity?: string;
   evidence?: Record<string, unknown>;
   detail?: string;
-  results?: Array<{
-    stage_name: string;
-    script_name: string;
-    return_code: number;
-    stdout_preview: string;
-    stderr_preview: string;
-    duration_seconds: number;
-    pass_markers: string[];
-    fail_markers: string[];
-    redaction_applied: boolean;
-    timed_out: boolean;
-    timeout_seconds: number | null;
-  }>;
 }
 
 export interface DynamicHostAgentPackages {

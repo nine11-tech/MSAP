@@ -542,51 +542,6 @@ class DynamicHostAgentViewSet(viewsets.ViewSet):
             return _host_agent_payload_response(payload)
         return Response(payload)
 
-    @action(detail=False, methods=["post"], url_path="preflight")
-    def preflight(self, request):
-        return self._run_agent_action(request, "preflight")
-
-    @action(
-        detail=False,
-        methods=["post"],
-        url_path="restore-instrumented-snapshot",
-    )
-    def restore_instrumented_snapshot(self, request):
-        return self._run_agent_action(request, "restore-instrumented-snapshot")
-
-    @action(detail=False, methods=["post"], url_path="frida-smoke")
-    def frida_smoke(self, request):
-        return self._run_agent_action(request, "frida-smoke")
-
-    @action(detail=False, methods=["post"], url_path="mitmproxy-smoke")
-    def mitmproxy_smoke(self, request):
-        return self._run_agent_action(request, "mitmproxy-smoke")
-
-    @action(detail=False, methods=["post"], url_path="platform-tls-probe")
-    def platform_tls_probe(self, request):
-        if not settings.MSAP_DYNAMIC_PLATFORM_TLS_PROBE_ENABLED:
-            return Response(
-                {"detail": "Platform TLS probe is disabled by settings."},
-                status=status.HTTP_409_CONFLICT,
-            )
-        return self._run_agent_action(request, "platform-tls-probe")
-
-    @action(detail=False, methods=["post"], url_path="cleanup")
-    def cleanup(self, request):
-        return self._run_agent_action(request, "cleanup-runtime-state")
-
-    @action(detail=False, methods=["post"], url_path="verify-trust-state")
-    def verify_trust_state(self, request):
-        return self._run_agent_action(request, "verify-trust-state")
-
-    @action(detail=False, methods=["post"], url_path="apply-lab-proxy")
-    def apply_lab_proxy(self, request):
-        return self._run_agent_action(request, "apply-lab-proxy")
-
-    @action(detail=False, methods=["post"], url_path="clear-lab-proxy")
-    def clear_lab_proxy(self, request):
-        return self._run_agent_action(request, "clear-lab-proxy")
-
     @action(
         detail=False,
         methods=["post"],
@@ -598,12 +553,21 @@ class DynamicHostAgentViewSet(viewsets.ViewSet):
             screenshot = DynamicHostAgentClient().request_screenshot()
         except HostAgentClientError as exc:
             return _host_agent_error_response(exc)
+        if not DynamicDevice.objects.filter(
+            serial=settings.MSAP_DYNAMIC_ADB_SERIAL
+        ).exists():
+            fetch_and_sync_host_agent(requested_by=request.user)
+        record_host_agent_action(
+            "screenshot",
+            {"success": True, "status": "PASS"},
+            requested_by=request.user,
+        )
         response = HttpResponse(screenshot, content_type="image/png")
         response["Cache-Control"] = "no-store"
         response["Content-Disposition"] = 'inline; filename="emulator-screen.png"'
         return response
 
-    @action(detail=False, methods=["get", "post"], url_path="packages")
+    @action(detail=False, methods=["get"], url_path="packages")
     def packages(self, request):
         try:
             result = DynamicHostAgentClient().request_json(
@@ -719,28 +683,6 @@ class DynamicHostAgentViewSet(viewsets.ViewSet):
             audit_id=audit.id,
             apk_file_id=apk_file.id,
             package_name=package_name,
-        )
-        return Response(result)
-
-    def _run_agent_action(self, request, action_name: str):
-        try:
-            result = DynamicHostAgentClient().request_json(
-                f"/actions/{action_name}",
-                method="POST",
-                body={},
-            )
-        except HostAgentClientError as exc:
-            return _host_agent_error_response(exc)
-        if action_name in {"frida-smoke", "mitmproxy-smoke"} or not (
-            DynamicDevice.objects.filter(
-                serial=settings.MSAP_DYNAMIC_ADB_SERIAL
-            ).exists()
-        ):
-            fetch_and_sync_host_agent(requested_by=request.user)
-        record_host_agent_action(
-            action_name,
-            result,
-            requested_by=request.user,
         )
         return Response(result)
 

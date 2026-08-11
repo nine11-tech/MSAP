@@ -3318,3 +3318,231 @@ tbody tr:hover td {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
+.dynamic-mvp-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.dynamic-mvp-page > .card + .card {
+  margin-top: 0;
+}
+
+.dynamic-mvp-section {
+  display: grid;
+  gap: 1rem;
+}
+
+.dynamic-mvp-actions,
+.dynamic-apk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.dynamic-device-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.dynamic-status-fact {
+  min-width: 0;
+  min-height: 84px;
+  padding: 0.75rem;
+  display: grid;
+  align-content: center;
+  gap: 0.2rem;
+  background: #091725;
+  border: 1px solid #263d52;
+  border-left: 3px solid #557086;
+  border-radius: 6px;
+}
+
+.dynamic-status-fact > span {
+  color: #7f94a7;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.dynamic-status-fact strong,
+.dynamic-status-fact small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dynamic-status-fact strong {
+  color: #e2ebf2;
+  font-size: 0.88rem;
+}
+
+.dynamic-status-fact small {
+  color: #8296a8;
+  font-size: 0.65rem;
+}
+
+.dynamic-status-fact.state-online {
+  border-left-color: #3fc69b;
+}
+
+.dynamic-status-fact.state-offline {
+  border-left-color: #ee6f78;
+}
+
+.dynamic-status-fact.state-warning {
+  border-left-color: #e0b64f;
+}
+
+.dynamic-apk-controls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.dynamic-apk-actions {
+  padding-top: 0.1rem;
+}
+
+.button-danger {
+  color: #ffc0c5;
+  background: #351820;
+  border-color: #74313d;
+}
+
+.button-danger:hover:not(:disabled) {
+  color: #fff;
+  background: #4b202a;
+  border-color: #a84a58;
+}
+
+.dynamic-role-note {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.installed-package-metadata {
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+.installed-package-metadata h3 {
+  margin: 0 0 0.75rem;
+  font-size: 0.86rem;
+}
+
+.installed-package-metadata dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem 1rem;
+}
+
+.installed-package-metadata dl > div {
+  min-width: 0;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.installed-package-metadata dt {
+  color: #7f94a7;
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.installed-package-metadata dd {
+  margin: 0;
+  color: #d9e5ed;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.dynamic-screenshot-panel {
+  width: 100%;
+  min-height: 420px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #71879a;
+  background: #050c13;
+  border: 1px solid #263d52;
+  border-radius: 6px;
+}
+
+.dynamic-screenshot-panel.has-capture {
+  min-height: min(680px, 72vh);
+}
+
+.dynamic-screenshot-panel img {
+  width: 100%;
+  height: min(680px, 72vh);
+  display: block;
+  object-fit: contain;
+}
+
+.dynamic-screenshot-panel > span {
+  font-size: 0.82rem;
+}
+
+.dynamic-next-card {
+  min-height: 180px;
+  display: grid;
+  align-content: center;
+  gap: 0.45rem;
+  border-left: 3px solid #e0b64f;
+}
+
+.dynamic-next-card .eyebrow,
+.dynamic-next-card h2,
+.dynamic-next-card p {
+  margin: 0;
+}
+
+.dynamic-next-card h2 {
+  font-size: 1.1rem;
+}
+
+.dynamic-next-card strong {
+  color: #edc96f;
+  font-size: 0.78rem;
+}
+
+.dynamic-next-card p:last-child {
+  max-width: 720px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+@media (max-width: 980px) {
+  .dynamic-device-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .dynamic-apk-controls,
+  .installed-package-metadata dl {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .dynamic-device-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .dynamic-mvp-actions,
+  .dynamic-apk-actions {
+    align-items: stretch;
+  }
+
+  .dynamic-mvp-actions .button,
+  .dynamic-apk-actions .button {
+    flex: 1 1 140px;
+  }
+
+  .dynamic-screenshot-panel {
+    min-height: 300px;
+  }
+}

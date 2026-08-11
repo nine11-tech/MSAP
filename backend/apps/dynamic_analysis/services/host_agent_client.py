@@ -4,6 +4,7 @@ from hashlib import sha256
 import http.client
 import json
 from pathlib import Path
+import re
 import socket
 import ssl
 from urllib import error as urllib_error
@@ -117,11 +118,14 @@ class DynamicHostAgentClient:
                 payload = response.read(MAX_AGENT_JSON_BYTES + 1)
         except urllib_error.HTTPError as exc:
             payload = exc.read(MAX_AGENT_JSON_BYTES)
-            detail = _safe_agent_error_detail(payload)
+            detail = _redact_sensitive(
+                _safe_agent_error_detail(payload),
+                self.token,
+            )
             raise HostAgentClientError(
                 detail,
                 code="HOST_AGENT_HTTP_ERROR",
-                status_code=502,
+                status_code=_client_status_from_agent_http(exc.code),
             ) from None
         except (urllib_error.URLError, TimeoutError, socket.timeout, OSError):
             raise self._unreachable_error() from None
@@ -146,7 +150,10 @@ class DynamicHostAgentClient:
             ) as response:
                 payload = response.read(24 * 1024 * 1024 + 1)
         except urllib_error.HTTPError as exc:
-            detail = _safe_agent_error_detail(exc.read(MAX_AGENT_JSON_BYTES))
+            detail = _redact_sensitive(
+                _safe_agent_error_detail(exc.read(MAX_AGENT_JSON_BYTES)),
+                self.token,
+            )
             raise HostAgentClientError(
                 detail,
                 code="HOST_AGENT_SCREENSHOT_FAILED",
@@ -224,7 +231,10 @@ class DynamicHostAgentClient:
             payload = response.read(MAX_AGENT_JSON_BYTES + 1)
             if response.status < 200 or response.status >= 300:
                 raise HostAgentClientError(
-                    _safe_agent_error_detail(payload),
+                    _redact_sensitive(
+                        _safe_agent_error_detail(payload),
+                        self.token,
+                    ),
                     code="HOST_AGENT_INSTALL_FAILED",
                     status_code=502,
                 )
@@ -313,6 +323,23 @@ def _safe_agent_error_detail(payload: bytes) -> str:
     if isinstance(decoded, dict) and isinstance(decoded.get("detail"), str):
         return decoded["detail"][:1000]
     return "Dynamic host-agent rejected the request."
+
+
+def _redact_sensitive(value: str, token: str = "") -> str:
+    redacted = value
+    if token:
+        redacted = redacted.replace(token, "[redacted]")
+    return re.sub(
+        r"(?i)\b(x-msap-agent-token|token|authorization)\s*[:=]\s*[^\s,;]+",
+        r"\1=[redacted]",
+        redacted,
+    )
+
+
+def _client_status_from_agent_http(status_code: int) -> int:
+    if status_code in {400, 404, 409, 503}:
+        return status_code
+    return 502
 
 
 def _file_sha256(path: Path) -> str:

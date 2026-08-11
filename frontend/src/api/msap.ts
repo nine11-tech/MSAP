@@ -200,22 +200,6 @@ export const getDynamicHostAgentStatus = () =>
   apiGet<DynamicHostAgentStatus>("dynamic/host-agent/status/");
 export const syncDynamicHostAgent = () =>
   apiPost<DynamicHostAgentStatus>("dynamic/host-agent/sync/", {});
-export const runDynamicHostAgentAction = (
-  action:
-    | "preflight"
-    | "restore-instrumented-snapshot"
-    | "frida-smoke"
-    | "mitmproxy-smoke"
-    | "platform-tls-probe"
-    | "verify-trust-state"
-    | "apply-lab-proxy"
-    | "clear-lab-proxy"
-    | "cleanup",
-) =>
-  apiPost<DynamicHostAgentActionResult>(
-    `dynamic/host-agent/${action}/`,
-    {},
-  );
 export const captureDynamicHostAgentScreenshot = () =>
   apiPostBlob("dynamic/host-agent/screenshot/");
 export const listDynamicHostAgentPackages = () =>
