@@ -331,6 +331,26 @@ MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME = os.getenv(
     "msap-instrumented-base",
 )
 
+# Ephemeral deterministic agent sandbox. Internal controller execution remains
+# the default; operators must explicitly enable container launches and provide
+# a gateway URL reachable from the configured Docker network.
+MSAP_AGENT_CONTAINER_ENABLED = env_bool("MSAP_AGENT_CONTAINER_ENABLED", False)
+MSAP_AGENT_CONTAINER_IMAGE = os.getenv(
+    "MSAP_AGENT_CONTAINER_IMAGE",
+    "msap-agent-runtime:local",
+)
+MSAP_AGENT_CONTAINER_NETWORK = os.getenv("MSAP_AGENT_CONTAINER_NETWORK", "")
+MSAP_AGENT_GATEWAY_URL = os.getenv(
+    "MSAP_AGENT_GATEWAY_URL",
+    "http://host.docker.internal:8000",
+)
+MSAP_AGENT_RUN_TOKEN_TTL_SECONDS = int(
+    os.getenv("MSAP_AGENT_RUN_TOKEN_TTL_SECONDS", "300")
+)
+MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS = int(
+    os.getenv("MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS", "120")
+)
+
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")

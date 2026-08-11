@@ -24,6 +24,12 @@ x-backend-environment: &backend-environment
   MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED: ${MSAP_DYNAMIC_RUNNER_SYNC_DEMO_ENABLED:-false}
   MSAP_DYNAMIC_LAB_PROXY_VALUE: ${MSAP_DYNAMIC_LAB_PROXY_VALUE:-10.0.2.2:18080}
   MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME: ${MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME:-msap-instrumented-base}
+  MSAP_AGENT_CONTAINER_ENABLED: ${MSAP_AGENT_CONTAINER_ENABLED:-false}
+  MSAP_AGENT_CONTAINER_IMAGE: ${MSAP_AGENT_CONTAINER_IMAGE:-msap-agent-runtime:local}
+  MSAP_AGENT_CONTAINER_NETWORK: ${MSAP_AGENT_CONTAINER_NETWORK:-}
+  MSAP_AGENT_GATEWAY_URL: ${MSAP_AGENT_GATEWAY_URL:-http://host.docker.internal:8000}
+  MSAP_AGENT_RUN_TOKEN_TTL_SECONDS: ${MSAP_AGENT_RUN_TOKEN_TTL_SECONDS:-300}
+  MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS: ${MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS:-120}
   MSAP_ENVIRONMENT: development
   POSTGRES_HOST: postgres
   POSTGRES_PORT: "5432"
@@ -198,6 +204,15 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  # Build target for the per-run sandbox image. The profile keeps it out of
+  # normal `docker compose up`; Django launches an ephemeral container per run.
+  agent-runtime:
+    image: ${MSAP_AGENT_CONTAINER_IMAGE:-msap-agent-runtime:local}
+    build:
+      context: agent_runtime
+      dockerfile: Dockerfile
+    profiles: ["agent-runtime-build"]
 
 volumes:
   postgres_data:

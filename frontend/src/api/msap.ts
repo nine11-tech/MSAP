@@ -236,12 +236,21 @@ export const listAgentRuns = (auditId?: number) =>
   );
 export const getAgentRun = (runId: number) =>
   apiGet<AgentRun>(`dynamic/agent/runs/${runId}/`);
-export const createAgentRun = (audit?: number) =>
+export const createAgentRun = (
+  audit?: number,
+  runtimeType: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX" =
+    "INTERNAL_CONTROLLER",
+) =>
   apiPost<
     AgentRun,
-    { objective: "DEVICE_READINESS_CHECK"; audit?: number }
+    {
+      objective: "DEVICE_READINESS_CHECK";
+      runtime_type: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
+      audit?: number;
+    }
   >("dynamic/agent/runs/", {
     objective: "DEVICE_READINESS_CHECK",
+    runtime_type: runtimeType,
     ...(audit === undefined ? {} : { audit }),
   });
 export const listAgentRunSteps = (runId: number) =>

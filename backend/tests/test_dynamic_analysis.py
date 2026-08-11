@@ -3,6 +3,7 @@ from datetime import timedelta
 from hashlib import sha256 as file_sha256
 import inspect
 from io import BytesIO, StringIO
+import subprocess
 import sys
 from unittest.mock import Mock, patch
 from urllib import error as urllib_error
@@ -44,11 +45,21 @@ from apps.dynamic_analysis.services.leases import (
     release_lease,
 )
 from apps.dynamic_analysis.services.agent_controller import AgentController
+from apps.dynamic_analysis.services.agent_gateway import execute_run_tool_call
+from apps.dynamic_analysis.services.agent_run_tokens import (
+    is_valid_agent_run_token,
+    issue_agent_run_token,
+)
 from apps.dynamic_analysis.services.agent_tools import (
     AgentToolError,
     TOOL_MANIFEST,
     execute_agent_tool,
     public_tool_manifest,
+)
+from apps.dynamic_analysis.services.container_runtime import (
+    ContainerRuntimeTimeout,
+    build_container_launch,
+    run_container_sandbox,
 )
 from apps.dynamic_analysis.services.host_agent_client import (
     DynamicHostAgentClient,
@@ -182,6 +193,342 @@ def test_agent_run_step_sequence_is_unique(django_user_model):
                 sequence_number=1,
                 tool_name="take_screenshot",
             )
+
+
+@override_settings(MSAP_AGENT_RUN_TOKEN_TTL_SECONDS=300)
+@pytest.mark.django_db
+def test_agent_run_token_only_persists_hash(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-token-hash")
+    run = _make_agent_gateway_run(user)
+
+    token = issue_agent_run_token(run)
+
+    run.refresh_from_db()
+    assert token
+    assert run.run_token_hash == file_sha256(token.encode("utf-8")).hexdigest()
+    assert run.run_token_hash != token
+    assert is_valid_agent_run_token(run, token) is True
+    assert token not in str(run.__dict__)
+
+
+@override_settings(MSAP_AGENT_RUN_TOKEN_TTL_SECONDS=300)
+@pytest.mark.django_db
+def test_valid_run_token_calls_allowed_tools_and_updates_steps(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-gateway-valid")
+    run = _make_agent_gateway_run(user)
+    token = issue_agent_run_token(run)
+    client = APIClient()
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.DynamicHostAgentClient.get_status",
+        return_value=_agent_status_payload(serial="agent-gateway-device"),
+    ), patch(
+        "apps.dynamic_analysis.services.agent_tools.DynamicHostAgentClient.request_screenshot",
+        return_value=_agent_png(),
+    ):
+        status_response = client.post(
+            f"/api/dynamic/agent/runs/{run.id}/tool-call/",
+            {"tool_name": "get_device_status", "arguments": {}},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        screenshot_response = client.post(
+            f"/api/dynamic/agent/runs/{run.id}/tool-call/",
+            {
+                "tool_name": "take_screenshot",
+                "arguments": {"capture_reason": "device_readiness"},
+            },
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["step_status"] == AgentRunStep.Status.SUCCEEDED
+    assert screenshot_response.status_code == 200
+    assert screenshot_response.json()["run_status"] == AgentRun.Status.SUCCEEDED
+    run.refresh_from_db()
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert list(run.steps.values_list("status", flat=True)) == [
+        AgentRunStep.Status.SUCCEEDED,
+        AgentRunStep.Status.SUCCEEDED,
+    ]
+    assert run.artifacts.filter(
+        artifact_type=AgentRunArtifact.ArtifactType.SCREENSHOT
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_agent_gateway_rejects_invalid_run_token(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-token-invalid")
+    run = _make_agent_gateway_run(user)
+    issue_agent_run_token(run)
+
+    response = APIClient().post(
+        f"/api/dynamic/agent/runs/{run.id}/tool-call/",
+        {"tool_name": "get_device_status", "arguments": {}},
+        format="json",
+        HTTP_AUTHORIZATION="Bearer definitely-not-the-token",
+    )
+
+    assert response.status_code == 403
+    assert run.steps.filter(status=AgentRunStep.Status.PENDING).count() == 2
+
+
+@pytest.mark.django_db
+def test_agent_gateway_rejects_expired_run_token(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-token-expired")
+    run = _make_agent_gateway_run(user)
+    token = issue_agent_run_token(run)
+    run.run_token_expires_at = timezone.now() - timedelta(seconds=1)
+    run.save(update_fields=["run_token_expires_at", "updated_at"])
+
+    response = APIClient().post(
+        f"/api/dynamic/agent/runs/{run.id}/tool-call/",
+        {"tool_name": "get_device_status", "arguments": {}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_agent_gateway_token_cannot_call_another_run(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-token-scoped")
+    first_run = _make_agent_gateway_run(user)
+    second_run = _make_agent_gateway_run(user)
+    first_token = issue_agent_run_token(first_run)
+    issue_agent_run_token(second_run)
+
+    response = APIClient().post(
+        f"/api/dynamic/agent/runs/{second_run.id}/tool-call/",
+        {"tool_name": "get_device_status", "arguments": {}},
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {first_token}",
+    )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_agent_run_token_cannot_access_browser_apis(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-token-api-scope")
+    run = _make_agent_gateway_run(user)
+    token = issue_agent_run_token(run)
+    client = APIClient()
+
+    runs_response = client.get(
+        "/api/dynamic/agent/runs/",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+    projects_response = client.get(
+        "/api/projects/",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+
+    assert runs_response.status_code in {401, 403}
+    assert projects_response.status_code in {401, 403}
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("body", "expected_code"),
+    [
+        ({"tool_name": "run_shell", "arguments": {}}, "TOOL_NOT_ALLOWED"),
+        (
+            {
+                "tool_name": "get_device_status",
+                "arguments": {"command": "id"},
+            },
+            "INVALID_TOOL_ARGUMENTS",
+        ),
+    ],
+)
+def test_agent_gateway_rejects_unknown_tool_and_bad_arguments(
+    django_user_model,
+    body,
+    expected_code,
+):
+    user = django_user_model.objects.create_user(username=f"gateway-{expected_code}")
+    run = _make_agent_gateway_run(user)
+    token = issue_agent_run_token(run)
+
+    response = APIClient().post(
+        f"/api/dynamic/agent/runs/{run.id}/tool-call/",
+        body,
+        format="json",
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == expected_code
+    assert run.steps.filter(status=AgentRunStep.Status.PENDING).count() == 2
+
+
+@override_settings(
+    MSAP_AGENT_CONTAINER_IMAGE="msap-agent-runtime:local",
+    MSAP_AGENT_CONTAINER_NETWORK="msap-agent-gateway",
+    MSAP_AGENT_GATEWAY_URL="http://backend:8000",
+)
+@pytest.mark.django_db
+def test_container_command_builder_is_fixed_and_environment_is_minimal(
+    django_user_model,
+):
+    user = django_user_model.objects.create_user(username="agent-container-command")
+    run = _make_agent_gateway_run(user, runtime=_ensure_container_runtime())
+
+    launch = build_container_launch(run=run, run_token="run-secret-value")
+
+    assert launch.argv[:5] == (
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        f"msap-agent-run-{run.id}",
+    )
+    assert launch.argv[-1] == "msap-agent-runtime:local"
+    assert "--read-only" in launch.argv
+    assert ("--network", "msap-agent-gateway") == (
+        launch.argv[launch.argv.index("--network")],
+        launch.argv[launch.argv.index("--network") + 1],
+    )
+    assert "--privileged" not in launch.argv
+    assert "--volume" not in launch.argv
+    assert "-v" not in launch.argv
+    assert "run-secret-value" not in launch.argv
+    assert set(launch.container_environment) == {
+        "MSAP_AGENT_RUN_ID",
+        "MSAP_AGENT_GATEWAY_URL",
+        "MSAP_AGENT_RUN_TOKEN",
+        "MSAP_AGENT_OBJECTIVE",
+    }
+    forbidden = {
+        "MSAP_DYNAMIC_HOST_AGENT_TOKEN",
+        "DATABASE_URL",
+        "POSTGRES_PASSWORD",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+    }
+    assert forbidden.isdisjoint(launch.container_environment)
+    assert forbidden.isdisjoint(launch.process_environment)
+
+
+@override_settings(
+    MSAP_AGENT_CONTAINER_IMAGE="msap-agent-runtime:local",
+    MSAP_AGENT_CONTAINER_NETWORK="",
+    MSAP_AGENT_GATEWAY_URL="http://host.docker.internal:8000",
+    MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS=1,
+)
+@pytest.mark.django_db
+def test_container_runtime_timeout_uses_bounded_cleanup(django_user_model):
+    user = django_user_model.objects.create_user(username="agent-container-timeout")
+    run = _make_agent_gateway_run(user, runtime=_ensure_container_runtime())
+    timeout = subprocess.TimeoutExpired(cmd=("docker", "run"), timeout=1)
+
+    with patch(
+        "apps.dynamic_analysis.services.container_runtime.subprocess.run",
+        side_effect=[timeout, Mock(returncode=0)],
+    ) as run_process:
+        with pytest.raises(ContainerRuntimeTimeout):
+            run_container_sandbox(run=run, run_token="bounded-token")
+
+    assert run_process.call_count == 2
+    cleanup_argv = run_process.call_args_list[1].args[0]
+    assert cleanup_argv == (
+        "docker",
+        "rm",
+        "--force",
+        f"msap-agent-run-{run.id}",
+    )
+
+
+@override_settings(MSAP_AGENT_CONTAINER_ENABLED=True)
+@pytest.mark.django_db
+def test_container_controller_completes_through_run_gateway(django_user_model):
+    user = _make_role_user(
+        django_user_model,
+        "agent-container-controller",
+        ANALYST_GROUP,
+    )
+    _ensure_container_runtime()
+
+    def tool_executor(tool_name, arguments, *, requested_by=None):
+        del arguments, requested_by
+        if tool_name == "get_device_status":
+            return {
+                "host_agent_status": "REACHABLE",
+                "emulator_status": "REACHABLE",
+                "serial": "container-emulator",
+                "android_version": "15",
+                "api_level": 35,
+                "abi": "x86_64",
+                "root_uid": 0,
+                "selinux": "Enforcing",
+                "proxy": ":0",
+                "focused_app": "com.android.settings",
+                "ready": True,
+            }
+        return {
+            "content_type": "image/png",
+            "width": 1080,
+            "height": 1920,
+            "size_bytes": 24,
+            "sha256": "a" * 64,
+            "captured_at": timezone.now().isoformat(),
+        }
+
+    def container_executor(*, run, run_token):
+        assert is_valid_agent_run_token(run, run_token)
+        for tool_name, arguments in (
+            ("get_device_status", {}),
+            ("take_screenshot", {"capture_reason": "device_readiness"}),
+        ):
+            execute_run_tool_call(
+                run_id=run.id,
+                tool_name=tool_name,
+                arguments=arguments,
+                tool_executor=tool_executor,
+            )
+
+    run = AgentController(container_executor=container_executor).run(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+        runtime_type=AgentRuntime.RuntimeType.CONTAINER_SANDBOX,
+    )
+
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.runtime.runtime_type == AgentRuntime.RuntimeType.CONTAINER_SANDBOX
+    assert run.result_summary["runtime_type"] == "CONTAINER_SANDBOX"
+    assert run.result_summary["environment_ready"] is True
+
+
+@override_settings(MSAP_AGENT_CONTAINER_ENABLED=True)
+@pytest.mark.django_db
+def test_container_controller_marks_timeout_without_docker(django_user_model):
+    user = _make_role_user(
+        django_user_model,
+        "agent-container-timeout-controller",
+        ANALYST_GROUP,
+    )
+    _ensure_container_runtime()
+    executor = Mock(
+        side_effect=ContainerRuntimeTimeout(
+            "The container sandbox exceeded its execution limit."
+        )
+    )
+
+    run = AgentController(container_executor=executor).run(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+        runtime_type=AgentRuntime.RuntimeType.CONTAINER_SANDBOX,
+    )
+
+    assert run.status == AgentRun.Status.TIMEOUT
+    assert run.failure_category == AgentRun.FailureCategory.TIMEOUT
+    assert list(run.steps.values_list("status", flat=True)) == [
+        AgentRunStep.Status.TIMEOUT,
+        AgentRunStep.Status.SKIPPED,
+    ]
 
 
 def test_agent_tool_manifest_only_exposes_allowlisted_tools():
@@ -1861,6 +2208,46 @@ def _ensure_agent_runtime() -> AgentRuntime:
     runtime.enabled = True
     runtime.save(update_fields=["status", "enabled", "updated_at"])
     return runtime
+
+
+def _ensure_container_runtime() -> AgentRuntime:
+    runtime, _created = AgentRuntime.objects.get_or_create(
+        name="Sprint C Container Sandbox",
+        defaults={
+            "runtime_type": AgentRuntime.RuntimeType.CONTAINER_SANDBOX,
+            "status": AgentRuntime.Status.AVAILABLE,
+            "isolation_level": AgentRuntime.IsolationLevel.CONTAINER_ISOLATED,
+            "enabled": True,
+        },
+    )
+    runtime.status = AgentRuntime.Status.AVAILABLE
+    runtime.enabled = True
+    runtime.save(update_fields=["status", "enabled", "updated_at"])
+    return runtime
+
+
+def _make_agent_gateway_run(user, *, runtime=None) -> AgentRun:
+    runtime = runtime or _ensure_container_runtime()
+    run = AgentRun.objects.create(
+        objective=AgentRun.Objective.DEVICE_READINESS_CHECK,
+        requested_by=user,
+        runtime=runtime,
+        status=AgentRun.Status.RUNNING,
+        started_at=timezone.now(),
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=1,
+        tool_name="get_device_status",
+        input_summary={},
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=2,
+        tool_name="take_screenshot",
+        input_summary={"capture_reason": "device_readiness"},
+    )
+    return run
 
 
 def _agent_status_payload(*, serial: str = "agent-emulator") -> dict:

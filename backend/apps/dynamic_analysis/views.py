@@ -32,12 +32,17 @@ from apps.dynamic_analysis.models import (
     DynamicSessionEvent,
     DynamicSessionStage,
 )
+from apps.dynamic_analysis.authentication import (
+    AgentRunTokenAuthentication,
+    IsAgentRunToken,
+)
 from apps.dynamic_analysis.serializers import (
     AgentRunArtifactSerializer,
     AgentRunCreateSerializer,
     AgentRunSerializer,
     AgentRuntimeSerializer,
     AgentRunStepSerializer,
+    AgentToolCallSerializer,
     DynamicAnalysisJobSerializer,
     DynamicDeviceCapabilitySerializer,
     DynamicDeviceEventSerializer,
@@ -66,6 +71,10 @@ from apps.dynamic_analysis.services.agent_controller import (
     AgentController,
     AgentControllerError,
     AgentControllerPermissionError,
+)
+from apps.dynamic_analysis.services.agent_gateway import (
+    AgentGatewayRequestError,
+    execute_run_tool_call,
 )
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
@@ -543,11 +552,12 @@ class AgentRunViewSet(
     filter_fields = ("audit", "status", "objective", "requested_by")
 
     def get_permissions(self):
-        permission_classes = (
-            [IsMSAPAnalystOrAdmin]
-            if self.action == "create"
-            else [IsMSAPViewerOrAbove]
-        )
+        if self.action == "tool_call":
+            permission_classes = [IsAgentRunToken]
+        elif self.action == "create":
+            permission_classes = [IsMSAPAnalystOrAdmin]
+        else:
+            permission_classes = [IsMSAPViewerOrAbove]
         return [permission() for permission in permission_classes]
 
     @extend_schema(
@@ -562,6 +572,7 @@ class AgentRunViewSet(
                 objective=serializer.validated_data["objective"],
                 audit=serializer.validated_data.get("audit"),
                 requested_by=request.user,
+                runtime_type=serializer.validated_data["runtime_type"],
             )
         except AgentControllerPermissionError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
@@ -571,6 +582,45 @@ class AgentRunViewSet(
             AgentRunSerializer(run, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
+
+    @extend_schema(
+        request=AgentToolCallSerializer,
+        responses={200: dict},
+    )
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="tool-call",
+        authentication_classes=[AgentRunTokenAuthentication],
+    )
+    def tool_call(self, request, pk=None):
+        serializer = AgentToolCallSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = execute_run_tool_call(
+                run_id=int(pk),
+                tool_name=serializer.validated_data["tool_name"],
+                arguments=serializer.validated_data["arguments"],
+            )
+        except AgentGatewayRequestError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        except Exception as exc:  # pragma: no cover - defensive API boundary
+            logger.error(
+                "agent_gateway_request_failed run_id=%s error_type=%s",
+                pk,
+                type(exc).__name__,
+            )
+            return Response(
+                {
+                    "code": "AGENT_GATEWAY_ERROR",
+                    "detail": "The restricted tool gateway failed unexpectedly.",
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(result)
 
     @extend_schema(responses={200: AgentRunStepSerializer(many=True)})
     @action(detail=True, methods=["get"], url_path="steps")
