@@ -1,5 +1,9 @@
 import { apiDownload, apiGet, apiPost, apiPostBlob } from "./client";
 import type {
+  AgentRun,
+  AgentRunArtifact,
+  AgentRuntime,
+  AgentRunStep,
   AnalysisStartResponse,
   AnalysisStatusResponse,
   ApkFile,
@@ -223,3 +227,24 @@ export const installDynamicAuditApk = (
     audit,
     ...(apkFile === undefined ? {} : { apk_file: apkFile }),
   });
+
+export const listAgentRuntimes = () =>
+  apiGet<AgentRuntime[]>("dynamic/agent/runtimes/");
+export const listAgentRuns = (auditId?: number) =>
+  apiGet<AgentRun[]>(
+    `dynamic/agent/runs/${auditId === undefined ? "" : `?audit=${encodeURIComponent(auditId)}`}`,
+  );
+export const getAgentRun = (runId: number) =>
+  apiGet<AgentRun>(`dynamic/agent/runs/${runId}/`);
+export const createAgentRun = (audit?: number) =>
+  apiPost<
+    AgentRun,
+    { objective: "DEVICE_READINESS_CHECK"; audit?: number }
+  >("dynamic/agent/runs/", {
+    objective: "DEVICE_READINESS_CHECK",
+    ...(audit === undefined ? {} : { audit }),
+  });
+export const listAgentRunSteps = (runId: number) =>
+  apiGet<AgentRunStep[]>(`dynamic/agent/runs/${runId}/steps/`);
+export const listAgentRunArtifacts = (runId: number) =>
+  apiGet<AgentRunArtifact[]>(`dynamic/agent/runs/${runId}/artifacts/`);

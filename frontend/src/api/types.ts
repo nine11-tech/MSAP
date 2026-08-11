@@ -647,3 +647,120 @@ export interface DynamicHostAgentInstallResult
     granted_permission_count: number;
   };
 }
+
+export interface AgentRuntime {
+  id: number;
+  name: string;
+  runtime_type: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
+  status: "AVAILABLE" | "UNAVAILABLE" | "DEGRADED" | "DISABLED";
+  description: string;
+  capabilities: {
+    objectives?: string[];
+    tools?: string[];
+  };
+  isolation_level:
+    | "INTERNAL_ONLY"
+    | "CONTAINER_PLANNED"
+    | "CONTAINER_ISOLATED";
+  enabled: boolean;
+  last_seen_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDeviceSummary {
+  serial: string;
+  android_version: string;
+  api_level: number | null;
+  abi: string;
+  root_uid: number | null;
+  selinux: string;
+  proxy: string;
+  focused_app: string;
+}
+
+export interface AgentScreenshotSummary {
+  content_type?: string;
+  width?: number | null;
+  height?: number | null;
+  size_bytes?: number;
+  sha256?: string;
+  captured_at?: string;
+}
+
+export interface AgentRunResultSummary {
+  objective?: string;
+  host_agent_reachable?: boolean;
+  emulator_reachable?: boolean;
+  device?: AgentDeviceSummary;
+  screenshot_captured?: boolean;
+  screenshot?: AgentScreenshotSummary;
+  environment_ready?: boolean;
+  summary?: string;
+  assessment_scope?: string;
+}
+
+export interface AgentRun {
+  id: number;
+  audit: number | null;
+  device: number | null;
+  device_serial: string | null;
+  runtime: number | null;
+  runtime_name: string | null;
+  objective: "DEVICE_READINESS_CHECK";
+  status:
+    | "QUEUED"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "CANCELLED"
+    | "TIMEOUT";
+  requested_by: number | null;
+  requested_by_username: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  result_summary: AgentRunResultSummary;
+  failure_category: string;
+  failure_message: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRunStep {
+  id: number;
+  run: number;
+  sequence_number: number;
+  tool_name: "get_device_status" | "take_screenshot";
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "SKIPPED"
+    | "TIMEOUT";
+  input_summary: Record<string, unknown>;
+  output_summary: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_seconds: number | null;
+  failure_message: string;
+  created_at: string;
+}
+
+export interface AgentRunArtifact {
+  id: number;
+  run: number;
+  step: number | null;
+  artifact_type:
+    | "SCREENSHOT"
+    | "TOOL_OUTPUT"
+    | "LOG"
+    | "JSON_RESULT"
+    | "OTHER";
+  name: string;
+  content_type: string;
+  object_reference: number | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}

@@ -66,6 +66,24 @@ Use **Refresh Packages** to reload the bounded installed-package inventory.
 Viewer accounts can inspect status, package inventory, and screenshots but
 cannot install or mutate packages.
 
+## Agentic Dynamic Assessment foundation
+
+Sprint B adds one deterministic readiness workflow to the bottom of the clean
+Dynamic Lab page:
+
+1. Confirm the card reports **Foundation available**.
+2. As an Analyst or Admin, click **Run Device Readiness Check**.
+3. Confirm the persisted run contains exactly `get_device_status` followed by
+   `take_screenshot`.
+4. Review host-agent reachability, emulator reachability, device identity,
+   SELinux state, run duration, and the final environment-readiness result.
+5. Review screenshot content type, dimensions when detectable, byte size,
+   SHA-256, and capture time.
+
+Viewer accounts can inspect existing runtimes, runs, steps, and artifact
+metadata but cannot start a run. The page has no freeform prompt, agent chat,
+custom tool selector, or autonomous pentesting control.
+
 ## Operational checks
 
 Dynamic Lab reports:
@@ -91,6 +109,8 @@ launch, force stop, clear data, and uninstall actions.
 - Clear Data and Uninstall require browser confirmation.
 - Analyst or administrator access is required for device mutation.
 
-## Next Sprint
+## Next runtime milestone
 
-Sprint B will introduce isolated agentic dynamic assessment runtime.
+Sprint C/B2 can replace deterministic internal-controller execution with an
+ephemeral container sandbox behind the same restricted backend tool gateway.
+Sprint B does not claim container isolation.

@@ -1,6 +1,10 @@
 from django.contrib import admin
 
 from apps.dynamic_analysis.models import (
+    AgentRun,
+    AgentRunArtifact,
+    AgentRuntime,
+    AgentRunStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -13,6 +17,49 @@ from apps.dynamic_analysis.models import (
     DynamicSessionEvent,
     DynamicSessionStage,
 )
+
+
+@admin.register(AgentRuntime)
+class AgentRuntimeAdmin(admin.ModelAdmin):
+    list_display = (
+        "name",
+        "runtime_type",
+        "status",
+        "isolation_level",
+        "enabled",
+        "last_seen_at",
+    )
+    list_filter = ("runtime_type", "status", "isolation_level", "enabled")
+    search_fields = ("name", "description")
+
+
+@admin.register(AgentRun)
+class AgentRunAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "objective",
+        "status",
+        "runtime",
+        "device",
+        "requested_by",
+        "created_at",
+    )
+    list_filter = ("objective", "status", "failure_category")
+    search_fields = ("requested_by__username", "failure_message")
+
+
+@admin.register(AgentRunStep)
+class AgentRunStepAdmin(admin.ModelAdmin):
+    list_display = ("run", "sequence_number", "tool_name", "status")
+    list_filter = ("tool_name", "status")
+    search_fields = ("failure_message",)
+
+
+@admin.register(AgentRunArtifact)
+class AgentRunArtifactAdmin(admin.ModelAdmin):
+    list_display = ("run", "step", "artifact_type", "name", "created_at")
+    list_filter = ("artifact_type", "content_type")
+    search_fields = ("name",)
 
 
 @admin.register(DynamicDevicePool)

@@ -840,3 +840,253 @@ class DynamicSessionArtifact(models.Model):
 
     def __str__(self) -> str:
         return f"{self.artifact_type} artifact #{self.sequence_number}"
+
+
+def default_agent_runtime_capabilities() -> dict:
+    return {
+        "objectives": ["DEVICE_READINESS_CHECK"],
+        "tools": ["get_device_status", "take_screenshot"],
+    }
+
+
+class AgentRuntime(models.Model):
+    class RuntimeType(models.TextChoices):
+        INTERNAL_CONTROLLER = "INTERNAL_CONTROLLER", "Internal controller"
+        CONTAINER_SANDBOX = "CONTAINER_SANDBOX", "Container sandbox"
+
+    class Status(models.TextChoices):
+        AVAILABLE = "AVAILABLE", "Available"
+        UNAVAILABLE = "UNAVAILABLE", "Unavailable"
+        DEGRADED = "DEGRADED", "Degraded"
+        DISABLED = "DISABLED", "Disabled"
+
+    class IsolationLevel(models.TextChoices):
+        INTERNAL_ONLY = "INTERNAL_ONLY", "Internal only"
+        CONTAINER_PLANNED = "CONTAINER_PLANNED", "Container planned"
+        CONTAINER_ISOLATED = "CONTAINER_ISOLATED", "Container isolated"
+
+    name = models.CharField(max_length=255, unique=True)
+    runtime_type = models.CharField(
+        max_length=32,
+        choices=RuntimeType.choices,
+        default=RuntimeType.INTERNAL_CONTROLLER,
+    )
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.AVAILABLE,
+    )
+    description = models.TextField(blank=True)
+    capabilities = models.JSONField(
+        default=default_agent_runtime_capabilities,
+        blank=True,
+    )
+    isolation_level = models.CharField(
+        max_length=32,
+        choices=IsolationLevel.choices,
+        default=IsolationLevel.INTERNAL_ONLY,
+    )
+    endpoint_url = models.URLField(blank=True)
+    enabled = models.BooleanField(default=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [
+            models.Index(fields=["enabled", "status", "runtime_type"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class AgentRun(models.Model):
+    class Objective(models.TextChoices):
+        DEVICE_READINESS_CHECK = (
+            "DEVICE_READINESS_CHECK",
+            "Device readiness check",
+        )
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+        TIMEOUT = "TIMEOUT", "Timeout"
+
+    class FailureCategory(models.TextChoices):
+        HOST_AGENT_UNAVAILABLE = (
+            "HOST_AGENT_UNAVAILABLE",
+            "Host agent unavailable",
+        )
+        RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE", "Runtime unavailable"
+        TOOL_EXECUTION_FAILED = (
+            "TOOL_EXECUTION_FAILED",
+            "Tool execution failed",
+        )
+        TIMEOUT = "TIMEOUT", "Timeout"
+        INTERNAL_ERROR = "INTERNAL_ERROR", "Internal error"
+
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_runs",
+    )
+    device = models.ForeignKey(
+        DynamicDevice,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_runs",
+    )
+    runtime = models.ForeignKey(
+        AgentRuntime,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="runs",
+    )
+    objective = models.CharField(max_length=64, choices=Objective.choices)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.QUEUED,
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="requested_agent_runs",
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
+    result_summary = models.JSONField(default=dict, blank=True)
+    failure_category = models.CharField(
+        max_length=64,
+        choices=FailureCategory.choices,
+        blank=True,
+    )
+    failure_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["status", "created_at"]),
+            models.Index(fields=["requested_by", "created_at"]),
+            models.Index(fields=["audit", "created_at"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.started_at is not None and self.finished_at is not None:
+            duration = self.finished_at - self.started_at
+            self.duration_seconds = max(0.0, round(duration.total_seconds(), 3))
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"Agent run {self.id}: {self.objective}"
+
+
+class AgentRunStep(models.Model):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+        SKIPPED = "SKIPPED", "Skipped"
+        TIMEOUT = "TIMEOUT", "Timeout"
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="steps",
+    )
+    sequence_number = models.PositiveIntegerField()
+    tool_name = models.CharField(max_length=128)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+    input_summary = models.JSONField(default=dict, blank=True)
+    output_summary = models.JSONField(default=dict, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    duration_seconds = models.FloatField(null=True, blank=True)
+    failure_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["run", "sequence_number"]
+        indexes = [models.Index(fields=["run", "status"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "sequence_number"],
+                name="unique_agent_run_step_sequence",
+            ),
+            models.CheckConstraint(
+                condition=Q(sequence_number__gte=1),
+                name="agent_run_step_sequence_gte_1",
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.started_at is not None and self.finished_at is not None:
+            duration = self.finished_at - self.started_at
+            self.duration_seconds = max(0.0, round(duration.total_seconds(), 3))
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.tool_name} step #{self.sequence_number} for run {self.run_id}"
+
+
+class AgentRunArtifact(models.Model):
+    class ArtifactType(models.TextChoices):
+        SCREENSHOT = "SCREENSHOT", "Screenshot"
+        TOOL_OUTPUT = "TOOL_OUTPUT", "Tool output"
+        LOG = "LOG", "Log"
+        JSON_RESULT = "JSON_RESULT", "JSON result"
+        OTHER = "OTHER", "Other"
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="artifacts",
+    )
+    step = models.ForeignKey(
+        AgentRunStep,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="artifacts",
+    )
+    artifact_type = models.CharField(max_length=32, choices=ArtifactType.choices)
+    name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=128)
+    object_reference = models.ForeignKey(
+        "storage.ObjectStorageReference",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agent_run_artifacts",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["run", "created_at", "id"]
+        indexes = [
+            models.Index(fields=["run", "artifact_type"]),
+            models.Index(fields=["step", "artifact_type"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.artifact_type} artifact for run {self.run_id}"
