@@ -2,7 +2,7 @@ from contextlib import nullcontext
 from datetime import timedelta
 from hashlib import sha256 as file_sha256
 import inspect
-from io import StringIO
+from io import BytesIO, StringIO
 import sys
 from unittest.mock import Mock, patch
 from urllib import error as urllib_error
@@ -39,8 +39,15 @@ from apps.dynamic_analysis.services.leases import (
     quarantine_device,
     release_lease,
 )
-from apps.dynamic_analysis.services.host_agent_client import DynamicHostAgentClient
-from apps.dynamic_analysis.services.host_agent import _run_process
+from apps.dynamic_analysis.services.host_agent_client import (
+    DynamicHostAgentClient,
+    HostAgentClientError,
+)
+from apps.dynamic_analysis.services.host_agent import (
+    DynamicHostAgent,
+    HostAgentRequestError,
+    _run_process,
+)
 from apps.dynamic_analysis.services.job_control import recover_stale_dynamic_jobs
 from apps.dynamic_analysis.services.local_scripts import (
     DynamicScriptExecutionError,
@@ -75,6 +82,34 @@ def api_client(django_user_model):
         email="dynamic-admin@example.test",
         password=PASSWORD,
     )
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
+
+
+@pytest.fixture
+def analyst_client(django_user_model):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(
+        username="dynamic-analyst",
+        email="dynamic-analyst@example.test",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=ANALYST_GROUP))
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
+
+
+@pytest.fixture
+def viewer_client(django_user_model):
+    call_command("bootstrap_roles", verbosity=0)
+    user = django_user_model.objects.create_user(
+        username="dynamic-viewer",
+        email="dynamic-viewer@example.test",
+        password=PASSWORD,
+    )
+    user.groups.add(Group.objects.get(name=VIEWER_GROUP))
     client = APIClient()
     client.force_authenticate(user=user)
     return client
@@ -508,6 +543,71 @@ def test_host_agent_client_connection_error_is_structured_and_hides_token():
     assert local_token not in str(result)
 
 
+def test_host_agent_client_redacts_token_from_http_errors():
+    local_token = "never-return-this-token"
+    client = DynamicHostAgentClient(
+        enabled=True,
+        base_url="http://127.0.0.1:8765",
+        token=local_token,
+        timeout_seconds=1,
+    )
+    response_body = (
+        f'{{"detail":"token={local_token} authorization=Bearer-value"}}'
+    ).encode()
+    http_error = urllib_error.HTTPError(
+        client._url("/actions/force-stop"),
+        400,
+        "Bad Request",
+        {},
+        BytesIO(response_body),
+    )
+
+    with patch(
+        "apps.dynamic_analysis.services.host_agent_client.urllib_request.urlopen",
+        side_effect=http_error,
+    ), pytest.raises(HostAgentClientError) as exc_info:
+        client.request_json(
+            "/actions/force-stop",
+            method="POST",
+            body={"package_name": "com.example.safe"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert local_token not in str(exc_info.value)
+    assert "Bearer-value" not in str(exc_info.value)
+
+
+def test_host_agent_rejects_package_action_when_package_is_not_installed():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    missing_package_result = {
+        "return_code": 0,
+        "stdout_preview": "",
+        "stderr_preview": "",
+        "duration_seconds": 0.1,
+        "timed_out": False,
+        "redaction_applied": False,
+    }
+
+    with patch.object(
+        agent,
+        "_run_adb",
+        return_value=missing_package_result,
+    ) as run_adb, pytest.raises(HostAgentRequestError) as exc_info:
+        agent.package_action(
+            "force-stop",
+            {"package_name": "com.example.missing"},
+        )
+
+    assert "not installed" in str(exc_info.value)
+    run_adb.assert_called_once_with(
+        "shell",
+        "pm",
+        "path",
+        "com.example.missing",
+        timeout_seconds=15,
+    )
+
+
 def test_host_agent_binary_output_uses_screenshot_limit_not_text_preview_limit():
     expected_size = 300 * 1024
 
@@ -532,6 +632,35 @@ def test_host_agent_status_api_requires_authentication():
     assert response.status_code in {401, 403}
 
 
+@pytest.mark.django_db
+def test_dynamic_sync_device_api_uses_stable_payload(api_client):
+    payload = {
+        "connected": True,
+        "enabled": True,
+        "code": "HOST_AGENT_CONNECTED",
+        "detail": "Dynamic host agent is connected.",
+        "device": {
+            "serial": "emulator-5554",
+            "state": "device",
+            "api_level": 35,
+        },
+    }
+    with patch(
+        "apps.dynamic_analysis.views.fetch_and_sync_host_agent",
+        return_value=payload,
+    ) as sync_host_agent:
+        response = api_client.post(
+            "/api/dynamic/host-agent/sync/",
+            {},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.json() == payload
+    sync_host_agent.assert_called_once()
+    assert sync_host_agent.call_args.kwargs["requested_by"].is_superuser
+
+
 @override_settings(
     MSAP_DYNAMIC_HOST_AGENT_ENABLED=True,
     MSAP_DYNAMIC_HOST_AGENT_URL="http://127.0.0.1:8765",
@@ -540,6 +669,7 @@ def test_host_agent_status_api_requires_authentication():
 @pytest.mark.django_db
 def test_host_agent_screenshot_negotiates_binary_png(api_client):
     png = b"\x89PNG\r\n\x1a\n" + b"bounded-test-png"
+    _make_device("5554")
     with patch(
         "apps.dynamic_analysis.views.DynamicHostAgentClient.request_screenshot",
         return_value=png,
@@ -554,49 +684,83 @@ def test_host_agent_screenshot_negotiates_binary_png(api_client):
     assert response.status_code == 200
     assert response["Content-Type"] == "image/png"
     assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert DynamicDeviceEvent.objects.filter(
+        device__serial="emulator-5554",
+        metadata__action="screenshot",
+    ).exists()
 
 
-@override_settings(
-    MSAP_DYNAMIC_HOST_AGENT_ENABLED=True,
-    MSAP_DYNAMIC_HOST_AGENT_URL="http://127.0.0.1:8765",
-    MSAP_DYNAMIC_HOST_AGENT_TOKEN="test-only-token",
-)
 @pytest.mark.django_db
-def test_dynamic_analyst_can_call_safe_host_agent_action(django_user_model):
-    call_command("bootstrap_roles", verbosity=0)
-    user = django_user_model.objects.create_user(
-        username="host-agent-analyst",
-        password=PASSWORD,
+def test_dynamic_package_list_uses_bounded_host_agent_response(viewer_client):
+    package_result = {
+        "success": True,
+        "serial": "emulator-5554",
+        "count": 2,
+        "packages": ["com.example.one", "com.example.two"],
+        "truncated": False,
+        "return_code": 0,
+        "duration_seconds": 0.2,
+    }
+    with patch(
+        "apps.dynamic_analysis.views.DynamicHostAgentClient.request_json",
+        return_value=package_result,
+    ) as request_json:
+        response = viewer_client.get("/api/dynamic/host-agent/packages/")
+
+    assert response.status_code == 200
+    assert response.json()["packages"] == package_result["packages"]
+    request_json.assert_called_once_with(
+        "/actions/list-packages",
+        method="POST",
+        body={},
     )
-    user.groups.add(Group.objects.get(name=ANALYST_GROUP))
-    client = APIClient()
-    client.force_authenticate(user=user)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("endpoint", "action"),
+    [
+        ("launch-package", "launch-package"),
+        ("force-stop", "force-stop"),
+        ("clear-data", "clear-data"),
+        ("uninstall", "uninstall"),
+    ],
+)
+def test_dynamic_analyst_can_run_mocked_package_actions(
+    analyst_client,
+    endpoint,
+    action,
+):
     _make_device("5554")
     action_result = {
-        "action": "preflight",
+        "action": action,
+        "package_name": "com.example.safe",
         "success": True,
         "status": "PASS",
-        "duration_seconds": 1.25,
-        "results": [],
+        "duration_seconds": 0.25,
     }
 
     with patch(
         "apps.dynamic_analysis.views.DynamicHostAgentClient.request_json",
         return_value=action_result,
     ) as request_json:
-        response = client.post(
-            "/api/dynamic/host-agent/preflight/",
-            {},
+        response = analyst_client.post(
+            f"/api/dynamic/host-agent/{endpoint}/",
+            {"package_name": "com.example.safe"},
             format="json",
         )
 
     assert response.status_code == 200
     assert response.json()["status"] == "PASS"
     request_json.assert_called_once_with(
-        "/actions/preflight",
+        f"/actions/{action}",
         method="POST",
-        body={},
+        body={"package_name": "com.example.safe"},
     )
+    assert DynamicDeviceEvent.objects.filter(
+        device__serial="emulator-5554",
+        metadata__action=action,
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -659,6 +823,25 @@ def test_host_agent_package_name_validation_rejects_unsafe_input(
 
     assert response.status_code == 400
     request_json.assert_not_called()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/dynamic/scripts/",
+        "/api/dynamic/script-runs/",
+        "/api/dynamic/frida/status/",
+        "/api/dynamic/host-agent/preflight/",
+        "/api/dynamic/host-agent/frida-smoke/",
+        "/api/dynamic/host-agent/mitmproxy-smoke/",
+        "/api/dynamic/host-agent/platform-tls-probe/",
+    ],
+)
+def test_dynamic_lab_experimental_routes_are_removed(api_client, path):
+    response = api_client.post(path, {}, format="json")
+
+    assert response.status_code == 404
 
 
 @pytest.mark.django_db

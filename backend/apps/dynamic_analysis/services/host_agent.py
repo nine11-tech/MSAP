@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from datetime import datetime, timezone as dt_timezone
 from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,13 +18,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 
-from apps.dynamic_analysis.services.local_scripts import (
-    DynamicScriptExecutionError,
-    DynamicScriptResult,
-    _redacted_preview,
-    get_dynamic_stage_timeout,
-    run_dynamic_lab_script,
-)
+from apps.dynamic_analysis.services.local_scripts import _redacted_preview
 
 
 logger = logging.getLogger("msap.security")
@@ -47,21 +39,6 @@ MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
 MAX_SCREENSHOT_BYTES = 24 * 1024 * 1024
 MAX_PACKAGES = 5000
 
-SCRIPT_ACTIONS = {
-    "/actions/preflight": ("preflight.sh",),
-    "/actions/restore-instrumented-snapshot": (
-        "restore-instrumented-snapshot.sh",
-    ),
-    "/actions/frida-smoke": (
-        "refresh-frida-bridge.sh",
-        "frida-smoke.sh",
-    ),
-    "/actions/mitmproxy-smoke": ("mitmproxy-smoke.sh",),
-    "/actions/platform-tls-probe": ("platform-tls-probe.sh",),
-    "/actions/cleanup-runtime-state": ("cleanup-runtime-state.sh",),
-}
-
-
 class HostAgentRequestError(ValueError):
     def __init__(self, message: str, status_code: int = HTTPStatus.BAD_REQUEST):
         super().__init__(message)
@@ -76,10 +53,6 @@ class DynamicHostAgent:
             raise ValueError("A non-empty dynamic host-agent token is required.")
         self.token = token
         self.serial = serial or settings.MSAP_DYNAMIC_ADB_SERIAL
-        self.capability_state = {
-            "frida_smoke": None,
-            "mitmproxy_smoke": None,
-        }
 
     def health(self) -> dict:
         adb_path = self._adb_path()
@@ -109,8 +82,6 @@ class DynamicHostAgent:
                 "selinux": "",
                 "proxy": "",
                 "focused_app": "",
-                "frida_server_running": False,
-                **self.capability_state,
             }
 
         devices_result = self._run_command([adb_path, "devices"], timeout_seconds=15)
@@ -126,8 +97,6 @@ class DynamicHostAgent:
             "selinux": "",
             "proxy": "",
             "focused_app": "",
-            "frida_server_running": False,
-            **self.capability_state,
         }
         if state != "device":
             return device
@@ -166,71 +135,7 @@ class DynamicHostAgent:
             "shell", "dumpsys", "window", "windows", timeout_seconds=15
         )
         device["focused_app"] = _focused_package(focus_output)
-        frida_pid = self._adb_text(
-            "shell", "pidof", "msap-frida-server", timeout_seconds=10
-        )
-        device["frida_server_running"] = bool(frida_pid)
         return device
-
-    def run_script_action(self, path: str) -> dict:
-        scripts = SCRIPT_ACTIONS[path]
-        results = []
-        started_at = datetime.now(dt_timezone.utc)
-        started = time.monotonic()
-        action_timeout = max(
-            1,
-            int(settings.MSAP_DYNAMIC_HOST_AGENT_TIMEOUT_SECONDS) - 2,
-        )
-        deadline = started + action_timeout
-        try:
-            for script_name in scripts:
-                remaining_seconds = max(1, int(deadline - time.monotonic()))
-                result = run_dynamic_lab_script(
-                    script_name,
-                    timeout_seconds=min(
-                        get_dynamic_stage_timeout(script_name),
-                        remaining_seconds,
-                    ),
-                    require_runner_enabled=False,
-                )
-                results.append(_script_result_payload(result))
-        except DynamicScriptExecutionError as exc:
-            if exc.result is not None:
-                results.append(_script_result_payload(exc.result))
-            self._record_capability_result(path, False)
-            finished_at = datetime.now(dt_timezone.utc)
-            payload = {
-                "action": path.removeprefix("/actions/"),
-                "success": False,
-                "status": "FAIL",
-                "started_at": started_at.isoformat(),
-                "finished_at": finished_at.isoformat(),
-                "duration_seconds": round(time.monotonic() - started, 3),
-                "results": results,
-                "detail": "The allowlisted dynamic lab action failed.",
-            }
-            payload["evidence"] = _structured_action_evidence(
-                payload,
-                serial=self.serial,
-            )
-            return payload
-
-        self._record_capability_result(path, True)
-        finished_at = datetime.now(dt_timezone.utc)
-        payload = {
-            "action": path.removeprefix("/actions/"),
-            "success": True,
-            "status": "PASS",
-            "started_at": started_at.isoformat(),
-            "finished_at": finished_at.isoformat(),
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "results": results,
-        }
-        payload["evidence"] = _structured_action_evidence(
-            payload,
-            serial=self.serial,
-        )
-        return payload
 
     def screenshot(self) -> bytes:
         result = self._run_adb_binary(
@@ -286,6 +191,7 @@ class DynamicHostAgent:
             raise HostAgentRequestError("A valid Android package name is required.")
         if action == "launch-package":
             return self.launch_package(package_name)
+        self._require_installed_package(package_name)
         argv = {
             "force-stop": ("shell", "am", "force-stop", package_name),
             "clear-data": ("shell", "pm", "clear", package_name),
@@ -301,6 +207,7 @@ class DynamicHostAgent:
         }
 
     def launch_package(self, package_name: str) -> dict:
+        self._require_installed_package(package_name)
         component = self._resolve_launchable_activity(package_name)
         if component:
             result = self._run_adb(
@@ -448,90 +355,6 @@ class DynamicHostAgent:
             ):
                 temporary_path.unlink(missing_ok=True)
 
-    def trust_state(self) -> dict:
-        started = time.monotonic()
-        snapshot_name = settings.MSAP_DYNAMIC_INSTRUMENTED_SNAPSHOT_NAME
-        staged_ca = os.getenv(
-            "MSAP_ANDROID_STAGED_CA",
-            "/data/local/tmp/msap-instrumentation/ca/c8750f0d.0",
-        )
-        staged_present = self._run_adb(
-            "shell", "test", "-f", staged_ca, timeout_seconds=10
-        )["return_code"] == 0
-        proxy = self._adb_text(
-            "shell", "settings", "get", "global", "http_proxy", timeout_seconds=10
-        )
-        selinux = self._adb_text("shell", "getenforce", timeout_seconds=10)
-        overlay_mounts = self._adb_text("shell", "mount", timeout_seconds=15)
-        runtime_overlay_active = "runtime-ca-overlay" in overlay_mounts
-        evidence = {
-            "snapshot_name": snapshot_name,
-            "ca_trust_state": (
-                "runtime overlay active"
-                if runtime_overlay_active
-                else "staged CA present" if staged_present else "staged CA missing"
-            ),
-            "staged_ca_present": staged_present,
-            "runtime_trust_overlay_active": runtime_overlay_active,
-            "proxy_state": proxy,
-            "configured_lab_proxy": settings.MSAP_DYNAMIC_LAB_PROXY_VALUE,
-            "selinux_state": selinux,
-            "test_result": "PASS" if staged_present and selinux == "Enforcing" else "FAIL",
-            "limitations": (
-                "This inventory verifies controlled lab state only. It does not prove "
-                "that a target application trusts the laboratory CA."
-            ),
-        }
-        return {
-            "action": "verify-trust-state",
-            "success": evidence["test_result"] == "PASS",
-            "status": evidence["test_result"],
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "evidence": evidence,
-        }
-
-    def set_lab_proxy(self, *, enabled: bool) -> dict:
-        started = time.monotonic()
-        proxy_value = settings.MSAP_DYNAMIC_LAB_PROXY_VALUE if enabled else ":0"
-        if enabled and not re.fullmatch(r"[A-Za-z0-9_.:-]+:[0-9]{1,5}", proxy_value):
-            raise HostAgentRequestError(
-                "Configured laboratory proxy value is invalid.",
-                HTTPStatus.INTERNAL_SERVER_ERROR,
-            )
-        result = self._run_adb(
-            "shell",
-            "settings",
-            "put",
-            "global",
-            "http_proxy",
-            proxy_value,
-            timeout_seconds=15,
-        )
-        observed = self._adb_text(
-            "shell", "settings", "get", "global", "http_proxy", timeout_seconds=10
-        )
-        success = result["return_code"] == 0 and observed == proxy_value
-        action = "apply-lab-proxy" if enabled else "clear-lab-proxy"
-        return {
-            "action": action,
-            "success": success,
-            "status": "PASS" if success else "FAIL",
-            "duration_seconds": round(time.monotonic() - started, 3),
-            "evidence": {
-                "configured_value": proxy_value,
-                "observed_proxy_state": observed,
-                "settings_controlled": True,
-                "selinux_state": self._adb_text(
-                    "shell", "getenforce", timeout_seconds=10
-                ),
-                "limitations": (
-                    "Proxy configuration alone does not prove TLS interception or "
-                    "target-application trust."
-                ),
-            },
-            **_public_command_result(result),
-        }
-
     def _read_apk_badging(self, apk_path: Path) -> dict:
         build_tools_dir = os.getenv("MSAP_BUILD_TOOLS_DIR", "").strip()
         candidates = [
@@ -644,11 +467,19 @@ class DynamicHostAgent:
                     return result["stdout_preview"].strip()
         return str(path)
 
-    def _record_capability_result(self, path: str, success: bool) -> None:
-        if path == "/actions/frida-smoke":
-            self.capability_state["frida_smoke"] = success
-        elif path == "/actions/mitmproxy-smoke":
-            self.capability_state["mitmproxy_smoke"] = success
+    def _require_installed_package(self, package_name: str) -> None:
+        result = self._run_adb(
+            "shell", "pm", "path", package_name, timeout_seconds=15
+        )
+        installed = result["return_code"] == 0 and any(
+            line.strip().startswith("package:")
+            for line in result["stdout_preview"].splitlines()
+        )
+        if not installed:
+            raise HostAgentRequestError(
+                f"Target package is not installed: {package_name}",
+                HTTPStatus.BAD_REQUEST,
+            )
 
     def _adb_path(self) -> str | None:
         configured = os.getenv("ADB_WIN", "").strip()
@@ -724,13 +555,6 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         try:
-            if path in SCRIPT_ACTIONS:
-                self._require_empty_or_json_body()
-                self._send_json(
-                    HTTPStatus.OK,
-                    self.server.agent.run_script_action(path),
-                )
-                return
             if path == "/actions/screenshot":
                 self._require_empty_or_json_body()
                 self._send_png(self.server.agent.screenshot())
@@ -750,19 +574,6 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     self.server.agent.package_action(action_name, body),
-                )
-                return
-            if path == "/actions/verify-trust-state":
-                self._require_empty_or_json_body()
-                self._send_json(HTTPStatus.OK, self.server.agent.trust_state())
-                return
-            if path in {"/actions/apply-lab-proxy", "/actions/clear-lab-proxy"}:
-                self._require_empty_or_json_body()
-                self._send_json(
-                    HTTPStatus.OK,
-                    self.server.agent.set_lab_proxy(
-                        enabled=path.endswith("apply-lab-proxy")
-                    ),
                 )
                 return
             if path == "/actions/install-apk":
@@ -930,119 +741,6 @@ def _drain_stream_bounded(stream, limit: int, chunks: list[bytes]) -> None:
                 retained += len(bounded_chunk)
     finally:
         stream.close()
-
-
-def _script_result_payload(result: DynamicScriptResult) -> dict:
-    payload = asdict(result)
-    payload.pop("stdout_path", None)
-    payload.pop("stderr_path", None)
-    payload.pop("started_at", None)
-    payload.pop("finished_at", None)
-    return payload
-
-
-def _structured_action_evidence(payload: dict, *, serial: str) -> dict:
-    action = payload["action"]
-    evidence = {
-        "action_name": action,
-        "start_timestamp": payload.get("started_at"),
-        "end_timestamp": payload.get("finished_at"),
-        "duration_seconds": payload.get("duration_seconds"),
-        "emulator_serial": serial,
-        "final_status": payload.get("status"),
-    }
-    markers: dict[str, str] = {}
-    for result in payload.get("results", []):
-        for stream_name in ("stdout_preview", "stderr_preview"):
-            for line in str(result.get(stream_name) or "").splitlines():
-                if not line.startswith("MSAP_EVIDENCE_") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                markers[key.removeprefix("MSAP_EVIDENCE_").lower()] = value.strip()
-
-    if action == "frida-smoke":
-        evidence.update(
-            {
-                "client_version": markers.get("client_version", "unknown"),
-                "server_version": markers.get("server_version", "unknown"),
-                "version_match": _marker_bool(markers.get("version_match")),
-                "remote_endpoint": markers.get("remote_endpoint", "unknown"),
-                "connection_established": _marker_bool(
-                    markers.get("connection_established")
-                ),
-                "process_count": _integer_or_none(markers.get("process_count", "")),
-                "test_package_process": markers.get("test_package", "unknown"),
-                "spawned_or_attached_pid": _integer_or_none(
-                    markers.get("attached_pid", "")
-                ),
-                "process_architecture": markers.get(
-                    "process_architecture", "unknown"
-                ),
-                "injected_script_event_received": _marker_bool(
-                    markers.get("injected_script_event_received")
-                ),
-                "cleanup_result": markers.get("cleanup_result", "UNKNOWN"),
-                "interpretation": (
-                    "MSAP connected to the managed Frida server, attached to the "
-                    "controlled Android Settings process, injected a bounded JavaScript "
-                    "probe, received the expected structured event, and cleaned up the process."
-                    if payload.get("status") == "PASS"
-                    else "The bounded Frida connectivity and instrumentation check did not complete successfully."
-                ),
-                "limitations": (
-                    "This connectivity check does not itself demonstrate a vulnerability "
-                    "in the assessed APK."
-                ),
-            }
-        )
-    elif action == "mitmproxy-smoke":
-        evidence.update(
-            {
-                "mitmproxy_version": markers.get("mitmproxy_version", "unknown"),
-                "proxy_bind_host": markers.get("proxy_bind_host", "unknown"),
-                "proxy_bind_port": _integer_or_none(
-                    markers.get("proxy_bind_port", "")
-                ),
-                "emulator_proxy_state": markers.get(
-                    "emulator_proxy_state", "unknown"
-                ),
-                "probe_target_host": markers.get("probe_target_host", "unknown"),
-                "request_method": markers.get("request_method", "unknown"),
-                "response_status": _integer_or_none(
-                    markers.get("response_status", "")
-                ),
-                "captured_flow_count": _integer_or_none(
-                    markers.get("captured_flow_count", "")
-                ),
-                "matching_flow_token_found": _marker_bool(
-                    markers.get("matching_flow_found")
-                ),
-                "tls_interception_result": markers.get(
-                    "tls_interception_result", "UNKNOWN"
-                ),
-                "certificate_trust_mode": markers.get(
-                    "certificate_trust_mode", "unknown"
-                ),
-                "cleanup_result": markers.get("cleanup_result", "UNKNOWN"),
-                "interpretation": (
-                    "MSAP started a bounded laboratory proxy, generated correlated HTTP "
-                    "and TLS probe requests from the WSL host, captured the matching "
-                    "flows, and preserved the emulator's prior proxy state."
-                    if payload.get("status") == "PASS"
-                    else "The bounded laboratory proxy capture check did not complete successfully."
-                ),
-                "limitations": (
-                    "This controlled platform probe does not prove that every target-application "
-                    "connection can be intercepted. Certificate pinning, custom trust stores, "
-                    "QUIC, native TLS, or VPN behavior may require additional testing."
-                ),
-            }
-        )
-    return evidence
-
-
-def _marker_bool(value: str | None) -> bool:
-    return str(value or "").strip().lower() == "true"
 
 
 def _public_command_result(result: dict) -> dict:
