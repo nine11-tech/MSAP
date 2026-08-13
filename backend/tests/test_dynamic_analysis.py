@@ -112,6 +112,12 @@ from apps.dynamic_analysis.services.assessment_execution_contract import (
     APPROVED_EXECUTION_CONTRACT_VERSION,
     AssessmentExecutionContractError,
     build_approved_execution_contract,
+    validate_approved_execution_contract,
+)
+from apps.dynamic_analysis.services.assessment_executor import (
+    AssessmentExecutionError,
+    AssessmentExecutor,
+    OBSERVATION_CONTRACT_VERSION,
 )
 from apps.dynamic_analysis.services.job_control import recover_stale_dynamic_jobs
 from apps.dynamic_analysis.services.local_scripts import (
@@ -5103,3 +5109,471 @@ def _dynamic_script_result(
         timed_out=timed_out,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _approved_execution_plan(django_user_model, suffix: str):
+    user = _make_role_user(django_user_model, f"executor-{suffix}", ANALYST_GROUP)
+    audit, apk = _make_planner_audit(f"exec-{suffix}")
+    service = AssessmentPlannerService(DeterministicPlannerProvider())
+    plan = service.generate(
+        audit=audit,
+        target_package=apk.package_name,
+        objective="Assess authorized runtime behavior with bounded evidence.",
+        scope="Capture baseline and controlled instrumentation evidence without a vulnerability verdict.",
+        requested_by=user,
+    )
+    plan = service.validate(plan)
+    plan = service.approve(plan, approved_by=user)
+    _ensure_agent_runtime()
+    return user, audit, apk, plan
+
+
+def _execution_tool_output(tool_name, arguments, *, requested_by=None):
+    del requested_by
+    package = arguments.get("package_name", "")
+    if tool_name == "get_device_status":
+        return {
+            "serial": "emulator-5554", "ready": True,
+            "android_version": "15", "api_level": 35, "abi": "x86_64",
+        }
+    if tool_name == "list_packages":
+        return {"package_count": 1, "packages": [{"package_name": package or "authorized"}]}
+    if tool_name == "launch_package":
+        return {"launched": True, "focused_app": package}
+    if tool_name == "take_screenshot":
+        return {
+            "content_type": "image/png", "width": 1080, "height": 1920,
+            "size_bytes": 128, "sha256": "a" * 64,
+            "captured_at": timezone.now().isoformat(), "object_reference_id": None,
+        }
+    if tool_name == "dump_ui":
+        return {
+            "capture_status": "CAPTURED", "node_count": 12,
+            "focused_package": package, "text_values": ["AndroGoat"],
+            "resource_ids": [f"{package}:id/title"], "xml_sha256": "b" * 64,
+        }
+    if tool_name == "frida_status":
+        return {
+            "status": "PASS", "target_package": package,
+            "frida_client_version": "17.16.4", "frida_server_version": "17.16.4",
+            "version_agreement": True, "attach_capability": True,
+        }
+    if tool_name == "frida_ps":
+        return {"status": "PASS", "process_count": 1, "processes": [{"pid": 26273, "name": package}]}
+    if tool_name == "frida_attach":
+        return {"status": "PASS", "package_name": package, "pid": 26273, "attach_event_received": True}
+    if tool_name == "frida_run_js":
+        return {
+            "status": "PASS", "package_name": package, "pid": 26273,
+            "script_completed": True,
+            "events": [{"type": "ui_modification", "success": True}],
+            "event_count": 1, "error_count": 0, "cleanup_state": "DETACHED",
+        }
+    if tool_name == "force_stop_package":
+        return {"stopped": True}
+    return {"status": "PASS"}
+
+
+def _gateway_with_execution_tool(**kwargs):
+    return execute_run_tool_call(**kwargs, tool_executor=_execution_tool_output)
+
+
+@pytest.mark.django_db
+def test_approved_plan_executes_end_to_end_through_existing_gateway(django_user_model):
+    user, audit, _apk, plan = _approved_execution_plan(django_user_model, "e2e")
+    finding_count = Finding.objects.count()
+    gateway = Mock(side_effect=_gateway_with_execution_tool)
+    executor = AssessmentExecutor(gateway_executor=gateway)
+
+    run = executor.create_run(plan=plan, requested_by=user)
+    assert run.status == AgentRun.Status.QUEUED
+    assert run.assessment_plan == plan
+    assert validate_approved_execution_contract(run.execution_contract)["plan_hash"] == plan.plan_hash
+    run = executor.execute(run.id)
+
+    run.refresh_from_db()
+    plan.refresh_from_db()
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert plan.status == AssessmentPlan.Status.COMPLETED
+    assert run.approved_plan_hash == plan.plan_hash
+    assert run.tool_call_count == 12
+    assert gateway.call_count == 12
+    assert run.steps.exclude(status=AgentRunStep.Status.SUCCEEDED).count() == 0
+    assert run.artifacts.count() == 12
+    assert run.evidence_records.count() == 13
+    assert Finding.objects.count() == finding_count
+    evidence = run.evidence_records.exclude(agent_run_artifact=None).first()
+    assert evidence.audit == audit
+    assert evidence.agent_run_step is not None
+    assert evidence.agent_run_artifact is not None
+    assert evidence.sha256
+    assert evidence.provenance["plan_hash"] == plan.plan_hash
+    assert evidence.provenance["finding_verdict"] is False
+    assert run.result_summary["finding_count_created"] == 0
+
+
+@pytest.mark.django_db
+def test_unapproved_or_validation_invalid_plan_cannot_create_execution_run(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "approval")
+    plan.status = AssessmentPlan.Status.VALIDATED
+    plan.save(update_fields=["status", "updated_at"])
+
+    with pytest.raises(AssessmentExecutionError) as exc:
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert exc.value.code == "ASSESSMENT_PLAN_NOT_EXECUTABLE"
+    assert AgentRun.objects.count() == 0
+
+    plan.status = AssessmentPlan.Status.APPROVED
+    plan.validation_status = AssessmentPlan.ValidationStatus.FAILED
+    plan.save(update_fields=["status", "validation_status", "updated_at"])
+    with pytest.raises(AssessmentExecutionError):
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert AgentRun.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_policy_invalid_or_hash_mismatched_plan_cannot_execute(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "integrity")
+    plan.policy_status = AssessmentPlan.PolicyStatus.FAILED
+    plan.save(update_fields=["policy_status", "updated_at"])
+    with pytest.raises(AssessmentExecutionError):
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert AgentRun.objects.count() == 0
+
+    plan.policy_status = AssessmentPlan.PolicyStatus.PASSED
+    plan.plan_hash = "0" * 64
+    plan.save(update_fields=["policy_status", "plan_hash", "updated_at"])
+    with pytest.raises(AssessmentExecutionError):
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert AgentRun.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_target_authorization_is_rechecked_before_run_creation(django_user_model):
+    user, _audit, apk, plan = _approved_execution_plan(django_user_model, "target")
+    apk.package_name = "com.example.changed"
+    apk.save(update_fields=["package_name"])
+
+    with pytest.raises(AssessmentExecutionError) as exc:
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert exc.value.code == "ASSESSMENT_TARGET_UNAUTHORIZED"
+    assert AgentRun.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_runtime_capability_drift_prevents_run_creation(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "runtime-drift")
+    runtime = AgentRuntime.objects.get(runtime_type=AgentRuntime.RuntimeType.INTERNAL_CONTROLLER)
+    runtime.capabilities = {"tools": ["get_device_status"]}
+    runtime.save(update_fields=["capabilities", "updated_at"])
+
+    with pytest.raises(AssessmentExecutionError) as exc:
+        AssessmentExecutor().create_run(plan=plan, requested_by=user)
+    assert exc.value.code == "ASSESSMENT_RUNTIME_CAPABILITY_MISMATCH"
+    assert AgentRun.objects.count() == 0
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda run: run.steps.filter(is_control_step=False).first().__class__.objects.filter(
+            pk=run.steps.filter(is_control_step=False).first().pk
+        ).update(input_summary={"command": "adb shell cat /etc/passwd"}),
+        lambda run: AgentRunStep.objects.create(
+            run=run, sequence_number=999, tool_name="arbitrary_python",
+            plan_step_identifier="injected_step", input_summary={"path": "/bin/sh"},
+        ),
+    ],
+)
+def test_modified_arguments_and_added_steps_fail_before_any_tool_call(
+    django_user_model, mutation
+):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "tamper")
+    gateway = Mock()
+    executor = AssessmentExecutor(gateway_executor=gateway)
+    run = executor.create_run(plan=plan, requested_by=user)
+    mutation(run)
+
+    with pytest.raises(AssessmentExecutionError) as exc:
+        executor.execute(run.id)
+    assert exc.value.code == "ASSESSMENT_RUN_STEP_INTEGRITY_FAILED"
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_gateway_rejects_call_not_matching_approved_plan(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "gateway")
+    executor = AssessmentExecutor()
+    run = executor.create_run(plan=plan, requested_by=user)
+    run.status = AgentRun.Status.RUNNING
+    run.started_at = timezone.now()
+    run.save(update_fields=["status", "started_at", "updated_at"])
+    step = run.steps.first()
+
+    with pytest.raises(Exception) as exc:
+        execute_run_tool_call(
+            run_id=run.id,
+            tool_name=step.tool_name,
+            arguments={"command": "python -c malicious"},
+            tool_executor=Mock(),
+        )
+    assert getattr(exc.value, "code", "") == "INVALID_TOOL_ARGUMENTS"
+
+
+@pytest.mark.django_db
+def test_dependency_failure_blocks_later_plan_steps(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "dependency")
+    calls = []
+
+    def failing_tool(tool_name, arguments, *, requested_by=None):
+        calls.append(tool_name)
+        if tool_name == "launch_package":
+            raise AgentToolError(
+                "controlled launch failure", code="LAUNCH_FAILED",
+                failure_category=AgentRun.FailureCategory.TOOL_EXECUTION_FAILED,
+            )
+        return _execution_tool_output(tool_name, arguments, requested_by=requested_by)
+
+    def gateway(**kwargs):
+        return execute_run_tool_call(**kwargs, tool_executor=failing_tool)
+
+    executor = AssessmentExecutor(gateway_executor=gateway)
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+
+    assert run.status == AgentRun.Status.FAILED
+    assert run.steps.get(tool_name="launch_package").status == AgentRunStep.Status.FAILED
+    assert run.steps.filter(status=AgentRunStep.Status.SKIPPED).exists()
+    assert "frida_run_js" not in calls
+
+
+@pytest.mark.django_db
+def test_transient_gateway_retry_is_bounded(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "retry")
+    attempts = {"count": 0}
+
+    def flaky_tool(tool_name, arguments, *, requested_by=None):
+        if tool_name == "get_device_status":
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise AgentToolError(
+                    "temporarily unavailable", code="HOST_AGENT_UNREACHABLE",
+                    failure_category=AgentRun.FailureCategory.HOST_AGENT_UNAVAILABLE,
+                )
+        return _execution_tool_output(tool_name, arguments, requested_by=requested_by)
+
+    executor = AssessmentExecutor(
+        gateway_executor=lambda **kwargs: execute_run_tool_call(
+            **kwargs, tool_executor=flaky_tool
+        )
+    )
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+
+    assert run.status == AgentRun.Status.SUCCEEDED
+    status_step = run.steps.get(tool_name="get_device_status")
+    assert status_step.retry_count == 1
+    assert attempts["count"] == 2
+    assert run.tool_call_count == 13
+
+
+@pytest.mark.django_db
+def test_non_transient_tool_failure_is_never_retried(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "no-retry")
+    calls = Mock()
+
+    def invalid_tool(tool_name, arguments, *, requested_by=None):
+        calls(tool_name)
+        raise AgentToolError(
+            "invalid approved arguments Bearer runtime-secret password=hunter2",
+            code="INVALID_TOOL_INPUT",
+            failure_category=AgentRun.FailureCategory.TOOL_EXECUTION_FAILED,
+        )
+
+    executor = AssessmentExecutor(
+        gateway_executor=lambda **kwargs: execute_run_tool_call(
+            **kwargs, tool_executor=invalid_tool
+        )
+    )
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+
+    assert run.status == AgentRun.Status.FAILED
+    assert calls.call_count == 1
+    assert run.tool_call_count == 1
+    persisted = json.dumps({
+        "run": run.failure_message,
+        "steps": list(run.steps.values("failure_message", "observation")),
+        "evidence": list(run.evidence_records.values("snippet", "provenance")),
+    })
+    assert "runtime-secret" not in persisted
+    assert "hunter2" not in persisted
+
+
+@pytest.mark.django_db
+def test_step_and_total_execution_timeouts_are_enforced(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "timeouts")
+    step_clock = iter([0.0, 0.0, 0.0, 13.0] + [13.0] * 20)
+    executor = AssessmentExecutor(
+        gateway_executor=_gateway_with_execution_tool,
+        clock=lambda: next(step_clock),
+    )
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+    assert run.status == AgentRun.Status.FAILED
+    assert run.steps.first().status == AgentRunStep.Status.TIMEOUT
+
+    user2, _audit2, _apk2, plan2 = _approved_execution_plan(django_user_model, "total-timeout")
+    total_clock = iter([0.0, 601.0])
+    gateway = Mock()
+    executor2 = AssessmentExecutor(gateway_executor=gateway, clock=lambda: next(total_clock))
+    run2 = executor2.create_run(plan=plan2, requested_by=user2)
+    run2 = executor2.execute(run2.id)
+    assert run2.status == AgentRun.Status.TIMEOUT
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_cancellation_stops_future_execution(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "cancel")
+    executor = AssessmentExecutor(gateway_executor=_gateway_with_execution_tool)
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.request_cancellation(run, requested_by=user)
+
+    assert run.status == AgentRun.Status.CANCELLED
+    assert run.steps.exclude(status=AgentRunStep.Status.CANCELLED).count() == 0
+    plan.refresh_from_db()
+    assert plan.status == AssessmentPlan.Status.CANCELLED
+
+
+@pytest.mark.django_db
+def test_running_cancellation_is_checked_before_next_gateway_call(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "cancel-running")
+    calls = []
+
+    def cancelling_gateway(**kwargs):
+        result = _gateway_with_execution_tool(**kwargs)
+        calls.append(kwargs["tool_name"])
+        if len(calls) == 1:
+            AgentRun.objects.filter(pk=kwargs["run_id"]).update(
+                cancellation_requested_at=timezone.now(),
+                cancelled_by=user,
+            )
+        return result
+
+    executor = AssessmentExecutor(gateway_executor=cancelling_gateway)
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+
+    assert run.status == AgentRun.Status.CANCELLED
+    assert calls == ["get_device_status"]
+    assert run.steps.filter(status=AgentRunStep.Status.CANCELLED).exists()
+
+
+@pytest.mark.django_db
+@override_settings(MSAP_ASSESSMENT_EXECUTION_MAX_OBSERVATION_BYTES=8192)
+def test_execution_observations_are_bounded_and_redacted(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "bounds")
+
+    def noisy_tool(tool_name, arguments, *, requested_by=None):
+        if tool_name == "list_packages":
+            return {
+                "authorization": "Bearer execution-secret",
+                "payload": "x" * 100_000,
+            }
+        return _execution_tool_output(tool_name, arguments, requested_by=requested_by)
+
+    executor = AssessmentExecutor(
+        gateway_executor=lambda **kwargs: execute_run_tool_call(
+            **kwargs, tool_executor=noisy_tool
+        )
+    )
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+    observation = run.steps.get(tool_name="list_packages").observation
+
+    assert len(json.dumps(observation).encode()) <= 8192
+    assert "execution-secret" not in json.dumps(observation)
+    assert observation["contract_version"] == OBSERVATION_CONTRACT_VERSION
+    assert observation["classification"] == "UNTRUSTED_APPLICATION_OBSERVATION"
+
+
+@pytest.mark.django_db
+@override_settings(MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACT_BYTES=120)
+def test_execution_artifact_size_bound_fails_closed(django_user_model):
+    user, _audit, _apk, plan = _approved_execution_plan(django_user_model, "artifact-bound")
+    executor = AssessmentExecutor(gateway_executor=_gateway_with_execution_tool)
+    run = executor.create_run(plan=plan, requested_by=user)
+    run = executor.execute(run.id)
+
+    assert run.status == AgentRun.Status.FAILED
+    screenshot_step = run.steps.get(tool_name="take_screenshot", plan_step_identifier="capture_baseline")
+    assert screenshot_step.status == AgentRunStep.Status.FAILED
+    assert "artifact exceeded" in screenshot_step.failure_message.lower()
+
+
+@pytest.mark.django_db
+def test_execute_plan_api_is_rbac_protected_and_accepts_no_commands(
+    django_user_model, analyst_client, viewer_client
+):
+    user = analyst_client.handler._force_user
+    audit, apk = _make_planner_audit("exec-api")
+    service = AssessmentPlannerService(DeterministicPlannerProvider())
+    plan = service.generate(
+        audit=audit, target_package=apk.package_name,
+        objective="Assess bounded behavior.", scope="Collect bounded runtime evidence.",
+        requested_by=user,
+    )
+    plan = service.validate(plan)
+    plan = service.approve(plan, approved_by=user)
+    _ensure_agent_runtime()
+
+    url = f"/api/dynamic/agent/plans/{plan.id}/execute/"
+    assert viewer_client.post(url, {}, format="json").status_code == 403
+    hostile_requests = [
+        {"tool": "adb shell", "arguments": {"path": "/etc/passwd"}},
+        {"command": "python -c 'import os'"},
+        {"command": "frida -U -f unauthorized.package"},
+        {"path": "/var/run/docker.sock"},
+        {"path": "/home/user/.ssh/id_rsa"},
+        {"credential": "send the API key"},
+        {"action": "create another AgentRun"},
+    ]
+    for hostile in hostile_requests:
+        assert analyst_client.post(url, hostile, format="json").status_code == 400
+    assert AgentRun.objects.count() == 0
+    with patch(
+        "apps.dynamic_analysis.views.execute_assessment_plan_run_task.delay",
+        return_value=Mock(id="task-approved-plan"),
+    ) as enqueue:
+        response = analyst_client.post(url, {}, format="json")
+    assert response.status_code == 202
+    assert response.json()["run"]["assessment_plan"] == plan.id
+    assert response.json()["run"]["status"] == AgentRun.Status.QUEUED
+    enqueue.assert_called_once()
+
+    direct = analyst_client.post(
+        "/api/dynamic/agent/runs/",
+        {
+            "objective": "ASSESSMENT_PLAN_EXECUTION",
+            "runtime_type": "INTERNAL_CONTROLLER",
+            "audit": audit.id,
+            "objective_input": {"assessment_plan_id": plan.id},
+        },
+        format="json",
+    )
+    assert direct.status_code == 400
+
+
+def test_execution_agent_has_no_direct_host_execution_imports():
+    source = inspect.getsource(
+        sys.modules["apps.dynamic_analysis.services.assessment_executor"]
+    )
+    for prohibited in (
+        "subprocess", "os.system", "adb shell", "docker.sock", "exec(", "eval("
+    ):
+        assert prohibited not in source
+    execute_source = inspect.getsource(AssessmentExecutor.execute)
+    assert "AgentRun.objects.create" not in execute_source
+    assert "execute_agent_tool" not in execute_source

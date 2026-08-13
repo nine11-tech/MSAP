@@ -15,6 +15,7 @@ from apps.api.permissions import (
     IsMSAPViewerOrAbove,
     IsReadOnlyViewerOrAbove,
 )
+from apps.api.serializers import EvidenceSerializer
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
@@ -85,6 +86,10 @@ from apps.dynamic_analysis.services.assessment_planner import (
     AssessmentPlannerService,
     configured_planner_provider,
 )
+from apps.dynamic_analysis.services.assessment_executor import (
+    AssessmentExecutionError,
+    AssessmentExecutor,
+)
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
     record_host_agent_action,
@@ -116,7 +121,10 @@ from apps.dynamic_analysis.services.mvp_runner import (
 from apps.dynamic_analysis.services.runner_readiness import (
     get_dynamic_runner_readiness,
 )
-from apps.dynamic_analysis.tasks import run_dynamic_mvp_job_task
+from apps.dynamic_analysis.tasks import (
+    execute_assessment_plan_run_task,
+    run_dynamic_mvp_job_task,
+)
 from apps.storage.services.file_provider import APKFileProvider, FileProviderError
 from apps.storage.models import ObjectStorageReference
 
@@ -568,7 +576,7 @@ class AssessmentPlanViewSet(
     def get_permissions(self):
         permission_classes = (
             [IsMSAPAnalystOrAdmin]
-            if self.action in {"create", "validate_plan", "approve"}
+            if self.action in {"create", "validate_plan", "approve", "execute_plan"}
             else [IsMSAPViewerOrAbove]
         )
         return [permission() for permission in permission_classes]
@@ -634,6 +642,49 @@ class AssessmentPlanViewSet(
             )
         return Response(AssessmentPlanSerializer(plan, context={"request": request}).data)
 
+    @extend_schema(request=StrictEmptySerializer, responses={202: AgentRunSerializer})
+    @action(detail=True, methods=["post"], url_path="execute")
+    def execute_plan(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = self.get_object()
+        try:
+            run = AssessmentExecutor().create_run(
+                plan=plan,
+                requested_by=request.user,
+            )
+        except AssessmentExecutionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        try:
+            async_result = execute_assessment_plan_run_task.delay(run.id)
+        except Exception as exc:
+            logger.warning(
+                "assessment_execution_enqueue_failed run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            run = AssessmentExecutor.mark_enqueue_failed(run)
+            return Response(
+                {
+                    "code": "ASSESSMENT_EXECUTION_ENQUEUE_FAILED",
+                    "detail": "The approved assessment could not be queued.",
+                    "run": AgentRunSerializer(run, context={"request": request}).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        run.refresh_from_db()
+        return Response(
+            {
+                "run": AgentRunSerializer(run, context={"request": request}).data,
+                "task_id": getattr(async_result, "id", None),
+                "execution_mode": "celery",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
 
 class AgentRunViewSet(
     DynamicFilterMixin,
@@ -648,12 +699,14 @@ class AgentRunViewSet(
     ).all()
     serializer_class = AgentRunSerializer
     permission_classes = [IsMSAPViewerOrAbove]
-    filter_fields = ("audit", "status", "objective", "requested_by")
+    filter_fields = (
+        "audit", "status", "objective", "requested_by", "assessment_plan"
+    )
 
     def get_permissions(self):
         if self.action == "tool_call":
             permission_classes = [IsAgentRunToken]
-        elif self.action == "create":
+        elif self.action in {"create", "cancel_execution"}:
             permission_classes = [IsMSAPAnalystOrAdmin]
         else:
             permission_classes = [IsMSAPViewerOrAbove]
@@ -738,6 +791,37 @@ class AgentRunViewSet(
             many=True,
         )
         return Response(serializer.data)
+
+    @extend_schema(responses={200: EvidenceSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="evidence")
+    def evidence(self, request, pk=None):
+        run = self.get_object()
+        return Response(
+            EvidenceSerializer(
+                run.evidence_records.select_related(
+                    "storage_reference", "agent_run_step", "agent_run_artifact"
+                ).all(),
+                many=True,
+            ).data
+        )
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: AgentRunSerializer})
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel_execution(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = self.get_object()
+        try:
+            run = AssessmentExecutor.request_cancellation(
+                run,
+                requested_by=request.user,
+            )
+        except AssessmentExecutionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(AgentRunSerializer(run, context={"request": request}).data)
 
 
 class DynamicHostAgentViewSet(viewsets.ViewSet):

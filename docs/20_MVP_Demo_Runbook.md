@@ -127,10 +127,10 @@ To fall back, select **Internal Controller**. To disable all future container
 launches, restart the backend with `MSAP_AGENT_CONTAINER_ENABLED=false`; the UI
 will show **Container Sandbox (Unavailable)**.
 
-## AI Assessment Planner
+## AI Assessment Planner and bounded execution
 
-Sprint D adds a separate **PLAN ONLY** section and does not replace the existing
-deterministic run controls:
+Sprint D keeps planning separate from execution and does not replace the
+existing deterministic run controls:
 
 1. Select the AndroGoat audit and `owasp.sat.agoat` from the verified-package
    targets.
@@ -143,10 +143,18 @@ deterministic run controls:
    plan includes expected observations, success conditions, evidence, and
    dependencies.
 6. Click **Validate Plan** and then **Approve Plan**.
-7. Confirm the final state is `APPROVED` and the page explicitly says approval
-   does not execute anything.
-8. Confirm the AgentRun count and emulator foreground/PID/UI state did not
-   change during generation, validation, or approval.
+7. Confirm the state is `APPROVED` and generation, validation, and approval did
+   not create an AgentRun or change emulator state.
+8. Click **Execute Assessment**. Confirm one plan-linked AgentRun appears and
+   progresses through only the immutable approved tools in sequence.
+9. Inspect tool/control step status, duration, retry count, observations,
+   artifacts, and linked evidence.
+10. Confirm dependent steps are skipped after a prerequisite failure and that a
+    controlled failure never becomes a new tool request.
+11. Confirm the terminal run/plan state is success/completed or a controlled
+    failed, timeout, or cancelled state with a bounded reason.
+12. Inspect findings/results and confirm execution created evidence only: no
+    autonomous severity, vulnerability, or malware verdict was invented.
 
 Local demo mode uses the deterministic provider and requires no OpenAI key. The
 OpenAI provider is backend-only, is configured for `gpt-5.5`, and returns the
@@ -190,16 +198,15 @@ launch, force stop, clear data, and uninstall actions.
 - Clear Data and Uninstall require browser confirmation.
 - Analyst or administrator access is required for device mutation.
 
-## Future execution-agent boundary
+## Approved execution-agent boundary
 
-Sprint D implements the GPT-5.5-compatible planner boundary but no autonomous
-execution agent. A future execution agent may consume only an approved plan,
-must use the run-scoped gateway, and must never receive host-agent, database,
-MinIO, Docker, shell, repository, or provider credentials. Django remains
-responsible for validating and auditing every future tool call.
+The bounded MVP execution agent consumes only an approved, hash-matching plan,
+uses the existing run-scoped gateway, and never receives host-agent, database,
+MinIO, Docker, shell, repository, or provider credentials. Django validates and
+audits every tool call.
 
-The D1 executor-facing contract is a hash-checked projection of a persisted,
-validated, explicitly approved canonical plan. It is not an execution API and
-cannot be constructed from arbitrary raw model text. Tool identifiers in that
-projection describe intent; the gateway must independently authorize every
-future invocation.
+The D1 executor-facing contract remains a hash-checked projection of a
+persisted, validated, explicitly approved canonical plan and cannot be
+constructed from arbitrary raw model text. The execution endpoint accepts no
+tools or arguments. Tool identifiers describe intent; the gateway independently
+authorizes every invocation.

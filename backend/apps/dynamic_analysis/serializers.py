@@ -125,6 +125,15 @@ class AgentRunCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"objective_input": "This field must be a JSON object."}
             )
+        if objective == AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION:
+            raise serializers.ValidationError(
+                {
+                    "objective": (
+                        "Approved assessment execution can start only from the "
+                        "AssessmentPlan execute endpoint."
+                    )
+                }
+            )
         if objective == AgentRun.Objective.DEVICE_READINESS_CHECK:
             if objective_input:
                 raise serializers.ValidationError(
@@ -455,6 +464,9 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "runtime_name",
             "runtime_type",
             "isolation_level",
+            "assessment_plan",
+            "approved_plan_hash",
+            "target_package",
             "objective",
             "status",
             "requested_by",
@@ -465,6 +477,9 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "result_summary",
             "failure_category",
             "failure_message",
+            "tool_call_count",
+            "cancellation_requested_at",
+            "cancelled_by",
             "created_at",
             "updated_at",
         ]
@@ -479,9 +494,19 @@ class AgentRunStepSerializer(serializers.ModelSerializer):
             "run",
             "sequence_number",
             "tool_name",
+            "plan_step_identifier",
+            "plan_step_sequence",
+            "tool_call_index",
+            "is_control_step",
+            "dependencies",
+            "evidence_requirements",
             "status",
             "input_summary",
             "output_summary",
+            "observation",
+            "retry_count",
+            "max_retries",
+            "timeout_seconds",
             "started_at",
             "finished_at",
             "duration_seconds",
@@ -519,6 +544,8 @@ class AgentRunArtifactSerializer(serializers.ModelSerializer):
             "object_reference",
             "download_url",
             "metadata",
+            "size_bytes",
+            "sha256",
             "created_at",
         ]
         read_only_fields = fields

@@ -34,10 +34,33 @@ class Evidence(models.Model):
         blank=True,
         related_name="evidence",
     )
+    agent_run = models.ForeignKey(
+        "dynamic_analysis.AgentRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="evidence_records",
+    )
+    agent_run_step = models.ForeignKey(
+        "dynamic_analysis.AgentRunStep",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="evidence_records",
+    )
+    agent_run_artifact = models.ForeignKey(
+        "dynamic_analysis.AgentRunArtifact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="evidence_records",
+    )
     evidence_type = models.CharField(max_length=128)
     source = models.CharField(max_length=255)
     snippet = models.TextField(blank=True)
     redacted = models.BooleanField(default=False)
+    sha256 = models.CharField(max_length=64, blank=True)
+    provenance = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -71,18 +71,22 @@ class AgentRunAdmin(admin.ModelAdmin):
         "id",
         "objective",
         "status",
+        "assessment_plan",
         "runtime",
         "device",
         "requested_by",
         "created_at",
     )
     list_filter = ("objective", "status", "failure_category")
-    search_fields = ("requested_by__username", "failure_message")
+    search_fields = ("requested_by__username", "failure_message", "target_package")
+    readonly_fields = ("approved_plan_hash", "execution_contract", "tool_call_count")
 
 
 @admin.register(AgentRunStep)
 class AgentRunStepAdmin(admin.ModelAdmin):
-    list_display = ("run", "sequence_number", "tool_name", "status")
+    list_display = (
+        "run", "sequence_number", "plan_step_identifier", "tool_name", "status"
+    )
     list_filter = ("tool_name", "status")
     search_fields = ("failure_message",)
 

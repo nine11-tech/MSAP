@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import json
+from hashlib import sha256
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -678,6 +680,13 @@ class AgentController:
         step: AgentRunStep,
         output: dict,
     ) -> None:
+        encoded = json.dumps(
+            output,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        metadata_sha256 = sha256(encoded).hexdigest()
         if step.tool_name == "take_screenshot":
             capture_reason = str((step.input_summary or {}).get("capture_reason") or "")
             screenshot_name = {
@@ -694,6 +703,8 @@ class AgentController:
                 content_type="image/png",
                 object_reference_id=output.get("object_reference_id"),
                 metadata=output,
+                size_bytes=output.get("size_bytes"),
+                sha256=output.get("sha256") or metadata_sha256,
             )
         else:
             artifact_type = (
@@ -708,6 +719,8 @@ class AgentController:
                 name=f"{step.tool_name.replace('_', '-')}.json",
                 content_type="application/json",
                 metadata=output,
+                size_bytes=len(encoded),
+                sha256=metadata_sha256,
             )
 
     @staticmethod

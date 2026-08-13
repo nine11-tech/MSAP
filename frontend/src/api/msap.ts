@@ -258,6 +258,13 @@ export const listAgentRunSteps = (runId: number) =>
   apiGet<AgentRunStep[]>(`dynamic/agent/runs/${runId}/steps/`);
 export const listAgentRunArtifacts = (runId: number) =>
   apiGet<AgentRunArtifact[]>(`dynamic/agent/runs/${runId}/artifacts/`);
+export const listAgentRunEvidence = (runId: number) =>
+  apiGet<Evidence[]>(`dynamic/agent/runs/${runId}/evidence/`);
+export const cancelAssessmentExecution = (runId: number) =>
+  apiPost<AgentRun, Record<string, never>>(
+    `dynamic/agent/runs/${runId}/cancel/`,
+    {},
+  );
 
 export const listAssessmentPlans = (auditId?: number) =>
   apiGet<AssessmentPlan[]>(
@@ -292,3 +299,8 @@ export const approveAssessmentPlan = (planId: number) =>
     `dynamic/agent/plans/${planId}/approve/`,
     {},
   );
+export const executeAssessmentPlan = (planId: number) =>
+  apiPost<
+    { run: AgentRun; task_id: string | null; execution_mode: "celery" },
+    Record<string, never>
+  >(`dynamic/agent/plans/${planId}/execute/`, {});

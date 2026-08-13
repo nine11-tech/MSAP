@@ -305,10 +305,15 @@ class EvidenceSerializer(serializers.ModelSerializer):
             "finding",
             "indicator",
             "storage_reference",
+            "agent_run",
+            "agent_run_step",
+            "agent_run_artifact",
             "evidence_type",
             "source",
             "snippet",
             "redacted",
+            "sha256",
+            "provenance",
             "created_at",
         ]
         read_only_fields = fields
