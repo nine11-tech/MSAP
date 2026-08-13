@@ -688,6 +688,36 @@ export interface AgentScreenshotSummary {
   size_bytes?: number;
   sha256?: string;
   captured_at?: string;
+  object_reference_id?: number | null;
+}
+
+export interface FridaStatusSummary {
+  status?: string;
+  frida_client_installed?: boolean;
+  frida_client_version?: string;
+  frida_server_reachable?: boolean;
+  frida_server_version?: string;
+  version_agreement?: boolean;
+  frida_rpc?: string;
+  emulator_serial?: string;
+  android_version?: string;
+  api_level?: number | null;
+  abi?: string;
+  root_available?: boolean;
+  target_package?: string;
+  target_pid?: number | null;
+  attach_capability?: boolean;
+  process_count?: number | null;
+}
+
+export interface FridaLogcatSummary {
+  t0?: string;
+  t1?: string;
+  t2?: string;
+  line_count?: number | null;
+  lines?: string[];
+  sha256?: string;
+  redaction_applied?: boolean;
 }
 
 export interface AgentRunResultSummary {
@@ -703,7 +733,101 @@ export interface AgentRunResultSummary {
   environment_ready?: boolean;
   summary?: string;
   assessment_scope?: string;
+  app_installed?: boolean;
+  app_already_present?: boolean;
+  package_name?: string;
+  app_launched?: boolean;
+  ui_dumped?: boolean;
+  ui_dump?: {
+    node_count?: number | null;
+    focused_package?: string;
+    text_values?: string[];
+    resource_ids?: string[];
+    raw_preview?: string;
+    xml_sha256?: string;
+  };
+  logcat_captured?: boolean;
+  logcat_excerpt?: {
+    line_count?: number;
+    lines?: string[];
+    redaction_applied?: boolean;
+  };
+  tap_executed?: boolean;
+  tap_skipped?: boolean;
+  type_executed?: boolean;
+  type_skipped?: boolean;
+  force_stop_completed?: boolean;
+  interaction_completed?: boolean;
+  operation?: "status" | "setup" | "ps" | "attach" | "";
+  completed?: boolean;
+  result?: FridaStatusSummary & Record<string, unknown>;
+  script_name?: string;
+  execution_succeeded?: boolean;
+  evidence_confirmed?: boolean;
+  pid?: number | null;
+  frida_client_version?: string;
+  frida_server_version?: string;
+  attach_succeeded?: boolean;
+  frida_event?: Record<string, unknown>;
+  frida_event_received?: boolean;
+  before_screenshot?: AgentScreenshotSummary;
+  after_screenshot?: AgentScreenshotSummary;
+  before_ui?: AgentRunResultSummary["ui_dump"];
+  after_ui?: AgentRunResultSummary["ui_dump"];
+  before_ui_node_count?: number | null;
+  after_ui_node_count?: number | null;
+  screenshot_changed?: boolean;
+  ui_changed?: boolean;
+  visual_state_changed?: boolean;
+  logcat?: FridaLogcatSummary;
+  event_count?: number;
+  error_count?: number;
+  cleanup_state?: string;
+  interpretation?: string;
+  limitations?: string;
 }
+
+export type AgentObjective =
+  | "DEVICE_READINESS_CHECK"
+  | "BASIC_APP_INTERACTION_CHECK"
+  | "FRIDA_RUNTIME_ACTION"
+  | "FRIDA_RUNTIME_UI_MODIFICATION_PROOF"
+  | "FRIDA_CUSTOM_SCRIPT";
+
+export interface BasicAppInteractionInput {
+  audit_id: number;
+  apk_file_id?: number;
+  package_name?: string;
+  tap?: { x: number; y: number };
+  text?: string;
+}
+
+export interface FridaRuntimeActionInput {
+  audit_id: number;
+  package_name: string;
+  operation: "status" | "setup" | "ps" | "attach";
+  mode?: "attach" | "spawn";
+  timeout?: number;
+}
+
+export interface FridaProofInput {
+  audit_id: number;
+  package_name: string;
+}
+
+export interface FridaCustomScriptInput extends FridaProofInput {
+  mode?: "attach" | "spawn";
+  source: string;
+  timeout?: number;
+  capture_logcat?: boolean;
+  confirm: true;
+}
+
+export type AgentObjectiveInput =
+  | BasicAppInteractionInput
+  | FridaRuntimeActionInput
+  | FridaProofInput
+  | FridaCustomScriptInput;
 
 export interface AgentRun {
   id: number;
@@ -718,7 +842,8 @@ export interface AgentRun {
     | "CONTAINER_PLANNED"
     | "CONTAINER_ISOLATED"
     | null;
-  objective: "DEVICE_READINESS_CHECK";
+  objective: AgentObjective;
+  objective_input: Record<string, unknown>;
   status:
     | "QUEUED"
     | "RUNNING"
@@ -742,7 +867,25 @@ export interface AgentRunStep {
   id: number;
   run: number;
   sequence_number: number;
-  tool_name: "get_device_status" | "take_screenshot";
+  tool_name:
+    | "get_device_status"
+    | "list_packages"
+    | "install_verified_apk"
+    | "launch_package"
+    | "force_stop_package"
+    | "clear_package_data"
+    | "take_screenshot"
+    | "start_logcat"
+    | "stop_logcat"
+    | "get_logcat_excerpt"
+    | "dump_ui"
+    | "tap_coordinates"
+    | "type_text"
+    | "frida_status"
+    | "frida_ps"
+    | "frida_setup"
+    | "frida_attach"
+    | "frida_run_js";
   status:
     | "PENDING"
     | "RUNNING"
@@ -772,6 +915,70 @@ export interface AgentRunArtifact {
   name: string;
   content_type: string;
   object_reference: number | null;
+  download_url: string;
   metadata: Record<string, unknown>;
   created_at: string;
+}
+
+export type AssessmentPlanStatus =
+  | "DRAFT"
+  | "GENERATED"
+  | "VALIDATED"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXECUTING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+export interface AssessmentPlanStep {
+  id: number;
+  plan: number;
+  sequence: number;
+  step_identifier: string;
+  objective: string;
+  rationale: string;
+  required_tools: string[];
+  tool_arguments: Record<string, Record<string, unknown>>;
+  expected_observation: string;
+  success_condition: string;
+  evidence_requirements: string[];
+  dependencies: string[];
+  status:
+    | "PROPOSED"
+    | "VALIDATED"
+    | "APPROVED"
+    | "EXECUTING"
+    | "COMPLETED"
+    | "FAILED"
+    | "SKIPPED"
+    | "CANCELLED";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssessmentPlan {
+  id: number;
+  audit: number;
+  target_package: string;
+  planner_provider: "DETERMINISTIC" | "OPENAI";
+  planner_model: string;
+  objective: string;
+  scope: string;
+  status: AssessmentPlanStatus;
+  validation_status: "PENDING" | "PASSED" | "FAILED";
+  generated_plan: Record<string, unknown>;
+  normalized_plan: Record<string, unknown>;
+  validation_errors: string[];
+  planner_input_hash: string;
+  plan_hash: string;
+  created_by: number | null;
+  created_by_username: string | null;
+  approved_by: number | null;
+  approved_by_username: string | null;
+  validated_at: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  steps: AssessmentPlanStep[];
 }

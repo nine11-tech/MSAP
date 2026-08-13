@@ -1,25 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
+  approveAssessmentPlan,
   captureDynamicHostAgentScreenshot,
   createAgentRun,
+  createAssessmentPlan,
   getDynamicHostAgentStatus,
   installDynamicAuditApk,
   listAgentRunArtifacts,
   listAgentRuns,
   listAgentRunSteps,
   listAgentRuntimes,
+  listAssessmentPlans,
   listApkFiles,
   listAudits,
   listDynamicHostAgentPackages,
   runDynamicHostAgentPackageAction,
   syncDynamicHostAgent,
+  validateAssessmentPlan,
 } from "../api/msap";
 import type {
   AgentRun,
   AgentRunArtifact,
   AgentRuntime,
   AgentRunStep,
+  AgentObjective,
+  AssessmentPlan,
   ApkFile,
   Audit,
   DynamicHostAgentInstallResult,
@@ -49,7 +55,16 @@ type WorkingAction =
   | "force-stop"
   | "clear-data"
   | "uninstall"
-  | "agent-readiness";
+  | "agent-run"
+  | "frida-status"
+  | "frida-setup"
+  | "frida-ps"
+  | "frida-attach"
+  | "frida-proof"
+  | "frida-custom"
+  | "planner-generate"
+  | "planner-validate"
+  | "planner-approve";
 
 type PackageAction =
   | "launch-package"
@@ -58,6 +73,7 @@ type PackageAction =
   | "uninstall";
 
 type AgentRuntimeType = "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
+type AgentTargetType = "VERIFIED_APK" | "INSTALLED_PACKAGE";
 
 export function DynamicLabPage() {
   const [searchParams] = useSearchParams();
@@ -79,6 +95,27 @@ export function DynamicLabPage() {
   const [agentArtifacts, setAgentArtifacts] = useState<AgentRunArtifact[]>([]);
   const [selectedAgentRuntime, setSelectedAgentRuntime] =
     useState<AgentRuntimeType>("INTERNAL_CONTROLLER");
+  const [selectedObjective, setSelectedObjective] =
+    useState<AgentObjective>("DEVICE_READINESS_CHECK");
+  const [agentTargetType, setAgentTargetType] =
+    useState<AgentTargetType>("VERIFIED_APK");
+  const [agentPackageName, setAgentPackageName] = useState("");
+  const [agentTapX, setAgentTapX] = useState("");
+  const [agentTapY, setAgentTapY] = useState("");
+  const [agentText, setAgentText] = useState("");
+  const [fridaPackageName, setFridaPackageName] = useState("");
+  const [fridaScript, setFridaScript] = useState("");
+  const [fridaScriptConfirmed, setFridaScriptConfirmed] = useState(false);
+  const [fridaMode, setFridaMode] = useState<"attach" | "spawn">("attach");
+  const [fridaTimeout, setFridaTimeout] = useState(12);
+  const [assessmentPlan, setAssessmentPlan] = useState<AssessmentPlan | null>(null);
+  const [plannerPackageName, setPlannerPackageName] = useState("");
+  const [plannerObjective, setPlannerObjective] = useState(
+    "Assess authorized runtime behavior with bounded evidence.",
+  );
+  const [plannerScope, setPlannerScope] = useState(
+    "Capture a baseline, inspect runtime instrumentation readiness, and plan before/after evidence collection without asserting a vulnerability verdict.",
+  );
   const [screenshotUrl, setScreenshotUrl] = useState("");
   const screenshotUrlRef = useRef("");
   const [loading, setLoading] = useState(true);
@@ -94,17 +131,21 @@ export function DynamicLabPage() {
     setLoading(true);
     setError("");
     try {
-      const [auditData, apkData, hostData, runtimeData, runData] = await Promise.all([
+      const [auditData, apkData, hostData, packageData, runtimeData, runData, planData] = await Promise.all([
         listAudits(),
         listApkFiles(),
         getDynamicHostAgentStatus(),
+        listDynamicHostAgentPackages(),
         listAgentRuntimes(),
         listAgentRuns(),
+        listAssessmentPlans(),
       ]);
       setAudits(auditData);
       setApkFiles(apkData);
       setAgentStatus(hostData);
+      setPackages(packageData.packages);
       setAgentRuntimes(runtimeData);
+      setAssessmentPlan(planData[0] || null);
       const latestRun = runData[0] || null;
       setAgentRun(latestRun);
       if (latestRun) {
@@ -158,6 +199,21 @@ export function DynamicLabPage() {
       ),
     [apkFiles, selectedAuditId],
   );
+  const authorizedFridaPackages = useMemo(
+    () => Array.from(new Set(packages)).sort(),
+    [packages],
+  );
+  const authorizedPlannerPackages = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          verifiedApks
+            .map((apk) => apk.package_name)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ).sort(),
+    [verifiedApks],
+  );
 
   useEffect(() => {
     setSelectedApkId((current) => {
@@ -168,6 +224,22 @@ export function DynamicLabPage() {
     });
     setInstallResult(null);
   }, [selectedAuditId, verifiedApks]);
+
+  useEffect(() => {
+    setFridaPackageName((current) =>
+      current && authorizedFridaPackages.includes(current)
+        ? current
+        : authorizedFridaPackages[0] || "",
+    );
+  }, [authorizedFridaPackages]);
+
+  useEffect(() => {
+    setPlannerPackageName((current) =>
+      current && authorizedPlannerPackages.includes(current)
+        ? current
+        : authorizedPlannerPackages[0] || "",
+    );
+  }, [authorizedPlannerPackages]);
 
   const device = agentStatus?.device;
   const emulatorOnline = device?.state === "device";
@@ -328,15 +400,51 @@ export function DynamicLabPage() {
     }
   }
 
-  async function handleAgentReadinessCheck() {
-    setWorking("agent-readiness");
+  async function handleAgentRun() {
+    setWorking("agent-run");
     setError("");
     setNotice("");
     try {
-      const run = await createAgentRun(
-        selectedAuditId ? selectedAuditId : undefined,
-        selectedAgentRuntime,
-      );
+      let request: Parameters<typeof createAgentRun>[0];
+      if (selectedObjective === "DEVICE_READINESS_CHECK") {
+        request = {
+          objective: selectedObjective,
+          runtime_type: selectedAgentRuntime,
+          ...(selectedAuditId ? { audit: selectedAuditId } : {}),
+        };
+      } else {
+        if (!selectedAuditId) {
+          throw new Error("Select an audit for the basic app interaction check.");
+        }
+        const objectiveInput: NonNullable<
+          Parameters<typeof createAgentRun>[0]["objective_input"]
+        > = { audit_id: selectedAuditId };
+        if (agentTargetType === "VERIFIED_APK") {
+          if (!selectedApkId) {
+            throw new Error("Select a verified APK.");
+          }
+          objectiveInput.apk_file_id = selectedApkId;
+        } else {
+          if (!agentPackageName) {
+            throw new Error("Select an installed package.");
+          }
+          objectiveInput.package_name = agentPackageName;
+        }
+        if ((agentTapX === "") !== (agentTapY === "")) {
+          throw new Error("Provide both tap coordinates or leave both empty.");
+        }
+        if (agentTapX !== "" && agentTapY !== "") {
+          objectiveInput.tap = { x: Number(agentTapX), y: Number(agentTapY) };
+        }
+        if (agentText) objectiveInput.text = agentText;
+        request = {
+          objective: selectedObjective,
+          runtime_type: selectedAgentRuntime,
+          audit: selectedAuditId,
+          objective_input: objectiveInput,
+        };
+      }
+      const run = await createAgentRun(request);
       const [steps, artifacts] = await Promise.all([
         listAgentRunSteps(run.id),
         listAgentRunArtifacts(run.id),
@@ -346,9 +454,149 @@ export function DynamicLabPage() {
       setAgentArtifacts(artifacts);
       setNotice(
         run.status === "SUCCEEDED"
-          ? "Device readiness check completed."
-          : "Device readiness check completed with a controlled failure.",
+          ? `${objectiveLabel(selectedObjective)} completed.`
+          : `${objectiveLabel(selectedObjective)} completed with a controlled failure.`,
       );
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleFridaRun(
+    action: "status" | "setup" | "ps" | "attach" | "proof" | "custom",
+  ) {
+    if (!selectedAuditId) {
+      setError("Select an audit for runtime instrumentation.");
+      return;
+    }
+    if (!fridaPackageName) {
+      setError("Select an audit-authorized target package.");
+      return;
+    }
+    if (action === "custom" && (!fridaScript.trim() || !fridaScriptConfirmed)) {
+      setError("Enter JavaScript and explicitly confirm custom script execution.");
+      return;
+    }
+    const workingAction = `frida-${action}` as WorkingAction;
+    setWorking(workingAction);
+    setError("");
+    setNotice("");
+    try {
+      let request: Parameters<typeof createAgentRun>[0];
+      if (["status", "setup", "ps", "attach"].includes(action)) {
+        request = {
+          objective: "FRIDA_RUNTIME_ACTION",
+          runtime_type: selectedAgentRuntime,
+          audit: selectedAuditId,
+          objective_input: {
+            audit_id: selectedAuditId,
+            package_name: fridaPackageName,
+            operation: action as "status" | "setup" | "ps" | "attach",
+            mode: fridaMode,
+            timeout: fridaTimeout,
+          },
+        };
+      } else if (action === "proof") {
+        request = {
+          objective: "FRIDA_RUNTIME_UI_MODIFICATION_PROOF",
+          runtime_type: selectedAgentRuntime,
+          audit: selectedAuditId,
+          objective_input: {
+            audit_id: selectedAuditId,
+            package_name: fridaPackageName,
+          },
+        };
+      } else {
+        request = {
+          objective: "FRIDA_CUSTOM_SCRIPT",
+          runtime_type: selectedAgentRuntime,
+          audit: selectedAuditId,
+          objective_input: {
+            audit_id: selectedAuditId,
+            package_name: fridaPackageName,
+            mode: fridaMode,
+            source: fridaScript,
+            timeout: fridaTimeout,
+            capture_logcat: true,
+            confirm: true,
+          },
+        };
+      }
+      const run = await createAgentRun(request);
+      const [steps, artifacts] = await Promise.all([
+        listAgentRunSteps(run.id),
+        listAgentRunArtifacts(run.id),
+      ]);
+      setAgentRun(run);
+      setAgentSteps(steps);
+      setAgentArtifacts(artifacts);
+      setNotice(
+        run.status === "SUCCEEDED"
+          ? `${objectiveLabel(run.objective)} completed.`
+          : `${objectiveLabel(run.objective)} ended with a controlled failure.`,
+      );
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleGenerateAssessmentPlan() {
+    if (!selectedAuditId || !plannerPackageName) {
+      setError("Select an audit and its authorized target package.");
+      return;
+    }
+    if (!plannerObjective.trim() || !plannerScope.trim()) {
+      setError("Provide a bounded assessment objective and scope.");
+      return;
+    }
+    setWorking("planner-generate");
+    setError("");
+    setNotice("");
+    try {
+      const plan = await createAssessmentPlan({
+        audit: selectedAuditId,
+        target_package: plannerPackageName,
+        objective: plannerObjective.trim(),
+        scope: plannerScope.trim(),
+      });
+      setAssessmentPlan(plan);
+      setNotice(`Assessment plan #${plan.id} generated. No tools were executed.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleValidateAssessmentPlan() {
+    if (!assessmentPlan) return;
+    setWorking("planner-validate");
+    setError("");
+    setNotice("");
+    try {
+      const plan = await validateAssessmentPlan(assessmentPlan.id);
+      setAssessmentPlan(plan);
+      setNotice(`Assessment plan #${plan.id} validated. No tools were executed.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleApproveAssessmentPlan() {
+    if (!assessmentPlan) return;
+    setWorking("planner-approve");
+    setError("");
+    setNotice("");
+    try {
+      const plan = await approveAssessmentPlan(assessmentPlan.id);
+      setAssessmentPlan(plan);
+      setNotice(`Assessment plan #${plan.id} approved. Approval did not start execution.`);
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -635,18 +883,141 @@ export function DynamicLabPage() {
         </div>
       </Card>
 
+      <Card className="dynamic-mvp-section assessment-planner-card">
+        <SectionHeader
+          title="AI Assessment Planner"
+          actions={<span className="planner-only-badge">PLAN ONLY</span>}
+        />
+        <p className="muted planner-intro">
+          Generate a structured assessment plan from audit context and the existing
+          restricted tool manifest. The planner cannot call tools, and approval does
+          not start an agent run.
+        </p>
+
+        <div className="planner-controls">
+          <label>
+            <span>Audit</span>
+            <select
+              value={selectedAuditId}
+              onChange={(event) =>
+                setSelectedAuditId(Number(event.target.value) || "")
+              }
+              disabled={Boolean(working)}
+            >
+              <option value="">Select audit</option>
+              {audits.map((audit) => (
+                <option key={audit.id} value={audit.id}>{audit.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Authorized target</span>
+            <select
+              value={plannerPackageName}
+              onChange={(event) => setPlannerPackageName(event.target.value)}
+              disabled={!selectedAuditId || Boolean(working)}
+            >
+              <option value="">Select verified audit package</option>
+              {authorizedPlannerPackages.map((target) => (
+                <option key={target} value={target}>{target}</option>
+              ))}
+            </select>
+          </label>
+          <label className="planner-objective-field">
+            <span>Assessment objective</span>
+            <input
+              value={plannerObjective}
+              onChange={(event) => setPlannerObjective(event.target.value)}
+              maxLength={500}
+              disabled={Boolean(working)}
+            />
+          </label>
+          <label className="planner-scope-field">
+            <span>Scope</span>
+            <textarea
+              value={plannerScope}
+              onChange={(event) => setPlannerScope(event.target.value)}
+              maxLength={2000}
+              rows={4}
+              disabled={Boolean(working)}
+            />
+          </label>
+        </div>
+
+        <div className="planner-actions">
+          <button
+            className="button button-primary"
+            onClick={() => void handleGenerateAssessmentPlan()}
+            disabled={
+              !canOperate ||
+              !selectedAuditId ||
+              !plannerPackageName ||
+              !plannerObjective.trim() ||
+              !plannerScope.trim() ||
+              Boolean(working)
+            }
+          >
+            {working === "planner-generate" ? "Generating..." : "Generate Plan"}
+          </button>
+          <button
+            className="button button-secondary"
+            onClick={() => void handleValidateAssessmentPlan()}
+            disabled={
+              !canOperate ||
+              !assessmentPlan ||
+              assessmentPlan.status !== "GENERATED" ||
+              Boolean(working)
+            }
+          >
+            {working === "planner-validate" ? "Validating..." : "Validate Plan"}
+          </button>
+          <button
+            className="button button-secondary"
+            onClick={() => void handleApproveAssessmentPlan()}
+            disabled={
+              !canOperate ||
+              !assessmentPlan ||
+              assessmentPlan.status !== "VALIDATED" ||
+              Boolean(working)
+            }
+          >
+            {working === "planner-approve" ? "Approving..." : "Approve Plan"}
+          </button>
+        </div>
+
+        {!canOperate ? (
+          <p className="muted dynamic-role-note">
+            Viewer access is read-only; plan generation, validation, and approval
+            require Analyst or Admin.
+          </p>
+        ) : null}
+        {selectedAuditId && authorizedPlannerPackages.length === 0 ? (
+          <p className="muted dynamic-role-note">
+            The selected audit has no verified package with an authorized package name.
+          </p>
+        ) : null}
+
+        {assessmentPlan ? (
+          <AssessmentPlanResult plan={assessmentPlan} />
+        ) : (
+          <div className="planner-empty-result">
+            No assessment plan has been generated yet.
+          </div>
+        )}
+      </Card>
+
       <Card className="dynamic-mvp-section agent-foundation-card">
         <SectionHeader
           title="Agentic Dynamic Assessment"
           actions={
             <button
               className="button button-primary"
-              onClick={() => void handleAgentReadinessCheck()}
+              onClick={() => void handleAgentRun()}
               disabled={!canOperate || !foundationAvailable || Boolean(working)}
             >
-              {working === "agent-readiness"
+              {working === "agent-run"
                 ? "Running Check..."
-                : "Run Device Readiness Check"}
+                : `Run ${objectiveLabel(selectedObjective)}`}
             </button>
           }
         />
@@ -662,8 +1033,8 @@ export function DynamicLabPage() {
               : "Foundation unavailable"}
           </span>
           <p>
-            Sprint C keeps the run deterministic while adding an ephemeral
-            container boundary. The agent can only run a device readiness check.
+            Sprint C2 keeps both run modes deterministic while adding bounded
+            package, screenshot, UI hierarchy, logcat, tap, and text tools.
           </p>
           {!canOperate ? (
             <p className="muted dynamic-role-note">
@@ -673,6 +1044,21 @@ export function DynamicLabPage() {
         </div>
 
         <div className="agent-runtime-controls">
+          <label>
+            <span>Objective</span>
+            <select
+              value={selectedObjective}
+              onChange={(event) =>
+                setSelectedObjective(event.target.value as AgentObjective)
+              }
+              disabled={Boolean(working)}
+            >
+              <option value="DEVICE_READINESS_CHECK">Device Readiness Check</option>
+              <option value="BASIC_APP_INTERACTION_CHECK">
+                Basic App Interaction Check
+              </option>
+            </select>
+          </label>
           <label>
             <span>Run mode</span>
             <select
@@ -707,7 +1093,7 @@ export function DynamicLabPage() {
               label="Isolation level"
               value={isolationLabel(activeRuntime?.isolation_level)}
             />
-            <StatusFact label="Run mode" value="Deterministic readiness" />
+            <StatusFact label="Run mode" value="Deterministic mobile tools" />
             <StatusFact
               label="Container runtime enabled"
               value={yesNo(containerRuntime?.configuration_enabled)}
@@ -716,13 +1102,111 @@ export function DynamicLabPage() {
           </div>
         </div>
 
-        {agentRun ? (
+        {selectedObjective === "BASIC_APP_INTERACTION_CHECK" ? (
+          <div className="agent-objective-controls">
+            <label>
+              <span>Audit</span>
+              <select
+                value={selectedAuditId}
+                onChange={(event) => setSelectedAuditId(Number(event.target.value) || "")}
+                disabled={Boolean(working)}
+              >
+                <option value="">Select audit</option>
+                {audits.map((audit) => (
+                  <option key={audit.id} value={audit.id}>{audit.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>App source</span>
+              <select
+                value={agentTargetType}
+                onChange={(event) => setAgentTargetType(event.target.value as AgentTargetType)}
+                disabled={Boolean(working)}
+              >
+                <option value="VERIFIED_APK">Verified APK</option>
+                <option value="INSTALLED_PACKAGE">Installed package</option>
+              </select>
+            </label>
+            {agentTargetType === "VERIFIED_APK" ? (
+              <label>
+                <span>Verified APK</span>
+                <select
+                  value={selectedApkId}
+                  onChange={(event) => setSelectedApkId(Number(event.target.value) || "")}
+                  disabled={Boolean(working)}
+                >
+                  <option value="">Select verified APK</option>
+                  {verifiedApks.map((apk) => (
+                    <option key={apk.id} value={apk.id}>
+                      {apk.package_name || `APK #${apk.id}`} · {apk.version_name || "unknown version"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                <span>Installed package</span>
+                <select
+                  value={agentPackageName}
+                  onChange={(event) => setAgentPackageName(event.target.value)}
+                  disabled={Boolean(working)}
+                >
+                  <option value="">Select installed package</option>
+                  {packages.map((installedPackage) => (
+                    <option key={installedPackage} value={installedPackage}>{installedPackage}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label>
+              <span>Optional tap X</span>
+              <input
+                type="number"
+                min="0"
+                max="10000"
+                value={agentTapX}
+                onChange={(event) => setAgentTapX(event.target.value)}
+                disabled={Boolean(working)}
+              />
+            </label>
+            <label>
+              <span>Optional tap Y</span>
+              <input
+                type="number"
+                min="0"
+                max="10000"
+                value={agentTapY}
+                onChange={(event) => setAgentTapY(event.target.value)}
+                disabled={Boolean(working)}
+              />
+            </label>
+            <label className="agent-objective-text">
+              <span>Optional text (128 safe characters maximum)</span>
+              <input
+                type="text"
+                maxLength={128}
+                value={agentText}
+                onChange={(event) => setAgentText(event.target.value)}
+                disabled={Boolean(working)}
+                autoComplete="off"
+              />
+            </label>
+            {agentTargetType === "INSTALLED_PACKAGE" && packages.length === 0 ? (
+              <p className="muted agent-objective-note">
+                Load installed packages in the APK & Package Controls section first.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {agentRun && !isFridaObjective(agentRun.objective) ? (
           <div className="agent-run-layout">
             <section className="agent-run-result" aria-label="Latest agent run result">
               <div className="agent-run-heading">
                 <div>
                   <span className="eyebrow">Latest deterministic run</span>
-                  <h3>Device readiness check #{agentRun.id}</h3>
+                  <h3>{objectiveLabel(agentRun.objective)} #{agentRun.id}</h3>
                 </div>
                 <span className={`agent-run-state state-${agentRun.status.toLowerCase()}`}>
                   {agentRun.status}
@@ -735,38 +1219,32 @@ export function DynamicLabPage() {
                   value={runtimeTypeLabel(agentRun.runtime_type)}
                   detail={isolationLabel(agentRun.isolation_level)}
                 />
-                <StatusFact
-                  label="Host agent reachable"
-                  value={yesNo(agentRun.result_summary.host_agent_reachable)}
-                  state={agentRun.result_summary.host_agent_reachable ? "online" : "offline"}
-                />
-                <StatusFact
-                  label="Emulator reachable"
-                  value={yesNo(agentRun.result_summary.emulator_reachable)}
-                  state={agentRun.result_summary.emulator_reachable ? "online" : "offline"}
-                />
-                <StatusFact
-                  label="Serial"
-                  value={agentRun.result_summary.device?.serial || "Unavailable"}
-                />
-                <StatusFact
-                  label="Android / API / ABI"
-                  value={deviceIdentity(agentRun)}
-                />
-                <StatusFact
-                  label="SELinux"
-                  value={agentRun.result_summary.device?.selinux || "Unavailable"}
-                />
-                <StatusFact
-                  label="Screenshot captured"
-                  value={yesNo(agentRun.result_summary.screenshot_captured)}
-                  state={agentRun.result_summary.screenshot_captured ? "online" : "offline"}
-                />
-                <StatusFact
-                  label="Environment ready"
-                  value={yesNo(agentRun.result_summary.environment_ready)}
-                  state={agentRun.result_summary.environment_ready ? "online" : "warning"}
-                />
+                {agentRun.objective === "BASIC_APP_INTERACTION_CHECK" ? (
+                  <>
+                    <StatusFact
+                      label="App source"
+                      value={agentRun.result_summary.app_installed ? "Installed verified APK" : "Already present"}
+                    />
+                    <StatusFact label="Package" value={agentRun.result_summary.package_name || "Unavailable"} />
+                    <StatusFact label="App launched" value={yesNo(agentRun.result_summary.app_launched)} state={agentRun.result_summary.app_launched ? "online" : "offline"} />
+                    <StatusFact label="Screenshot captured" value={yesNo(agentRun.result_summary.screenshot_captured)} state={agentRun.result_summary.screenshot_captured ? "online" : "offline"} />
+                    <StatusFact label="UI hierarchy captured" value={yesNo(agentRun.result_summary.ui_dumped)} state={agentRun.result_summary.ui_dumped ? "online" : "offline"} />
+                    <StatusFact label="Logcat captured" value={yesNo(agentRun.result_summary.logcat_captured)} state={agentRun.result_summary.logcat_captured ? "online" : "offline"} />
+                    <StatusFact label="Tap" value={agentRun.result_summary.tap_skipped ? "Skipped" : yesNo(agentRun.result_summary.tap_executed)} />
+                    <StatusFact label="Text input" value={agentRun.result_summary.type_skipped ? "Skipped" : yesNo(agentRun.result_summary.type_executed)} />
+                    <StatusFact label="Force stop" value={yesNo(agentRun.result_summary.force_stop_completed)} state={agentRun.result_summary.force_stop_completed ? "online" : "offline"} />
+                  </>
+                ) : (
+                  <>
+                    <StatusFact label="Host agent reachable" value={yesNo(agentRun.result_summary.host_agent_reachable)} state={agentRun.result_summary.host_agent_reachable ? "online" : "offline"} />
+                    <StatusFact label="Emulator reachable" value={yesNo(agentRun.result_summary.emulator_reachable)} state={agentRun.result_summary.emulator_reachable ? "online" : "offline"} />
+                    <StatusFact label="Serial" value={agentRun.result_summary.device?.serial || "Unavailable"} />
+                    <StatusFact label="Android / API / ABI" value={deviceIdentity(agentRun)} />
+                    <StatusFact label="SELinux" value={agentRun.result_summary.device?.selinux || "Unavailable"} />
+                    <StatusFact label="Screenshot captured" value={yesNo(agentRun.result_summary.screenshot_captured)} state={agentRun.result_summary.screenshot_captured ? "online" : "offline"} />
+                    <StatusFact label="Environment ready" value={yesNo(agentRun.result_summary.environment_ready)} state={agentRun.result_summary.environment_ready ? "online" : "warning"} />
+                  </>
+                )}
                 <StatusFact
                   label="Run duration"
                   value={formatDuration(agentRun.duration_seconds)}
@@ -816,14 +1294,364 @@ export function DynamicLabPage() {
                 (artifact) => artifact.artifact_type === "SCREENSHOT",
               )}
             />
+            {agentRun.objective === "BASIC_APP_INTERACTION_CHECK" ? (
+              <>
+                <AgentUiEvidence summary={agentRun.result_summary.ui_dump} />
+                <AgentLogcatEvidence summary={agentRun.result_summary.logcat_excerpt} />
+              </>
+            ) : null}
           </div>
-        ) : (
+        ) : !agentRun ? (
           <div className="agent-empty-result">
-            No device readiness run has been recorded yet.
+            No deterministic agent run has been recorded yet.
           </div>
-        )}
+        ) : null}
+      </Card>
+
+      <Card className="dynamic-mvp-section runtime-instrumentation-card">
+        <SectionHeader title="Runtime Instrumentation" />
+        <p className="muted">
+          Real Frida checks and scripts execute through the run-scoped Django tool
+          gateway against one audit-authorized Android package.
+        </p>
+
+        <div className="agent-objective-controls runtime-instrumentation-controls">
+          <label>
+            <span>Environment audit</span>
+            <select
+              value={selectedAuditId}
+              onChange={(event) => setSelectedAuditId(Number(event.target.value) || "")}
+              disabled={Boolean(working)}
+            >
+              <option value="">Select audit</option>
+              {audits.map((audit) => (
+                <option key={audit.id} value={audit.id}>{audit.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Target</span>
+            <select
+              value={fridaPackageName}
+              onChange={(event) => setFridaPackageName(event.target.value)}
+              disabled={Boolean(working)}
+            >
+              <option value="">Select authorized package</option>
+              {authorizedFridaPackages.map((target) => (
+                <option key={target} value={target}>{target}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="runtime-instrumentation-actions" aria-label="Frida environment actions">
+          <button className="button button-secondary" onClick={() => void handleFridaRun("status")} disabled={!canOperate || Boolean(working)}>
+            {working === "frida-status" ? "Checking..." : "Check Frida"}
+          </button>
+          <button className="button button-secondary" onClick={() => void handleFridaRun("setup")} disabled={!canOperate || Boolean(working)}>
+            {working === "frida-setup" ? "Setting up..." : "Setup Frida"}
+          </button>
+          <button className="button button-secondary" onClick={() => void handleFridaRun("ps")} disabled={!canOperate || Boolean(working)}>
+            {working === "frida-ps" ? "Enumerating..." : "Frida PS"}
+          </button>
+          <button className="button button-secondary" onClick={() => void handleFridaRun("attach")} disabled={!canOperate || Boolean(working)}>
+            {working === "frida-attach" ? "Attaching..." : "Attach"}
+          </button>
+        </div>
+
+        <section className="runtime-proof-controls">
+          <div>
+            <span className="eyebrow">Built-in proof</span>
+            <h3>Frida — Runtime UI Modification Proof</h3>
+            <p className="muted">Captures before/after screenshots, UI hierarchy, Frida events, and bounded logcat evidence.</p>
+          </div>
+          <button className="button button-primary" onClick={() => void handleFridaRun("proof")} disabled={!canOperate || Boolean(working)}>
+            {working === "frida-proof" ? "Running Proof..." : "Run UI Modification Proof"}
+          </button>
+        </section>
+
+        <section className="runtime-custom-script">
+          <span className="eyebrow">Custom script</span>
+          <textarea
+            value={fridaScript}
+            onChange={(event) => setFridaScript(event.target.value)}
+            maxLength={32768}
+            rows={7}
+            spellCheck={false}
+            placeholder={'Java.perform(function () {\n  send({type: "custom", success: true});\n});'}
+            disabled={Boolean(working)}
+          />
+          <label className="runtime-script-confirmation">
+            <input
+              type="checkbox"
+              checked={fridaScriptConfirmed}
+              onChange={(event) => setFridaScriptConfirmed(event.target.checked)}
+              disabled={Boolean(working)}
+            />
+            <span>I confirm this bounded JavaScript may execute inside the selected app process.</span>
+          </label>
+          <details>
+            <summary>Advanced options</summary>
+            <div className="runtime-advanced-options">
+              <label>
+                <span>Mode</span>
+                <select value={fridaMode} onChange={(event) => setFridaMode(event.target.value as "attach" | "spawn")} disabled={Boolean(working)}>
+                  <option value="attach">Attach</option>
+                  <option value="spawn">Spawn</option>
+                </select>
+              </label>
+              <label>
+                <span>Timeout (seconds)</span>
+                <input type="number" min="1" max="30" value={fridaTimeout} onChange={(event) => setFridaTimeout(Number(event.target.value))} disabled={Boolean(working)} />
+              </label>
+            </div>
+          </details>
+          <button className="button button-primary" onClick={() => void handleFridaRun("custom")} disabled={!canOperate || !fridaScriptConfirmed || !fridaScript.trim() || Boolean(working)}>
+            {working === "frida-custom" ? "Running JS..." : "Run JS"}
+          </button>
+        </section>
+
+        {agentRun && isFridaObjective(agentRun.objective) ? (
+          <RuntimeInstrumentationResult
+            run={agentRun}
+            steps={agentSteps}
+            artifacts={agentArtifacts}
+          />
+        ) : null}
       </Card>
     </div>
+  );
+}
+
+function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
+  const toolCount = plan.steps.reduce(
+    (count, step) => count + step.required_tools.length,
+    0,
+  );
+  return (
+    <section className="planner-result" aria-label="Latest AI assessment plan">
+      <div className="planner-result-heading">
+        <div>
+          <span className="eyebrow">Structured assessment plan</span>
+          <h3>Plan #{plan.id} · {plan.target_package}</h3>
+        </div>
+        <span className={`planner-state planner-state-${plan.status.toLowerCase()}`}>
+          {plan.status}
+        </span>
+      </div>
+
+      <div className="planner-summary-facts">
+        <StatusFact label="Provider" value={plan.planner_provider} detail={plan.planner_model} />
+        <StatusFact label="Validation" value={plan.validation_status} state={plan.validation_status === "PASSED" ? "online" : "warning"} />
+        <StatusFact label="Steps" value={String(plan.steps.length)} />
+        <StatusFact label="Bounded tool references" value={String(toolCount)} />
+        <StatusFact label="Created" value={formatDate(plan.created_at)} />
+        <StatusFact label="Plan hash" value={plan.plan_hash ? `${plan.plan_hash.slice(0, 16)}…` : "Unavailable"} />
+      </div>
+
+      <div className="planner-scope-summary">
+        <div>
+          <span>Objective</span>
+          <p>{plan.objective}</p>
+        </div>
+        <div>
+          <span>Scope</span>
+          <p>{plan.scope}</p>
+        </div>
+      </div>
+
+      <div className="planner-no-execution-note">
+        <strong>Plan only.</strong> Approval records auditor authorization for a
+        future execution agent. It does not contact the gateway, host agent, or
+        emulator.
+      </div>
+
+      <ol className="planner-step-list">
+        {plan.steps.map((step) => (
+          <li key={step.id} className="planner-step">
+            <div className="planner-step-heading">
+              <span className="planner-step-sequence">{step.sequence}</span>
+              <div>
+                <span className="eyebrow mono">{step.step_identifier}</span>
+                <h4>{step.objective}</h4>
+              </div>
+              <span className="planner-step-state">{step.status}</span>
+            </div>
+            <p className="planner-step-rationale">{step.rationale}</p>
+            <dl className="planner-step-details">
+              <div>
+                <dt>Allowed tools</dt>
+                <dd className="planner-chip-list">
+                  {step.required_tools.length ? step.required_tools.map((tool) => (
+                    <span key={tool} className="planner-tool-chip mono">{tool}</span>
+                  )) : <span className="muted">Reasoning-only step</span>}
+                </dd>
+              </div>
+              <div>
+                <dt>Expected observation</dt>
+                <dd>{step.expected_observation}</dd>
+              </div>
+              <div>
+                <dt>Success condition</dt>
+                <dd>{step.success_condition}</dd>
+              </div>
+              <div>
+                <dt>Evidence</dt>
+                <dd className="planner-chip-list">
+                  {step.evidence_requirements.map((evidence) => (
+                    <span key={evidence} className="planner-evidence-chip">{evidenceLabel(evidence)}</span>
+                  ))}
+                </dd>
+              </div>
+              <div>
+                <dt>Dependencies</dt>
+                <dd>{step.dependencies.length ? step.dependencies.join(", ") : "None"}</dd>
+              </div>
+            </dl>
+            {step.required_tools.length ? (
+              <details className="planner-tool-arguments">
+                <summary>Bounded tool arguments</summary>
+                <pre>{JSON.stringify(step.tool_arguments, null, 2)}</pre>
+              </details>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function RuntimeInstrumentationResult({
+  run,
+  steps,
+  artifacts,
+}: {
+  run: AgentRun;
+  steps: AgentRunStep[];
+  artifacts: AgentRunArtifact[];
+}) {
+  const summary = run.result_summary;
+  const actionResult = summary.result || {};
+  const beforeArtifact = artifacts.find(
+    (artifact) => artifact.name === "frida-before-screenshot.png",
+  );
+  const afterArtifact = artifacts.find(
+    (artifact) => artifact.name === "frida-after-screenshot.png",
+  );
+  const isAction = run.objective === "FRIDA_RUNTIME_ACTION";
+  const clientVersion = isAction
+    ? metadataString(actionResult.frida_client_version) ||
+      metadataString((actionResult.after_state as Record<string, unknown> | undefined)?.frida_client_version)
+    : summary.frida_client_version || "";
+  const serverVersion = isAction
+    ? metadataString(actionResult.frida_server_version) ||
+      metadataString((actionResult.after_state as Record<string, unknown> | undefined)?.frida_server_version)
+    : summary.frida_server_version || "";
+
+  return (
+    <div className="runtime-result" aria-label="Runtime instrumentation result">
+      <div className="agent-run-heading">
+        <div>
+          <span className="eyebrow">Runtime instrumentation</span>
+          <h3>{objectiveLabel(run.objective)} #{run.id}</h3>
+        </div>
+        <span className={`agent-run-state state-${run.status.toLowerCase()}`}>
+          {run.status}
+        </span>
+      </div>
+
+      <div className="dynamic-device-facts agent-result-facts">
+        <StatusFact label="Target" value={summary.package_name || "Unavailable"} />
+        <StatusFact label="PID" value={String(summary.pid ?? actionResult.pid ?? actionResult.target_pid ?? "Unavailable")} />
+        <StatusFact label="Frida client" value={clientVersion || "Unavailable"} state={clientVersion ? "online" : "offline"} />
+        <StatusFact label="Frida server" value={serverVersion || "Unavailable"} state={serverVersion ? "online" : "offline"} />
+        <StatusFact label="Version agreement" value={yesNo(Boolean(actionResult.version_agreement || (actionResult.verification as Record<string, unknown> | undefined)?.version_agreement || (clientVersion && clientVersion === serverVersion)))} />
+        <StatusFact label="Attach" value={summary.attach_succeeded || actionResult.attach_capability || actionResult.attach_event_received ? "Success" : "Not confirmed"} state={summary.attach_succeeded || actionResult.attach_capability || actionResult.attach_event_received ? "online" : "offline"} />
+        {summary.operation === "ps" ? (
+          <StatusFact label="Process count" value={String(actionResult.process_count ?? 0)} state={Number(actionResult.process_count || 0) > 0 ? "online" : "offline"} />
+        ) : null}
+        {!isAction ? (
+          <>
+            <StatusFact label="Script execution" value={summary.execution_succeeded ? "Success" : "Failed"} state={summary.execution_succeeded ? "online" : "offline"} />
+            <StatusFact label="Frida event" value={summary.frida_event_received ? "UI modification confirmed" : `${summary.event_count ?? 0} bounded events`} state={summary.frida_event_received || (summary.event_count || 0) > 0 ? "online" : "warning"} />
+            <StatusFact label="Visual state changed" value={yesNo(summary.visual_state_changed)} state={summary.visual_state_changed ? "online" : "offline"} />
+            <StatusFact label="Cleanup" value={summary.cleanup_state || "Unavailable"} />
+          </>
+        ) : null}
+      </div>
+
+      {summary.frida_event_received ? (
+        <p className="alert alert-success">Frida event: UI modification confirmed.</p>
+      ) : null}
+      {run.failure_message ? (
+        <p className="agent-failure-message">{run.failure_category}: {run.failure_message}</p>
+      ) : null}
+
+      {!isAction ? (
+        <>
+          <div className="runtime-screenshot-comparison">
+            <ScreenshotPreview label="Before screenshot" artifact={beforeArtifact} digest={summary.before_screenshot?.sha256} />
+            <ScreenshotPreview label="After screenshot" artifact={afterArtifact} digest={summary.after_screenshot?.sha256} />
+          </div>
+          <div className="runtime-ui-comparison">
+            <AgentUiEvidence summary={summary.before_ui} />
+            <AgentUiEvidence summary={summary.after_ui} />
+          </div>
+          <AgentLogcatEvidence summary={summary.logcat} />
+        </>
+      ) : null}
+
+      <section className="agent-step-card" aria-label="Runtime instrumentation steps">
+        <div className="agent-subsection-heading">
+          <h3>Evidence timeline</h3>
+          <span>{steps.filter((step) => step.status === "SUCCEEDED").length} / {steps.length} succeeded</span>
+        </div>
+        <ol className="agent-step-list">
+          {steps.map((step) => (
+            <li key={step.id}>
+              <span className="agent-step-sequence">{step.sequence_number}</span>
+              <div>
+                <strong className="mono">{step.tool_name}</strong>
+                {step.failure_message ? <small>{step.failure_message}</small> : null}
+              </div>
+              <span className={`agent-step-status state-${step.status.toLowerCase()}`}>{step.status}</span>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <p className="agent-result-summary">
+        {summary.interpretation || (isAction ? "The requested real Frida environment action completed." : "Runtime instrumentation evidence was captured.")}
+      </p>
+      <p className="muted agent-scope-note">
+        {summary.limitations || summary.assessment_scope || "Runtime evidence only; no vulnerability verdict was produced."}
+      </p>
+    </div>
+  );
+}
+
+function ScreenshotPreview({
+  label,
+  artifact,
+  digest,
+}: {
+  label: string;
+  artifact?: AgentRunArtifact;
+  digest?: string;
+}) {
+  return (
+    <section className="agent-evidence-card runtime-screenshot-card">
+      <div className="agent-subsection-heading">
+        <h3>{label}</h3>
+        <span>{artifact?.content_type || "image/png"}</span>
+      </div>
+      {artifact?.download_url ? (
+        <img src={artifact.download_url} alt={label} />
+      ) : (
+        <div className="screenshot-placeholder">Preview unavailable</div>
+      )}
+      <p className="mono runtime-digest">{digest || metadataString(artifact?.metadata.sha256) || "Digest unavailable"}</p>
+    </section>
   );
 }
 
@@ -895,6 +1723,71 @@ function AgentEvidenceCard({ artifact }: { artifact?: AgentRunArtifact }) {
   );
 }
 
+function AgentUiEvidence({
+  summary,
+}: {
+  summary: AgentRun["result_summary"]["ui_dump"];
+}) {
+  return (
+    <section className="agent-evidence-card" aria-label="UI hierarchy evidence">
+      <div className="agent-subsection-heading">
+        <h3>UI hierarchy summary</h3>
+        <span>{summary?.node_count ?? 0} nodes</span>
+      </div>
+      <p className="agent-result-summary">
+        Focused package: <span className="mono">{summary?.focused_package || "Unavailable"}</span>
+      </p>
+      <EvidenceValues label="Sample visible text" values={summary?.text_values} />
+      <EvidenceValues label="Sample resource IDs" values={summary?.resource_ids} mono />
+      <p className="muted agent-scope-note">
+        Raw hierarchy XML is bounded and is not displayed by default. SHA-256: {summary?.xml_sha256 || "Unavailable"}
+      </p>
+    </section>
+  );
+}
+
+function AgentLogcatEvidence({
+  summary,
+}: {
+  summary?: {
+    line_count?: number | null;
+    lines?: string[];
+    redaction_applied?: boolean;
+  };
+}) {
+  return (
+    <section className="agent-evidence-card agent-logcat-card" aria-label="Logcat evidence">
+      <div className="agent-subsection-heading">
+        <h3>Bounded logcat excerpt</h3>
+        <span>{summary?.line_count ?? 0} lines</span>
+      </div>
+      <pre>{summary?.lines?.length ? summary.lines.join("\n") : "No bounded log lines were returned."}</pre>
+      <p className="muted agent-scope-note">
+        Redaction applied: {yesNo(summary?.redaction_applied)}. Output is capped at 100 lines.
+      </p>
+    </section>
+  );
+}
+
+function EvidenceValues({
+  label,
+  values = [],
+  mono = false,
+}: {
+  label: string;
+  values?: string[];
+  mono?: boolean;
+}) {
+  return (
+    <div className="agent-evidence-values">
+      <strong>{label}</strong>
+      <p className={mono ? "mono" : undefined}>
+        {values.length ? values.slice(0, 12).join(" · ") : "None reported"}
+      </p>
+    </div>
+  );
+}
+
 function ServiceFact({
   label,
   component,
@@ -938,6 +1831,29 @@ function packageActionLabel(action: PackageAction): string {
 
 function yesNo(value: boolean | undefined): string {
   return value ? "Yes" : "No";
+}
+
+function evidenceLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function objectiveLabel(value: AgentObjective): string {
+  return {
+    DEVICE_READINESS_CHECK: "Device Readiness Check",
+    BASIC_APP_INTERACTION_CHECK: "Basic App Interaction Check",
+    FRIDA_RUNTIME_ACTION: "Frida Environment Action",
+    FRIDA_RUNTIME_UI_MODIFICATION_PROOF: "Frida Runtime UI Modification Proof",
+    FRIDA_CUSTOM_SCRIPT: "Custom Frida Script",
+  }[value];
+}
+
+function isFridaObjective(value: AgentObjective): boolean {
+  return value === "FRIDA_RUNTIME_ACTION" ||
+    value === "FRIDA_RUNTIME_UI_MODIFICATION_PROOF" ||
+    value === "FRIDA_CUSTOM_SCRIPT";
 }
 
 function runtimeTypeLabel(

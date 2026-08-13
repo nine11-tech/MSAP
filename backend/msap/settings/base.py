@@ -351,6 +351,43 @@ MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS = int(
     os.getenv("MSAP_AGENT_CONTAINER_TIMEOUT_SECONDS", "120")
 )
 
+# Sprint D assessment planning is backend-only and plan-only. Local and test
+# environments default to the deterministic provider; production operators can
+# opt into OpenAI without exposing the credential or model configuration to the
+# browser or agent sandbox.
+MSAP_ASSESSMENT_PLANNER_PROVIDER = os.getenv(
+    "MSAP_ASSESSMENT_PLANNER_PROVIDER",
+    "DETERMINISTIC",
+).upper()
+MSAP_ASSESSMENT_PLANNER_MODEL = os.getenv(
+    "MSAP_ASSESSMENT_PLANNER_MODEL",
+    "gpt-5.5",
+)
+MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY = os.getenv(
+    "MSAP_OPENAI_API_KEY",
+    os.getenv("OPENAI_API_KEY", ""),
+)
+MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS = min(
+    120,
+    max(5, int(os.getenv("MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS", "60"))),
+)
+MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS = min(
+    16000,
+    max(1024, int(os.getenv("MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS", "8000"))),
+)
+MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = os.getenv(
+    "MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT",
+    "medium",
+).lower()
+if MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT not in {
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+}:
+    MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = "medium"
+
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")

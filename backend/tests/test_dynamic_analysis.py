@@ -2,7 +2,10 @@ from contextlib import nullcontext
 from datetime import timedelta
 from hashlib import sha256 as file_sha256
 import inspect
+import importlib.util
+import json
 from io import BytesIO, StringIO
+from pathlib import Path
 import subprocess
 import sys
 from unittest.mock import Mock, patch
@@ -25,6 +28,8 @@ from apps.dynamic_analysis.models import (
     AgentRunArtifact,
     AgentRuntime,
     AgentRunStep,
+    AssessmentPlan,
+    AssessmentPlanStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -68,7 +73,27 @@ from apps.dynamic_analysis.services.host_agent_client import (
 from apps.dynamic_analysis.services.host_agent import (
     DynamicHostAgent,
     HostAgentRequestError,
+    _focused_component,
     _run_process,
+    _top_activity_component,
+)
+from apps.dynamic_analysis.services.frida_runtime import (
+    FridaRuntime,
+    FridaRuntimeError,
+    MAX_FRIDA_EVENTS,
+    _parse_frida_events,
+)
+from apps.dynamic_analysis.services.assessment_planner import (
+    AssessmentPlannerService,
+    DeterministicPlannerProvider,
+    EVIDENCE_TYPES,
+    MAX_PLAN_STEPS,
+    OpenAIPlannerProvider,
+    PLANNER_OUTPUT_SCHEMA,
+    PlanValidationError,
+    PlannerProviderError,
+    build_planner_input,
+    validate_generated_plan,
 )
 from apps.dynamic_analysis.services.job_control import recover_stale_dynamic_jobs
 from apps.dynamic_analysis.services.local_scripts import (
@@ -90,6 +115,7 @@ from apps.dynamic_analysis.services.state_machine import (
     transition_session,
 )
 from apps.projects.models import Project
+from apps.findings.models import Finding
 from apps.storage.models import ObjectStorageReference
 from apps.dynamic_analysis.services.runner_readiness import get_dynamic_runner_readiness
 
@@ -146,8 +172,14 @@ def test_agent_runtime_model_defaults_are_restricted():
     assert runtime.isolation_level == AgentRuntime.IsolationLevel.INTERNAL_ONLY
     assert runtime.enabled is True
     assert runtime.capabilities == {
-        "objectives": ["DEVICE_READINESS_CHECK"],
-        "tools": ["get_device_status", "take_screenshot"],
+        "objectives": [
+            "DEVICE_READINESS_CHECK",
+            "BASIC_APP_INTERACTION_CHECK",
+            "FRIDA_RUNTIME_ACTION",
+            "FRIDA_RUNTIME_UI_MODIFICATION_PROOF",
+            "FRIDA_CUSTOM_SCRIPT",
+        ],
+        "tools": list(TOOL_MANIFEST),
     }
 
 
@@ -401,6 +433,7 @@ def test_container_command_builder_is_fixed_and_environment_is_minimal(
         "MSAP_AGENT_GATEWAY_URL",
         "MSAP_AGENT_RUN_TOKEN",
         "MSAP_AGENT_OBJECTIVE",
+        "MSAP_AGENT_OBJECTIVE_INPUT",
     }
     forbidden = {
         "MSAP_DYNAMIC_HOST_AGENT_TOKEN",
@@ -532,11 +565,28 @@ def test_container_controller_marks_timeout_without_docker(django_user_model):
 
 
 def test_agent_tool_manifest_only_exposes_allowlisted_tools():
-    assert set(TOOL_MANIFEST) == {"get_device_status", "take_screenshot"}
-    assert set(public_tool_manifest()) == {
+    expected = {
         "get_device_status",
+        "list_packages",
+        "install_verified_apk",
+        "launch_package",
+        "force_stop_package",
+        "clear_package_data",
         "take_screenshot",
+        "start_logcat",
+        "stop_logcat",
+        "get_logcat_excerpt",
+        "dump_ui",
+        "tap_coordinates",
+        "type_text",
+        "frida_status",
+        "frida_ps",
+        "frida_setup",
+        "frida_attach",
+        "frida_run_js",
     }
+    assert set(TOOL_MANIFEST) == expected
+    assert set(public_tool_manifest()) == expected
     assert TOOL_MANIFEST["get_device_status"].input_schema[
         "additionalProperties"
     ] is False
@@ -592,6 +642,408 @@ def test_take_screenshot_tool_normalizes_mocked_success():
     assert output["captured_at"]
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("list_packages", {"include_system": "false"}),
+        ("install_verified_apk", {"audit_id": 1, "apk_file_id": 2, "path": "/tmp/a.apk"}),
+        ("launch_package", {"package_name": "unsafe;id"}),
+        ("force_stop_package", {"package_name": "singlelabel"}),
+        ("clear_package_data", {"package_name": "com.example.app", "confirm": False}),
+        ("start_logcat", {"package_name": "com.example.app", "reason": "forever", "max_seconds": 60}),
+        ("stop_logcat", {"collector_id": "../capture"}),
+        ("get_logcat_excerpt", {"collector_id": "capture1", "max_lines": 101}),
+        ("dump_ui", {"package_name": "com.example.app", "raw": True}),
+        ("tap_coordinates", {"x": -1, "y": 2, "reason": "agent_navigation"}),
+        ("type_text", {"text": "hello\nworld", "reason": "agent_navigation"}),
+    ],
+)
+def test_agent_mobile_tools_reject_bad_arguments(tool_name, arguments):
+    with pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool(tool_name, arguments)
+
+    assert exc_info.value.code == "INVALID_TOOL_INPUT"
+
+
+@pytest.mark.parametrize(
+    "package_name",
+    ["com.example.safe", "org.owasp.mstg_test", "A.valid.Package1"],
+)
+@pytest.mark.django_db
+def test_agent_package_regex_accepts_strict_names(package_name):
+    client = Mock()
+    client.request_json.return_value = {"success": True, "focused_app": package_name}
+
+    output = execute_agent_tool(
+        "launch_package", {"package_name": package_name}, client=client
+    )
+
+    assert output["launched"] is True
+
+
+@pytest.mark.parametrize("x,y", [(10001, 0), (0, 10001), (1.5, 2), (True, 2)])
+def test_agent_tap_coordinates_are_bounded(x, y):
+    with pytest.raises(AgentToolError):
+        execute_agent_tool(
+            "tap_coordinates",
+            {"x": x, "y": y, "reason": "agent_navigation"},
+        )
+
+
+@pytest.mark.parametrize("text", ["x" * 129, "hello\x00world", "unsafe&command"])
+def test_agent_text_is_bounded_and_shell_safe(text):
+    with pytest.raises(AgentToolError):
+        execute_agent_tool(
+            "type_text", {"text": text, "reason": "agent_navigation"}
+        )
+
+
+def test_list_packages_tool_normalizes_bounded_mock():
+    client = Mock()
+    client.request_json.return_value = {
+        "success": True,
+        "packages": [
+            {
+                "package_name": "com.example.one",
+                "version_name": "1.0",
+                "version_code": 4,
+                "is_system": False,
+            },
+            {"package_name": "not a package"},
+        ],
+    }
+
+    output = execute_agent_tool(
+        "list_packages", {"include_system": False}, client=client
+    )
+
+    assert output == {
+        "package_count": 1,
+        "packages": [
+            {
+                "package_name": "com.example.one",
+                "version_name": "1.0",
+                "version_code": 4,
+                "is_system": False,
+            }
+        ],
+    }
+    client.request_json.assert_called_once_with(
+        "/actions/list-packages", method="POST", body={"include_system": False}
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "route", "output_field"),
+    [
+        ("launch_package", "/actions/launch-package", "launched"),
+        ("force_stop_package", "/actions/force-stop", "stopped"),
+    ],
+)
+@pytest.mark.django_db
+def test_agent_package_actions_use_fixed_host_routes(tool_name, route, output_field):
+    client = Mock()
+    client.request_json.return_value = {
+        "success": True,
+        "focused_app": "com.example.safe",
+    }
+
+    output = execute_agent_tool(
+        tool_name, {"package_name": "com.example.safe"}, client=client
+    )
+
+    assert output[output_field] is True
+    client.request_json.assert_called_once_with(
+        route,
+        method="POST",
+        body={"package_name": "com.example.safe"},
+    )
+
+
+def test_clear_package_data_requires_explicit_confirm():
+    with pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool(
+            "clear_package_data",
+            {"package_name": "com.example.safe", "confirm": False},
+        )
+
+    assert exc_info.value.code == "INVALID_TOOL_INPUT"
+
+
+@pytest.mark.django_db
+def test_clear_package_data_rejects_viewer_even_with_confirm(django_user_model):
+    viewer = _make_role_user(django_user_model, "clear-data-viewer", VIEWER_GROUP)
+
+    with pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool(
+            "clear_package_data",
+            {"package_name": "com.example.safe", "confirm": True},
+            requested_by=viewer,
+            client=Mock(),
+        )
+
+    assert exc_info.value.code == "TOOL_PERMISSION_DENIED"
+
+
+def test_dump_ui_tool_bounds_mocked_summary():
+    client = Mock()
+    client.request_json.return_value = {
+        "success": True,
+        "capture_status": "CAPTURED",
+        "reason": "",
+        "node_count": 20,
+        "focused_package": "com.example.safe",
+        "focused_activity": "com.example.safe/.MainActivity",
+        "target_package_running": True,
+        "target_pid": 1234,
+        "text_values": ["visible"] * 120,
+        "resource_ids": ["com.example.safe:id/title"] * 120,
+        "raw_preview": "x" * 9000,
+        "xml_sha256": "a" * 64,
+    }
+
+    output = execute_agent_tool(
+        "dump_ui", {"package_name": "com.example.safe"}, client=client
+    )
+
+    assert output["node_count"] == 20
+    assert len(output["text_values"]) == 100
+    assert len(output["resource_ids"]) == 100
+    assert len(output["raw_preview"]) == 8000
+    assert output["xml_sha256"] == "a" * 64
+
+
+def test_logcat_bounded_capture_and_excerpt_are_mocked_and_capped():
+    client = Mock()
+    client.request_json.side_effect = [
+        {
+            "success": True,
+            "collector_id": "capture123",
+            "started_at": "2026-08-11T12:00:00+00:00",
+            "max_seconds": 60,
+            "package_filter_applied": True,
+        },
+        {
+            "line_count": 200,
+            "lines": [f"line {index}" for index in range(200)],
+            "redaction_applied": True,
+        },
+    ]
+
+    capture = execute_agent_tool(
+        "start_logcat",
+        {
+            "package_name": "com.example.safe",
+            "reason": "agent_step",
+            "max_seconds": 60,
+        },
+        client=client,
+    )
+    excerpt = execute_agent_tool(
+        "get_logcat_excerpt",
+        {"collector_id": capture["collector_id"], "max_lines": 100},
+        client=client,
+    )
+
+    assert capture["package_filter_applied"] is True
+    assert excerpt["line_count"] == 100
+    assert len(excerpt["lines"]) == 100
+    assert excerpt["redaction_applied"] is True
+
+
+@pytest.mark.django_db
+def test_install_verified_apk_tool_requires_audit_owned_verified_object(
+    django_user_model, tmp_path
+):
+    user = _make_role_user(django_user_model, "verified-apk-agent", ANALYST_GROUP)
+    audit, apk = _make_audit_with_apk("verified-agent")
+    payload = b"PK\x03\x04bounded-test-apk"
+    digest = file_sha256(payload).hexdigest()
+    apk_path = tmp_path / "verified.apk"
+    apk_path.write_bytes(payload)
+    storage = ObjectStorageReference.objects.create(
+        bucket="msap",
+        object_key="verified/agent.apk",
+        object_type=ObjectStorageReference.ObjectType.APK_UPLOAD,
+        storage_status=ObjectStorageReference.StorageStatus.VERIFIED,
+        size_bytes=len(payload),
+        sha256=digest,
+        audit=audit,
+        project=audit.project,
+    )
+    apk.storage_reference = storage
+    apk.size_bytes = len(payload)
+    apk.sha256 = digest
+    apk.save(update_fields=["storage_reference", "size_bytes", "sha256"])
+    client = Mock()
+    client.install_apk.return_value = {
+        "success": True,
+        "sha256": digest,
+        "package_name": "com.example.verified",
+        "package_metadata": {
+            "package_name": "com.example.verified",
+            "version_name": "2.0",
+            "version_code": "20",
+            "launchable_activity": "com.example.verified/.MainActivity",
+        },
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.APKFileProvider.open_apk_local_copy",
+        return_value=nullcontext(apk_path),
+    ):
+        output = execute_agent_tool(
+            "install_verified_apk",
+            {"audit_id": audit.id, "apk_file_id": apk.id},
+            requested_by=user,
+            client=client,
+        )
+
+    assert output == {
+        "package_name": "com.example.verified",
+        "version_name": "2.0",
+        "version_code": "20",
+        "launcher_activity": "com.example.verified/.MainActivity",
+        "sha256": digest,
+        "install_status": "PASS",
+    }
+    client.install_apk.assert_called_once_with(apk_path, expected_sha256=digest)
+
+
+@pytest.mark.django_db
+def test_install_verified_apk_uses_verified_record_metadata_for_reinstall(
+    django_user_model, tmp_path
+):
+    user = _make_role_user(
+        django_user_model,
+        "verified-apk-reinstall-agent",
+        ANALYST_GROUP,
+    )
+    audit, apk = _make_audit_with_apk("verified-reinstall")
+    apk.package_name = "owasp.sat.agoat"
+    apk.version_name = "1.2.3"
+    payload = b"PK\x03\x04bounded-reinstall-apk"
+    digest = file_sha256(payload).hexdigest()
+    apk_path = tmp_path / "verified-reinstall.apk"
+    apk_path.write_bytes(payload)
+    storage = ObjectStorageReference.objects.create(
+        bucket="msap",
+        object_key="verified/reinstall.apk",
+        object_type=ObjectStorageReference.ObjectType.APK_UPLOAD,
+        storage_status=ObjectStorageReference.StorageStatus.VERIFIED,
+        size_bytes=len(payload),
+        sha256=digest,
+        audit=audit,
+        project=audit.project,
+    )
+    apk.storage_reference = storage
+    apk.size_bytes = len(payload)
+    apk.sha256 = digest
+    apk.save(
+        update_fields=[
+            "package_name",
+            "version_name",
+            "storage_reference",
+            "size_bytes",
+            "sha256",
+        ]
+    )
+    client = Mock()
+    client.install_apk.return_value = {
+        "success": True,
+        "sha256": digest,
+        "package_name": "",
+        "package_metadata": {
+            "package_name": "",
+            "version_name": "",
+            "version_code": "",
+            "launchable_activity": "",
+        },
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.APKFileProvider.open_apk_local_copy",
+        return_value=nullcontext(apk_path),
+    ):
+        output = execute_agent_tool(
+            "install_verified_apk",
+            {"audit_id": audit.id, "apk_file_id": apk.id},
+            requested_by=user,
+            client=client,
+        )
+
+    assert output["install_status"] == "PASS"
+    assert output["package_name"] == "owasp.sat.agoat"
+    assert output["version_name"] == "1.2.3"
+
+
+@pytest.mark.django_db
+def test_install_verified_apk_rejects_invalid_record_package_fallback(
+    django_user_model, tmp_path
+):
+    user = _make_role_user(
+        django_user_model,
+        "invalid-apk-reinstall-agent",
+        ANALYST_GROUP,
+    )
+    audit, apk = _make_audit_with_apk("invalid-reinstall")
+    apk.package_name = "unsafe;package"
+    payload = b"PK\x03\x04bounded-invalid-reinstall-apk"
+    digest = file_sha256(payload).hexdigest()
+    apk_path = tmp_path / "invalid-reinstall.apk"
+    apk_path.write_bytes(payload)
+    storage = ObjectStorageReference.objects.create(
+        bucket="msap",
+        object_key="verified/invalid-reinstall.apk",
+        object_type=ObjectStorageReference.ObjectType.APK_UPLOAD,
+        storage_status=ObjectStorageReference.StorageStatus.VERIFIED,
+        size_bytes=len(payload),
+        sha256=digest,
+        audit=audit,
+        project=audit.project,
+    )
+    apk.storage_reference = storage
+    apk.size_bytes = len(payload)
+    apk.sha256 = digest
+    apk.save(
+        update_fields=["package_name", "storage_reference", "size_bytes", "sha256"]
+    )
+    client = Mock()
+    client.install_apk.return_value = {
+        "success": True,
+        "sha256": digest,
+        "package_name": "",
+        "package_metadata": {},
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.APKFileProvider.open_apk_local_copy",
+        return_value=nullcontext(apk_path),
+    ), pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool(
+            "install_verified_apk",
+            {"audit_id": audit.id, "apk_file_id": apk.id},
+            requested_by=user,
+            client=client,
+        )
+
+    assert exc_info.value.code == "PACKAGE_METADATA_UNAVAILABLE"
+
+
+@pytest.mark.django_db
+def test_install_verified_apk_tool_rejects_unverified_object():
+    audit, apk = _make_audit_with_apk("unverified-agent")
+
+    with pytest.raises(AgentToolError) as exc_info:
+        execute_agent_tool(
+            "install_verified_apk",
+            {"audit_id": audit.id, "apk_file_id": apk.id},
+            client=Mock(),
+        )
+
+    assert exc_info.value.code == "APK_NOT_VERIFIED"
+
+
 @pytest.mark.django_db
 def test_agent_controller_marks_host_agent_unavailable(django_user_model):
     user = _make_role_user(django_user_model, "agent-host-offline", ANALYST_GROUP)
@@ -614,6 +1066,138 @@ def test_agent_controller_marks_host_agent_unavailable(django_user_model):
     assert list(run.steps.values_list("status", flat=True)) == [
         AgentRunStep.Status.FAILED,
         AgentRunStep.Status.SKIPPED,
+    ]
+
+
+@pytest.mark.django_db
+def test_basic_app_interaction_succeeds_with_installed_package_and_honest_skips(
+    django_user_model,
+):
+    user = _make_role_user(django_user_model, "basic-package-agent", ANALYST_GROUP)
+    audit, _apk = _make_audit_with_apk("basic-package")
+    _ensure_agent_runtime()
+    tool_executor = Mock(side_effect=_basic_agent_tool_output)
+
+    run = AgentController(tool_executor=tool_executor).run(
+        objective=AgentRun.Objective.BASIC_APP_INTERACTION_CHECK,
+        objective_input={
+            "audit_id": audit.id,
+            "package_name": "com.example.installed",
+        },
+        audit=audit,
+        requested_by=user,
+    )
+
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.result_summary["app_already_present"] is True
+    assert run.result_summary["app_launched"] is True
+    assert run.result_summary["ui_dumped"] is True
+    assert run.result_summary["logcat_captured"] is True
+    assert run.result_summary["force_stop_completed"] is True
+    assert run.result_summary["tap_skipped"] is True
+    assert run.result_summary["type_skipped"] is True
+    assert "no vulnerability or malware verdict" in run.result_summary[
+        "assessment_scope"
+    ].lower()
+    assert list(
+        run.steps.filter(status=AgentRunStep.Status.SKIPPED).values_list(
+            "tool_name", flat=True
+        )
+    ) == ["install_verified_apk", "tap_coordinates", "type_text"]
+
+
+@pytest.mark.django_db
+def test_basic_app_interaction_succeeds_with_mocked_apk_install(django_user_model):
+    user = _make_role_user(django_user_model, "basic-apk-agent", ANALYST_GROUP)
+    audit, apk = _make_audit_with_apk("basic-apk")
+    _ensure_agent_runtime()
+    tool_executor = Mock(side_effect=_basic_agent_tool_output)
+
+    run = AgentController(tool_executor=tool_executor).run(
+        objective=AgentRun.Objective.BASIC_APP_INTERACTION_CHECK,
+        objective_input={"audit_id": audit.id, "apk_file_id": apk.id},
+        audit=audit,
+        requested_by=user,
+    )
+
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.result_summary["app_installed"] is True
+    launch_call = next(
+        call for call in tool_executor.call_args_list if call.args[0] == "launch_package"
+    )
+    assert launch_call.args[1] == {"package_name": "com.example.installed"}
+    logcat_call = next(
+        call
+        for call in tool_executor.call_args_list
+        if call.args[0] == "get_logcat_excerpt"
+    )
+    assert logcat_call.args[1]["collector_id"] == "capture123"
+
+
+@pytest.mark.django_db
+def test_basic_app_interaction_executes_explicit_tap_and_redacts_text(
+    django_user_model,
+):
+    user = _make_role_user(django_user_model, "basic-input-agent", ANALYST_GROUP)
+    audit, _apk = _make_audit_with_apk("basic-input")
+    _ensure_agent_runtime()
+
+    run = AgentController(tool_executor=_basic_agent_tool_output).run(
+        objective=AgentRun.Objective.BASIC_APP_INTERACTION_CHECK,
+        objective_input={
+            "audit_id": audit.id,
+            "package_name": "com.example.installed",
+            "tap": {"x": 10, "y": 20},
+            "text": "hello world",
+        },
+        audit=audit,
+        requested_by=user,
+    )
+
+    run.refresh_from_db()
+    type_step = run.steps.get(tool_name="type_text")
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.result_summary["tap_executed"] is True
+    assert run.result_summary["type_executed"] is True
+    assert run.objective_input["text"] == "[redacted]"
+    assert run.objective_input["text_length"] == 11
+    assert type_step.input_summary["text"] == "[redacted]"
+    assert type_step.input_summary["text_length"] == 11
+    assert "hello world" not in str(run.__dict__)
+
+
+def test_sandbox_runner_supports_both_deterministic_objectives():
+    runner_path = Path(__file__).resolve().parents[2] / "agent_runtime" / "runner.py"
+    spec = importlib.util.spec_from_file_location("msap_agent_runtime_runner", runner_path)
+    assert spec and spec.loader
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    readiness = runner._build_plan("DEVICE_READINESS_CHECK", {})
+    basic = runner._build_plan(
+        "BASIC_APP_INTERACTION_CHECK",
+        {
+            "audit_id": 7,
+            "package_name": "com.example.safe",
+            "tap": {"x": 10, "y": 20},
+            "text": "hello world",
+        },
+    )
+
+    assert [step[1] for step in readiness] == [
+        "get_device_status",
+        "take_screenshot",
+    ]
+    assert [step[1] for step in basic] == [
+        "get_device_status",
+        "launch_package",
+        "take_screenshot",
+        "dump_ui",
+        "start_logcat",
+        "tap_coordinates",
+        "type_text",
+        "get_logcat_excerpt",
+        "force_stop_package",
     ]
 
 
@@ -678,6 +1262,65 @@ def test_analyst_and_admin_can_create_device_readiness_run(
 
 
 @pytest.mark.django_db
+def test_analyst_can_create_basic_app_interaction_run(analyst_client):
+    audit, _apk = _make_audit_with_apk("basic-api")
+    _ensure_agent_runtime()
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools._dispatch_tool",
+        side_effect=lambda tool_name, arguments, **kwargs: _basic_agent_tool_output(
+            tool_name, arguments
+        ),
+    ):
+        response = analyst_client.post(
+            "/api/dynamic/agent/runs/",
+            {
+                "objective": "BASIC_APP_INTERACTION_CHECK",
+                "runtime_type": "INTERNAL_CONTROLLER",
+                "objective_input": {
+                    "audit_id": audit.id,
+                    "package_name": "com.example.installed",
+                },
+            },
+            format="json",
+        )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == AgentRun.Status.SUCCEEDED
+    assert "objective_input" not in response.json()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "objective_input",
+    [
+        {"package_name": "com.example.safe"},
+        {"audit_id": 1},
+        {"audit_id": 1, "package_name": "bad;package"},
+        {"audit_id": 1, "package_name": "com.example.safe", "unknown": True},
+        {
+            "audit_id": 1,
+            "package_name": "com.example.safe",
+            "tap": {"x": 1, "y": 2, "command": "id"},
+        },
+    ],
+)
+def test_basic_app_interaction_api_rejects_invalid_objective_input(
+    analyst_client, objective_input
+):
+    response = analyst_client.post(
+        "/api/dynamic/agent/runs/",
+        {
+            "objective": "BASIC_APP_INTERACTION_CHECK",
+            "objective_input": objective_input,
+        },
+        format="json",
+    )
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
 def test_agent_api_rejects_unknown_objective_and_caller_selected_tools(
     analyst_client,
 ):
@@ -727,6 +1370,154 @@ def test_agent_failure_run_does_not_leak_host_agent_token(analyst_client):
     )
     assert "never-leak-agent-token" not in str(response.json())
     assert "never-leak-agent-token" not in str(steps_response.json())
+
+
+def test_host_agent_tap_rejects_coordinates_outside_known_screen():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+
+    with patch.object(
+        agent, "_adb_text", return_value="Physical size: 1080x1920"
+    ), patch.object(agent, "_run_adb") as run_adb, pytest.raises(
+        HostAgentRequestError
+    ):
+        agent.tap({"x": 1080, "y": 100, "reason": "agent_navigation"})
+
+    run_adb.assert_not_called()
+
+
+def test_host_agent_type_text_uses_fixed_argv_and_redacted_preview():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    command_result = {
+        "return_code": 0,
+        "stdout_preview": "",
+        "stderr_preview": "",
+        "duration_seconds": 0.1,
+        "timed_out": False,
+        "redaction_applied": False,
+    }
+
+    with patch.object(agent, "_run_adb", return_value=command_result) as run_adb:
+        result = agent.type_text(
+            {"text": "hello world", "reason": "agent_navigation"}
+        )
+
+    run_adb.assert_called_once_with(
+        "shell", "input", "text", "hello%sworld", timeout_seconds=10
+    )
+    assert result["success"] is True
+    assert result["preview_redacted"] == "[redacted]"
+    assert "hello world" not in str(result)
+
+
+def test_host_agent_ui_dump_is_parsed_and_bounded_without_real_emulator():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    nodes = "".join(
+        f'<node text="visible-{index}" resource-id="com.example.safe:id/item{index}" />'
+        for index in range(120)
+    )
+    xml = f'<?xml version="1.0"?><hierarchy>{nodes}</hierarchy>'.encode()
+
+    command_result = {
+        "return_code": 0,
+        "stdout_preview": "UI hierchary dumped",
+        "stderr_preview": "",
+        "duration_seconds": 0.1,
+        "timed_out": False,
+        "redaction_applied": False,
+    }
+    with patch.object(agent, "_require_installed_package"), patch.object(
+        agent, "_package_pid", return_value="1234"
+    ), patch.object(
+        agent,
+        "_foreground_component",
+        return_value=("com.example.safe", "com.example.safe/.MainActivity"),
+    ), patch.object(
+        agent, "_run_adb", return_value=command_result
+    ), patch.object(
+        agent,
+        "_run_adb_binary",
+        return_value={"return_code": 0, "stdout": xml},
+    ):
+        result = agent.ui_dump({"package_name": "com.example.safe"})
+
+    assert result["capture_status"] == "CAPTURED"
+    assert result["node_count"] == 120
+    assert result["focused_package"] == "com.example.safe"
+    assert len(result["text_values"]) == 100
+    assert len(result["resource_ids"]) == 100
+    assert len(result["raw_preview"]) <= 8000
+    assert len(result["xml_sha256"]) == 64
+
+
+def test_host_agent_ui_dump_rejects_valid_zero_node_hierarchy():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    xml = b'<?xml version="1.0"?><hierarchy rotation="0"></hierarchy>'
+    command_result = {
+        "return_code": 0,
+        "stdout_preview": "UI hierarchy dumped",
+        "stderr_preview": "",
+        "duration_seconds": 0.1,
+        "timed_out": False,
+        "redaction_applied": False,
+    }
+
+    with patch.object(agent, "_require_installed_package"), patch.object(
+        agent, "_package_pid", return_value="1234"
+    ), patch.object(
+        agent,
+        "_foreground_component",
+        return_value=("com.example.safe", "com.example.safe/.MainActivity"),
+    ), patch.object(
+        agent, "_run_adb", return_value=command_result
+    ), patch.object(
+        agent,
+        "_run_adb_binary",
+        return_value={"return_code": 0, "stdout": xml},
+    ), pytest.raises(HostAgentRequestError) as exc_info:
+        agent.ui_dump({"package_name": "com.example.safe"})
+
+    assert exc_info.value.status_code == 422
+    assert "zero nodes" in str(exc_info.value)
+
+
+def test_host_agent_logcat_capture_is_pid_filtered_bounded_and_redacted():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    raw_log = ("Activity password=super-secret\n" * 1000).encode()
+
+    with patch.object(agent, "_require_installed_package"), patch.object(
+        agent, "_adb_text", return_value="1234"
+    ), patch.object(
+        agent,
+        "_run_adb_binary",
+        return_value={"return_code": 0, "stdout": raw_log},
+    ) as run_adb:
+        capture = agent.bounded_logcat_capture(
+            {
+                "package_name": "com.example.safe",
+                "reason": "agent_step",
+                "max_seconds": 60,
+            }
+        )
+        excerpt = agent.logcat_excerpt(
+            {"collector_id": capture["collector_id"], "max_lines": 100}
+        )
+
+    assert capture["package_filter_applied"] is True
+    assert excerpt["line_count"] == 100
+    assert excerpt["redaction_applied"] is True
+    assert "super-secret" not in str(excerpt)
+    assert "--pid" in run_adb.call_args.args
+
+
+def test_host_agent_stop_logcat_does_not_fake_success_for_completed_capture():
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    agent._logcat_captures["capture123"] = {"lines": []}
+
+    result = agent.stop_logcat({"collector_id": "capture123"})
+
+    assert result["supported"] is False
+    assert result["stopped"] is False
+    assert result["status"] == "UNSUPPORTED_BOUNDED_CAPTURE"
 
 
 @pytest.mark.django_db
@@ -2187,6 +2978,995 @@ def test_viewer_cannot_cancel_queued_job(django_user_model):
     assert job.status == DynamicAnalysisJob.Status.QUEUED
 
 
+def _make_frida_runtime(*, device=None, installed=None, pid="26273"):
+    device_status = Mock(
+        return_value=device
+        or {
+            "serial": "emulator-5554",
+            "state": "device",
+            "android_version": "15",
+            "api_level": 35,
+            "abi": "x86_64",
+            "root_uid": 0,
+        }
+    )
+    require_installed = installed or Mock()
+    return FridaRuntime(
+        serial="emulator-5554",
+        run_adb=Mock(return_value={"return_code": 0}),
+        run_adb_binary=Mock(),
+        adb_text=Mock(return_value="0"),
+        run_command=Mock(),
+        screenshot=Mock(return_value=_agent_png()),
+        device_status=device_status,
+        require_installed_package=require_installed,
+        package_pid=Mock(return_value=pid),
+    )
+
+
+def test_frida_event_parser_bounds_and_parses_cli_send_messages():
+    output = "\n".join(
+        "message: {'type': 'send', 'payload': {'type': 'probe', 'success': True, 'pid': %d}} data: None"
+        % index
+        for index in range(1, MAX_FRIDA_EVENTS + 50)
+    )
+
+    events = _parse_frida_events(output)
+
+    assert len(events) == MAX_FRIDA_EVENTS
+    assert events[0] == {"type": "probe", "success": True, "pid": 1}
+
+
+def test_android_15_foreground_component_parsers():
+    window = "mCurrentFocus=Window{12ab u0 owasp.sat.agoat/.MainActivity}"
+    activity = (
+        "topResumedActivity=ActivityRecord{abc u0 "
+        "owasp.sat.agoat/owasp.sat.agoat.MainActivity t42}"
+    )
+    top = "  ACTIVITY owasp.sat.agoat/.SplashActivity 3aa pid=26273"
+    android_15_window = (
+        "imeInputTarget in display# 0 Window{58fcc37 u0 "
+        "owasp.sat.agoat/owasp.sat.agoat.MainActivity}"
+    )
+
+    assert _focused_component(window) == (
+        "owasp.sat.agoat",
+        "owasp.sat.agoat/.MainActivity",
+    )
+    assert _focused_component(activity) == (
+        "owasp.sat.agoat",
+        "owasp.sat.agoat/owasp.sat.agoat.MainActivity",
+    )
+    assert _top_activity_component(top) == (
+        "owasp.sat.agoat",
+        "owasp.sat.agoat/.SplashActivity",
+    )
+    assert _focused_component(android_15_window) == (
+        "owasp.sat.agoat",
+        "owasp.sat.agoat/owasp.sat.agoat.MainActivity",
+    )
+
+
+def test_frida_status_requires_real_rpc_processes_and_attach_probe():
+    runtime = _make_frida_runtime()
+    execution = {
+        "success": True,
+        "events": [
+            {
+                "type": "attach_probe",
+                "success": True,
+                "pid": 26273,
+                "architecture": "x64",
+            }
+        ],
+    }
+    with patch.object(runtime, "_frida_executable_or_empty", side_effect=["/frida", "/frida-ps"]), patch.object(
+        runtime, "_client_version", return_value="17.16.4"
+    ), patch.object(runtime, "_server_binary_version", return_value="17.16.4"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(runtime, "_enumerate_processes", return_value=[{"pid": 1, "name": "init"}]), patch.object(
+        runtime, "_run_script", return_value=execution
+    ):
+        status = runtime.status("owasp.sat.agoat")
+
+    assert status["status"] == "PASS"
+    assert status["frida_rpc"] == "CONNECTED"
+    assert status["process_count"] == 1
+    assert status["target_pid"] == 26273
+    assert status["attach_capability"] is True
+
+
+def test_frida_status_does_not_treat_empty_process_list_as_server_reachable():
+    runtime = _make_frida_runtime()
+    with patch.object(runtime, "_frida_executable_or_empty", side_effect=["/frida", "/frida-ps"]), patch.object(
+        runtime, "_client_version", return_value="17.16.4"
+    ), patch.object(runtime, "_server_binary_version", return_value="17.16.4"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(runtime, "_enumerate_processes", return_value=[]):
+        status = runtime.status("owasp.sat.agoat")
+
+    assert status["status"] == "FAIL"
+    assert status["frida_server_reachable"] is False
+    assert status["attach_capability"] is False
+
+
+def test_frida_status_reports_missing_client_without_fake_pass():
+    runtime = _make_frida_runtime()
+    with patch.object(runtime, "_frida_executable_or_empty", return_value=""), patch.object(
+        runtime, "_server_binary_version", return_value="17.16.4"
+    ), patch.object(runtime, "_endpoint", return_value="172.20.0.1:27043"):
+        status = runtime.status("owasp.sat.agoat")
+
+    assert status["status"] == "FAIL"
+    assert status["frida_client_installed"] is False
+    assert status["attach_capability"] is False
+    assert "not installed" in status["attach_error"]
+
+
+def test_frida_status_rejects_unavailable_configured_device():
+    runtime = _make_frida_runtime(
+        device={"serial": "emulator-5554", "state": "offline"}
+    )
+
+    with pytest.raises(FridaRuntimeError, match="unavailable"):
+        runtime.status("owasp.sat.agoat")
+
+
+def test_frida_setup_rejects_client_server_version_mismatch():
+    runtime = _make_frida_runtime()
+    with patch.object(
+        runtime,
+        "status",
+        return_value={
+            "frida_client_version": "17.16.4",
+            "frida_server_version": "17.15.0",
+            "frida_server_reachable": True,
+        },
+    ), pytest.raises(FridaRuntimeError, match="version mismatch"):
+        runtime.setup("owasp.sat.agoat")
+
+
+def test_frida_ps_returns_real_bounded_process_count():
+    runtime = _make_frida_runtime()
+    with patch.object(runtime, "_frida_executable", return_value="/frida-ps"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(
+        runtime,
+        "_enumerate_processes",
+        return_value=[{"pid": 26273, "name": "owasp.sat.agoat", "application": ""}],
+    ), patch.object(
+        runtime,
+        "_enumerate_applications",
+        return_value=[{"pid": 26273, "name": "AndroGoat", "package": "owasp.sat.agoat"}],
+    ):
+        result = runtime.ps()
+
+    assert result["process_count"] == 1
+    assert result["processes"][0]["application"] == "owasp.sat.agoat"
+
+
+def test_frida_attach_rejects_missing_runtime_probe_event():
+    runtime = _make_frida_runtime()
+    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(
+        runtime,
+        "_run_script",
+        return_value={"success": False, "events": [], "duration_seconds": 1.0},
+    ), pytest.raises(FridaRuntimeError, match="verified in-process probe"):
+        runtime.attach("owasp.sat.agoat", "attach", 10)
+
+
+def test_frida_script_timeout_is_a_controlled_failure():
+    runtime = _make_frida_runtime()
+    runtime._run_command.return_value = {
+        "return_code": -1,
+        "timed_out": True,
+        "stdout_preview": "",
+        "stderr_preview": "",
+    }
+
+    with pytest.raises(FridaRuntimeError, match="bounded timeout") as exc_info:
+        runtime._run_script(
+            client_path="/frida",
+            endpoint="172.20.0.1:27043",
+            package_name="owasp.sat.agoat",
+            mode="attach",
+            target_pid=26273,
+            source="send('test');",
+            timeout_seconds=2,
+        )
+
+    assert exc_info.value.status_code == 504
+
+
+def test_frida_run_js_bounds_logcat_and_returns_structured_success():
+    runtime = _make_frida_runtime()
+    runtime._run_adb_binary.return_value = {
+        "stdout": ("\n".join(f"line-{index}" for index in range(150))).encode(),
+        "return_code": 0,
+    }
+    execution = {
+        "success": True,
+        "events": [
+            {"type": "script_start", "success": True, "pid": 26273},
+            {"type": "proof", "success": True},
+            {"type": "script_loaded", "success": True, "pid": 26273},
+            {"type": "script_completion", "success": True, "pid": 26273},
+        ],
+        "pid": 26273,
+        "architecture": "x64",
+        "script_started": True,
+        "script_loaded": True,
+        "script_completed": True,
+        "duration_seconds": 1.0,
+        "started_at": timezone.now().isoformat(),
+        "finished_at": timezone.now().isoformat(),
+        "cleanup_state": "DETACHED",
+    }
+    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(runtime, "_client_version", return_value="17.16.4"), patch.object(
+        runtime, "_run_script", return_value=execution
+    ):
+        result = runtime.run_js(
+            package_name="owasp.sat.agoat",
+            mode="attach",
+            source='send({type:"proof",success:true});',
+            timeout_seconds=10,
+            capture_logcat=True,
+            capture_screenshot=False,
+        )
+
+    assert result["status"] == "PASS"
+    assert result["pid"] == 26273
+    assert result["event_count"] == 4
+    assert result["error_count"] == 0
+    assert result["logcat"]["line_count"] == 100
+
+
+@pytest.mark.django_db
+def test_frida_tool_validation_rejects_invalid_package_script_and_timeout(
+    django_user_model,
+):
+    analyst = _make_role_user(django_user_model, "frida-tool-analyst", ANALYST_GROUP)
+    with pytest.raises(AgentToolError, match="Invalid Android package"):
+        execute_agent_tool("frida_status", {"package_name": "not-a-package"})
+    with pytest.raises(AgentToolError, match="cannot be empty"):
+        execute_agent_tool(
+            "frida_run_js",
+            {
+                "package_name": "owasp.sat.agoat",
+                "mode": "attach",
+                "source": "",
+                "timeout": 10,
+                "capture_logcat": True,
+                "capture_screenshot": False,
+            },
+            requested_by=analyst,
+        )
+    with pytest.raises(AgentToolError, match="1 to 30"):
+        execute_agent_tool(
+            "frida_attach",
+            {"package_name": "owasp.sat.agoat", "mode": "attach", "timeout": 31},
+        )
+
+
+@pytest.mark.django_db
+def test_frida_tool_rejects_oversized_script_and_viewer_role(django_user_model):
+    analyst = _make_role_user(django_user_model, "frida-size-analyst", ANALYST_GROUP)
+    viewer = _make_role_user(django_user_model, "frida-script-viewer", VIEWER_GROUP)
+    arguments = {
+        "package_name": "owasp.sat.agoat",
+        "mode": "attach",
+        "source": "A" * (32 * 1024 + 1),
+        "timeout": 10,
+        "capture_logcat": True,
+        "capture_screenshot": False,
+    }
+    with pytest.raises(AgentToolError, match="at most"):
+        execute_agent_tool("frida_run_js", arguments, requested_by=analyst)
+    arguments["source"] = "send('bounded');"
+    with pytest.raises(AgentToolError, match="Analyst or Admin"):
+        execute_agent_tool("frida_run_js", arguments, requested_by=viewer)
+
+
+@pytest.mark.django_db
+def test_frida_status_tool_normalizes_mocked_real_values():
+    client = Mock()
+    client.request_json.return_value = {
+        "success": True,
+        "status": "PASS",
+        "frida_client_installed": True,
+        "frida_client_version": "17.16.4",
+        "frida_server_reachable": True,
+        "frida_server_version": "17.16.4",
+        "version_agreement": True,
+        "frida_rpc": "CONNECTED",
+        "emulator_serial": "emulator-5554",
+        "android_version": "15",
+        "api_level": 35,
+        "abi": "x86_64",
+        "root_available": True,
+        "target_package": "owasp.sat.agoat",
+        "target_package_installed": True,
+        "target_pid": 26273,
+        "attach_capability": True,
+        "attach_error": "",
+        "process_count": 87,
+    }
+
+    output = execute_agent_tool(
+        "frida_status", {"package_name": "owasp.sat.agoat"}, client=client
+    )
+
+    assert output["status"] == "PASS"
+    assert output["version_agreement"] is True
+    assert output["attach_capability"] is True
+    assert output["process_count"] == 87
+
+
+@pytest.mark.django_db
+def test_instrumentation_screenshot_is_stored_as_linked_evidence():
+    audit, _apk = _make_audit_with_apk("fridascreenshot")
+    client = Mock()
+    client.request_screenshot.return_value = _agent_png()
+    storage = Mock()
+    storage.build_object_key.return_value = "projects/1/audits/1/evidence/before.png"
+    with patch(
+        "apps.dynamic_analysis.services.agent_tools.MinIOStorageService",
+        return_value=storage,
+    ):
+        output = execute_agent_tool(
+            "take_screenshot",
+            {"capture_reason": "instrumentation_before", "audit_id": audit.id},
+            client=client,
+        )
+
+    reference = ObjectStorageReference.objects.get(pk=output["object_reference_id"])
+    assert reference.storage_status == ObjectStorageReference.StorageStatus.VERIFIED
+    assert reference.sha256 == output["sha256"]
+    storage.upload_bytes.assert_called_once()
+
+
+@pytest.mark.django_db
+def test_frida_builtin_proof_requires_event_and_before_after_difference(
+    django_user_model,
+):
+    user = _make_role_user(django_user_model, "frida-proof-agent", ANALYST_GROUP)
+    audit, apk = _make_audit_with_apk("fridaproof")
+    apk.package_name = "owasp.sat.agoat"
+    apk.save(update_fields=["package_name"])
+    _ensure_agent_runtime()
+
+    run = AgentController(tool_executor=_frida_proof_tool_output).run(
+        objective=AgentRun.Objective.FRIDA_RUNTIME_UI_MODIFICATION_PROOF,
+        objective_input={"audit_id": audit.id, "package_name": "owasp.sat.agoat"},
+        audit=audit,
+        requested_by=user,
+    )
+
+    run.refresh_from_db()
+    assert run.status == AgentRun.Status.SUCCEEDED
+    assert run.result_summary["evidence_confirmed"] is True
+    assert run.result_summary["frida_event_received"] is True
+    assert run.result_summary["visual_state_changed"] is True
+    assert run.result_summary["before_ui_node_count"] == 12
+    assert run.result_summary["after_ui_node_count"] == 13
+    assert run.artifacts.filter(name="frida-instrumentation-evidence.json").exists()
+    script_step = run.steps.get(tool_name="frida_run_js")
+    assert script_step.input_summary["source"] == "[redacted]"
+
+
+@pytest.mark.django_db
+def test_frida_custom_script_api_is_analyst_only_and_requires_confirmation(
+    analyst_client,
+    viewer_client,
+):
+    audit, apk = _make_audit_with_apk("fridaapi")
+    apk.package_name = "owasp.sat.agoat"
+    apk.save(update_fields=["package_name"])
+    payload = {
+        "objective": AgentRun.Objective.FRIDA_CUSTOM_SCRIPT,
+        "audit": audit.id,
+        "objective_input": {
+            "audit_id": audit.id,
+            "package_name": "owasp.sat.agoat",
+            "source": 'send({type:"custom",success:true});',
+            "confirm": True,
+        },
+    }
+    assert viewer_client.post("/api/dynamic/agent/runs/", payload, format="json").status_code == 403
+    payload["objective_input"]["confirm"] = False
+    assert analyst_client.post("/api/dynamic/agent/runs/", payload, format="json").status_code == 400
+
+
+@pytest.mark.django_db
+def test_assessment_plan_model_lifecycle_and_ordered_steps(django_user_model):
+    user = django_user_model.objects.create_user(username="planner-lifecycle")
+    audit, apk = _make_planner_audit("planner-lifecycle")
+    objective = "Assess authorized runtime behavior with bounded evidence."
+    scope = "Observe the target baseline and controlled runtime instrumentation proof."
+
+    plan = AssessmentPlannerService(DeterministicPlannerProvider()).generate(
+        audit=audit,
+        target_package=apk.package_name,
+        objective=objective,
+        scope=scope,
+        requested_by=user,
+    )
+
+    assert plan.status == AssessmentPlan.Status.GENERATED
+    assert plan.validation_status == AssessmentPlan.ValidationStatus.PASSED
+    assert len(plan.planner_input_hash) == 64
+    assert len(plan.plan_hash) == 64
+    assert list(plan.steps.values_list("sequence", flat=True)) == [1, 2, 3, 4, 5, 6]
+    assert set(plan.steps.values_list("status", flat=True)) == {
+        AssessmentPlanStep.Status.PROPOSED
+    }
+
+    plan = AssessmentPlannerService().validate(plan)
+    assert plan.status == AssessmentPlan.Status.VALIDATED
+    assert plan.validated_at is not None
+    assert set(plan.steps.values_list("status", flat=True)) == {
+        AssessmentPlanStep.Status.VALIDATED
+    }
+
+    plan = AssessmentPlannerService.approve(plan, approved_by=user)
+    assert plan.status == AssessmentPlan.Status.APPROVED
+    assert plan.approved_by == user
+    assert plan.approved_at is not None
+    assert set(plan.steps.values_list("status", flat=True)) == {
+        AssessmentPlanStep.Status.APPROVED
+    }
+
+
+@pytest.mark.django_db
+def test_assessment_plan_step_constraints_are_deterministic(django_user_model):
+    user = django_user_model.objects.create_user(username="planner-constraint")
+    audit, apk = _make_planner_audit("planner-constraint")
+    plan = AssessmentPlannerService(DeterministicPlannerProvider()).generate(
+        audit=audit,
+        target_package=apk.package_name,
+        objective="Assess bounded runtime behavior.",
+        scope="Collect authorized dynamic evidence without a vulnerability verdict.",
+        requested_by=user,
+    )
+
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            AssessmentPlanStep.objects.create(
+                plan=plan,
+                sequence=1,
+                step_identifier="another_step",
+                objective="Duplicate sequence",
+                rationale="Constraint test",
+                expected_observation="None",
+                success_condition="Rejected",
+                evidence_requirements=["tool_output"],
+            )
+
+
+def test_deterministic_planner_is_realistic_and_manifest_constrained():
+    planner_input = {
+        "audit": {"id": 7},
+        "target_package": "owasp.sat.agoat",
+        "assessment_objective": "Assess controlled runtime behavior.",
+        "scope": "Collect baseline and runtime evidence.",
+    }
+
+    generated = DeterministicPlannerProvider().generate(planner_input)
+    tool_names = {
+        tool["name"]
+        for step in generated["steps"]
+        for tool in step["tools"]
+    }
+    schema_tool_names = {
+        variant["properties"]["name"]["const"]
+        for variant in PLANNER_OUTPUT_SCHEMA["properties"]["steps"]["items"]
+        ["properties"]["tools"]["items"]["anyOf"]
+    }
+
+    assert len(generated["steps"]) == 6
+    assert tool_names <= set(TOOL_MANIFEST)
+    assert schema_tool_names == set(TOOL_MANIFEST)
+    assert "frida_run_js" in tool_names
+    assert generated["steps"][-1]["evidence_requirements"] == [
+        "screenshot",
+        "ui_hierarchy",
+        "logcat",
+        "frida_events",
+        "before_after_comparison",
+    ]
+
+
+@pytest.mark.django_db
+def test_planner_context_uses_existing_backend_data_without_host_calls():
+    audit, apk = _make_planner_audit("planner-context")
+    Finding.objects.create(
+        audit=audit,
+        rule_id="CTX-001",
+        title="Context-only finding",
+        severity="LOW",
+        confidence="MEDIUM",
+        standard="TEST",
+        category="context",
+        requires_manual_validation=True,
+    )
+    device = _make_device("planner-context")
+
+    with patch(
+        "apps.dynamic_analysis.services.host_agent_client.DynamicHostAgentClient.request_json"
+    ) as host_request:
+        context = build_planner_input(
+            audit=audit,
+            target_package=apk.package_name,
+            objective="Assess bounded runtime behavior.",
+            scope="Use available persisted context only.",
+        )
+
+    host_request.assert_not_called()
+    assert context["planner_mode"] == "PLAN_ONLY"
+    assert set(context["available_tools"]) == set(TOOL_MANIFEST)
+    assert context["device_capabilities"][0]["serial"] == device.serial
+    assert context["existing_findings"][0]["rule_id"] == "CTX-001"
+    assert context["apk_context"][0]["apk_file_id"] == apk.id
+
+
+@pytest.mark.django_db
+def test_valid_planner_output_normalizes_against_real_tool_schemas():
+    audit, apk = _make_planner_audit("planner-valid")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect baseline and controlled instrumentation evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+
+    normalized = validate_generated_plan(
+        generated,
+        audit=audit,
+        target_package=apk.package_name,
+        objective=objective,
+        scope=scope,
+    )
+
+    assert normalized["target_package"] == apk.package_name
+    assert [step["sequence"] for step in normalized["steps"]] == [1, 2, 3, 4, 5, 6]
+    assert normalized["steps"][4]["tools"][1]["name"] == "frida_run_js"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda output: output.update({"unexpected": True}), "unknown fields"),
+        (
+            lambda output: output["steps"][0]["tools"][0].update(
+                {"name": "run_shell", "arguments": {}}
+            ),
+            "outside the gateway allowlist",
+        ),
+        (
+            lambda output: output["steps"][4]["tools"][0]["arguments"].update(
+                {"timeout": 500}
+            ),
+            "bounded range",
+        ),
+    ],
+)
+def test_planner_rejects_unknown_fields_tools_and_bad_arguments(mutation, message):
+    audit, apk = _make_planner_audit("planner-policy")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect controlled runtime evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    mutation(generated)
+
+    with pytest.raises(PlanValidationError, match=message):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+
+@pytest.mark.django_db
+def test_planner_rejects_malformed_output_and_unauthorized_package(django_user_model):
+    audit, apk = _make_planner_audit("planner-malformed")
+    user = django_user_model.objects.create_user(username="planner-malformed")
+    malformed_provider = Mock(
+        name=AssessmentPlan.PlannerProvider.DETERMINISTIC,
+        model="malformed-test",
+    )
+    malformed_provider.name = AssessmentPlan.PlannerProvider.DETERMINISTIC
+    malformed_provider.model = "malformed-test"
+    malformed_provider.generate.return_value = ["not", "an", "object"]
+
+    with pytest.raises(PlanValidationError, match="JSON object"):
+        AssessmentPlannerService(malformed_provider).generate(
+            audit=audit,
+            target_package=apk.package_name,
+            objective="Assess bounded behavior.",
+            scope="Collect tool output evidence.",
+            requested_by=user,
+        )
+    with pytest.raises(PlanValidationError, match="not authorized"):
+        AssessmentPlannerService(DeterministicPlannerProvider()).generate(
+            audit=audit,
+            target_package="com.other.unauthorized",
+            objective="Assess bounded behavior.",
+            scope="Collect tool output evidence.",
+            requested_by=user,
+        )
+    assert AssessmentPlan.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_planner_rejects_unknown_and_cyclic_dependencies():
+    audit, apk = _make_planner_audit("planner-dependencies")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect controlled runtime evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    generated["steps"][1]["dependencies"] = ["missing_step"]
+    with pytest.raises(PlanValidationError, match="unknown dependency"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    generated["steps"][0]["dependencies"] = ["compare_evidence"]
+    generated["steps"][-1]["dependencies"] = ["establish_readiness"]
+    with pytest.raises(PlanValidationError, match="acyclic"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+
+@pytest.mark.django_db
+def test_planner_rejects_step_and_evidence_bounds():
+    audit, apk = _make_planner_audit("planner-bounds")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect controlled runtime evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    template = generated["steps"][3]
+    generated["steps"] = [
+        {
+            **template,
+            "sequence": index,
+            "step_id": f"bounded_step_{index}",
+            "dependencies": [] if index == 1 else [f"bounded_step_{index - 1}"],
+        }
+        for index in range(1, MAX_PLAN_STEPS + 2)
+    ]
+    with pytest.raises(PlanValidationError, match=f"1 to {MAX_PLAN_STEPS}"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    generated["steps"][0]["evidence_requirements"] = []
+    with pytest.raises(PlanValidationError, match="Evidence requirements"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+    assert len(EVIDENCE_TYPES) == 6
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "Run adb shell id before continuing.",
+        "Read /etc/passwd as supporting context.",
+        "Request an API key credential from the operator.",
+        "Use an unbounded loop until the process responds.",
+    ],
+)
+def test_planner_rejects_shell_paths_credentials_and_unbounded_instructions(unsafe_text):
+    audit, apk = _make_planner_audit("planner-unsafe")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect controlled runtime evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    generated["steps"][0]["rationale"] = unsafe_text
+
+    with pytest.raises(PlanValidationError, match="unsupported execution instruction"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+
+@pytest.mark.django_db
+def test_planner_rejects_arbitrary_frida_javascript():
+    audit, apk = _make_planner_audit("planner-frida-source")
+    objective = "Assess bounded runtime behavior."
+    scope = "Collect controlled runtime evidence."
+    generated = _deterministic_plan_output(audit, apk.package_name, objective, scope)
+    generated["steps"][4]["tools"][1]["arguments"]["source"] = "send('arbitrary');"
+
+    with pytest.raises(PlanValidationError, match="controlled built-in Frida proof"):
+        validate_generated_plan(
+            generated,
+            audit=audit,
+            target_package=apk.package_name,
+            objective=objective,
+            scope=scope,
+        )
+
+
+@override_settings(MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY="")
+@pytest.mark.django_db
+def test_openai_planner_missing_key_and_provider_failures_are_controlled(django_user_model):
+    audit, apk = _make_planner_audit("planner-provider")
+    user = django_user_model.objects.create_user(username="planner-provider")
+    with pytest.raises(PlannerProviderError, match="not configured") as key_error:
+        AssessmentPlannerService(OpenAIPlannerProvider()).generate(
+            audit=audit,
+            target_package=apk.package_name,
+            objective="Assess bounded behavior.",
+            scope="Collect tool output evidence.",
+            requested_by=user,
+        )
+    assert key_error.value.code == "PLANNER_PROVIDER_NOT_CONFIGURED"
+
+    failed_provider = Mock()
+    failed_provider.name = AssessmentPlan.PlannerProvider.DETERMINISTIC
+    failed_provider.model = "provider-failure-test"
+    failed_provider.generate.side_effect = RuntimeError("provider-secret-trace")
+    with pytest.raises(PlannerProviderError, match="failed unexpectedly") as provider_error:
+        AssessmentPlannerService(failed_provider).generate(
+            audit=audit,
+            target_package=apk.package_name,
+            objective="Assess bounded behavior.",
+            scope="Collect tool output evidence.",
+            requested_by=user,
+        )
+    assert "provider-secret-trace" not in str(provider_error.value)
+
+
+@override_settings(
+    MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY="test-provider-key",
+    MSAP_ASSESSMENT_PLANNER_MODEL="gpt-5.5",
+    MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT="medium",
+    MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS=8000,
+    MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS=30,
+)
+def test_openai_planner_uses_responses_strict_schema_without_provider_tools():
+    planner_input = {
+        "audit": {"id": 9},
+        "target_package": "owasp.sat.agoat",
+        "assessment_objective": "Assess bounded runtime behavior.",
+        "scope": "Collect controlled runtime evidence.",
+    }
+    generated = DeterministicPlannerProvider().generate(planner_input)
+    provider_response = {
+        "output": [
+            {
+                "content": [
+                    {"type": "output_text", "text": json.dumps(generated)}
+                ]
+            }
+        ]
+    }
+    opener = Mock(
+        return_value=BytesIO(json.dumps(provider_response).encode("utf-8"))
+    )
+
+    output = OpenAIPlannerProvider(opener=opener).generate(planner_input)
+
+    assert output == generated
+    request = opener.call_args.args[0]
+    payload = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == "https://api.openai.com/v1/responses"
+    assert request.get_header("Authorization") == "Bearer test-provider-key"
+    assert payload["model"] == "gpt-5.5"
+    assert payload["text"]["format"]["type"] == "json_schema"
+    assert payload["text"]["format"]["strict"] is True
+    assert "tools" not in payload
+
+
+@pytest.mark.django_db
+def test_assessment_plan_api_rbac_validation_and_approval_are_plan_only(
+    analyst_client,
+    viewer_client,
+):
+    audit, apk = _make_planner_audit("planner-api")
+    payload = {
+        "audit": audit.id,
+        "target_package": apk.package_name,
+        "objective": "Assess authorized runtime behavior with bounded evidence.",
+        "scope": "Capture a baseline and plan controlled runtime instrumentation evidence.",
+    }
+
+    assert viewer_client.post(
+        "/api/dynamic/agent/plans/", payload, format="json"
+    ).status_code == 403
+    run_count = AgentRun.objects.count()
+    event_count = DynamicDeviceEvent.objects.count()
+    with patch(
+        "apps.dynamic_analysis.services.agent_controller.AgentController.run"
+    ) as run_agent, patch(
+        "apps.dynamic_analysis.services.agent_gateway.execute_run_tool_call"
+    ) as gateway_call:
+        created = analyst_client.post(
+            "/api/dynamic/agent/plans/", payload, format="json"
+        )
+        assert created.status_code == 201
+        plan_id = created.json()["id"]
+        assert created.json()["status"] == AssessmentPlan.Status.GENERATED
+        assert len(created.json()["steps"]) == 6
+        validated = analyst_client.post(
+            f"/api/dynamic/agent/plans/{plan_id}/validate/", {}, format="json"
+        )
+        assert validated.status_code == 200
+        assert validated.json()["status"] == AssessmentPlan.Status.VALIDATED
+        approved = analyst_client.post(
+            f"/api/dynamic/agent/plans/{plan_id}/approve/", {}, format="json"
+        )
+        assert approved.status_code == 200
+        assert approved.json()["status"] == AssessmentPlan.Status.APPROVED
+        run_agent.assert_not_called()
+        gateway_call.assert_not_called()
+
+    assert AgentRun.objects.count() == run_count
+    assert DynamicDeviceEvent.objects.count() == event_count
+    assert viewer_client.get("/api/dynamic/agent/plans/").status_code == 200
+    assert viewer_client.get(f"/api/dynamic/agent/plans/{plan_id}/").status_code == 200
+    assert viewer_client.post(
+        f"/api/dynamic/agent/plans/{plan_id}/approve/", {}, format="json"
+    ).status_code == 403
+
+
+@pytest.mark.django_db
+def test_assessment_plan_api_rejects_unknown_fields_and_bad_state(analyst_client):
+    audit, apk = _make_planner_audit("planner-api-errors")
+    payload = {
+        "audit": audit.id,
+        "target_package": apk.package_name,
+        "objective": "Assess authorized runtime behavior.",
+        "scope": "Collect bounded evidence.",
+        "command": "id",
+    }
+    response = analyst_client.post("/api/dynamic/agent/plans/", payload, format="json")
+    assert response.status_code == 400
+    assert "command" in response.json()
+
+    payload.pop("command")
+    created = analyst_client.post("/api/dynamic/agent/plans/", payload, format="json")
+    plan_id = created.json()["id"]
+    premature = analyst_client.post(
+        f"/api/dynamic/agent/plans/{plan_id}/approve/", {}, format="json"
+    )
+    assert premature.status_code == 400
+    assert premature.json()["code"] == "PLAN_NOT_VALIDATED"
+
+
+@pytest.mark.django_db
+def test_revalidation_rejects_tampered_plan_with_controlled_error(django_user_model):
+    user = django_user_model.objects.create_user(username="planner-revalidate")
+    audit, apk = _make_planner_audit("planner-revalidate")
+    service = AssessmentPlannerService(DeterministicPlannerProvider())
+    plan = service.generate(
+        audit=audit,
+        target_package=apk.package_name,
+        objective="Assess authorized runtime behavior.",
+        scope="Collect bounded evidence.",
+        requested_by=user,
+    )
+    plan.generated_plan["steps"][0]["tools"][0]["name"] = "arbitrary_shell"
+    plan.save(update_fields=["generated_plan", "updated_at"])
+
+    with pytest.raises(PlanValidationError, match="outside the gateway allowlist"):
+        service.validate(plan)
+    plan.refresh_from_db()
+    assert plan.status == AssessmentPlan.Status.REJECTED
+    assert plan.validation_status == AssessmentPlan.ValidationStatus.FAILED
+    assert len(plan.validation_errors) == 1
+
+
+def _deterministic_plan_output(
+    audit: Audit,
+    target_package: str,
+    objective: str,
+    scope: str,
+) -> dict:
+    return DeterministicPlannerProvider().generate(
+        {
+            "audit": {"id": audit.id},
+            "target_package": target_package,
+            "assessment_objective": objective,
+            "scope": scope,
+        }
+    )
+
+
+def _make_planner_audit(suffix: str) -> tuple[Audit, APKFile]:
+    audit, apk = _make_audit_with_apk(suffix)
+    apk.package_name = f"com.example.{suffix.replace('-', '_')}"
+    apk.save(update_fields=["package_name"])
+    return audit, apk
+
+
+def _frida_proof_tool_output(tool_name, arguments, *, requested_by=None):
+    del requested_by
+    if tool_name == "get_device_status":
+        return {
+            "host_agent_status": "REACHABLE", "emulator_status": "REACHABLE",
+            "serial": "emulator-5554", "android_version": "15", "api_level": 35,
+            "abi": "x86_64", "root_uid": 0, "selinux": "Enforcing",
+            "proxy": ":0", "focused_app": "owasp.sat.agoat", "ready": True,
+        }
+    if tool_name == "launch_package":
+        return {"launched": True, "focused_app": "owasp.sat.agoat"}
+    if tool_name == "take_screenshot":
+        before = arguments["capture_reason"] == "instrumentation_before"
+        return {
+            "content_type": "image/png", "width": 1080, "height": 1920,
+            "size_bytes": 100, "sha256": ("a" if before else "b") * 64,
+            "captured_at": timezone.now().isoformat(), "object_reference_id": None,
+        }
+    if tool_name == "dump_ui":
+        # Controller calls this once before and once after; distinguish through
+        # the number of existing UI artifacts in the current test database.
+        after = AgentRunArtifact.objects.filter(name="dump-ui.json").exists()
+        return {
+            "capture_status": "CAPTURED", "reason": "",
+            "node_count": 13 if after else 12,
+            "focused_package": "owasp.sat.agoat",
+            "focused_activity": "owasp.sat.agoat/.MainActivity",
+            "target_package_running": True, "target_pid": 26273,
+            "text_values": ["MSAP FRIDA ACTIVE"] if after else ["AndroGoat"],
+            "resource_ids": ["owasp.sat.agoat:id/title"],
+            "raw_preview": "<hierarchy />",
+            "xml_sha256": ("d" if after else "c") * 64,
+        }
+    if tool_name == "frida_status":
+        return {
+            "status": "PASS", "frida_client_version": "17.16.4",
+            "frida_server_version": "17.16.4", "version_agreement": True,
+            "emulator_serial": "emulator-5554", "target_pid": 26273,
+            "attach_capability": True,
+        }
+    if tool_name == "frida_attach":
+        return {"status": "PASS", "pid": 26273, "attach_event_received": True}
+    if tool_name == "frida_run_js":
+        return {
+            "status": "PASS", "package_name": "owasp.sat.agoat", "pid": 26273,
+            "frida_version": "17.16.4", "script_sha256": "e" * 64,
+            "script_started": True, "script_loaded": True, "script_completed": True,
+            "events": [{
+                "type": "ui_modification", "success": True,
+                "target": "owasp.sat.agoat.MainActivity",
+                "original_value": "AndroGoat", "new_value": "MSAP FRIDA ACTIVE",
+            }],
+            "event_count": 1, "error_count": 0, "duration_seconds": 1.0,
+            "started_at": timezone.now().isoformat(),
+            "finished_at": timezone.now().isoformat(), "cleanup_state": "DETACHED",
+            "logcat": {"line_count": 1, "lines": ["instrumentation"], "sha256": "f" * 64},
+        }
+    if tool_name == "force_stop_package":
+        return {"stopped": True}
+    raise AssertionError(tool_name)
+
+
 def _make_role_user(django_user_model, username: str, group_name: str):
     call_command("bootstrap_roles", verbosity=0)
     user = django_user_model.objects.create_user(username=username)
@@ -2284,6 +4064,81 @@ def _agent_png(*, width: int = 1080, height: int = 1920) -> bytes:
         + width.to_bytes(4, "big")
         + height.to_bytes(4, "big")
     )
+
+
+def _basic_agent_tool_output(tool_name, arguments, *, requested_by=None):
+    del requested_by
+    outputs = {
+        "get_device_status": {
+            "host_agent_status": "REACHABLE",
+            "emulator_status": "REACHABLE",
+            "serial": "basic-agent-emulator",
+            "android_version": "15",
+            "api_level": 35,
+            "abi": "x86_64",
+            "root_uid": 0,
+            "selinux": "Enforcing",
+            "proxy": ":0",
+            "focused_app": "com.android.launcher",
+            "ready": True,
+        },
+        "install_verified_apk": {
+            "package_name": "com.example.installed",
+            "version_name": "1.0",
+            "version_code": "1",
+            "launcher_activity": "com.example.installed/.MainActivity",
+            "sha256": "a" * 64,
+            "install_status": "PASS",
+        },
+        "launch_package": {
+            "launched": True,
+            "focused_app": arguments.get("package_name", ""),
+        },
+        "take_screenshot": {
+            "content_type": "image/png",
+            "width": 1080,
+            "height": 1920,
+            "size_bytes": 24,
+            "sha256": "b" * 64,
+            "captured_at": timezone.now().isoformat(),
+        },
+        "dump_ui": {
+            "capture_status": "CAPTURED",
+            "reason": "",
+            "node_count": 5,
+            "focused_package": arguments.get("package_name", ""),
+            "focused_activity": f"{arguments.get('package_name', '')}/.MainActivity",
+            "target_package_running": True,
+            "target_pid": 1234,
+            "text_values": ["Welcome"],
+            "resource_ids": ["com.example.installed:id/title"],
+            "raw_preview": "<hierarchy />",
+            "xml_sha256": "c" * 64,
+        },
+        "start_logcat": {
+            "collector_id": "capture123",
+            "started_at": timezone.now().isoformat(),
+            "max_seconds": 60,
+            "package_filter_applied": True,
+        },
+        "tap_coordinates": {
+            "tapped": True,
+            "x": arguments.get("x"),
+            "y": arguments.get("y"),
+        },
+        "type_text": {
+            "typed": True,
+            "length": len(arguments.get("text", "")),
+            "preview_redacted": "[redacted]",
+        },
+        "get_logcat_excerpt": {
+            "line_count": 1,
+            "lines": ["ActivityTaskManager: displayed com.example.installed"],
+            "redaction_applied": False,
+        },
+        "force_stop_package": {"stopped": True},
+    }
+    return outputs[tool_name]
 
 
 def _make_audit_with_apk(suffix: str = "default") -> tuple[Audit, APKFile]:

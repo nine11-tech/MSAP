@@ -87,6 +87,14 @@ class MinIOStorageService:
             ExtraArgs={"ContentType": content_type},
         )
 
+    def upload_bytes(self, bucket, object_key, payload, content_type="application/octet-stream"):
+        return self.client.put_object(
+            Bucket=bucket,
+            Key=object_key,
+            Body=payload,
+            ContentType=content_type,
+        )
+
     def get_apk_upload_bucket(self):
         return settings.MINIO_BUCKET_APK_UPLOADS
 

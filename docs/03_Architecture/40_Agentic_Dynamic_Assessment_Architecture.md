@@ -1,151 +1,229 @@
 # Agentic Dynamic Assessment Architecture
 
-## Purpose
+## Purpose and current scope
 
-Sprint C establishes a container isolation and evidence foundation for future
-agentic mobile assessment playbooks. It does not perform autonomous pentesting,
-generate vulnerability findings, or produce malware verdicts.
+Sprint D adds a persistent, plan-only AI assessment planner above the accepted
+Sprint C2/C3 deterministic mobile evidence runtime. The planner can use GPT-5.5
+through a backend provider abstraction, or a deterministic provider for local
+development and tests. It cannot execute tools, perform autonomous pentesting,
+confirm vulnerabilities, or produce malware verdicts.
 
-The current implementation is deterministic: an authenticated Analyst or Admin
-can request `DEVICE_READINESS_CHECK`, and the backend executes exactly two
-predefined tools in order:
+An authenticated Analyst or Admin can request one of two objectives:
 
-1. `get_device_status`
-2. `take_screenshot` with `capture_reason=device_readiness`
+- `DEVICE_READINESS_CHECK`: device status followed by a screenshot.
+- `BASIC_APP_INTERACTION_CHECK`: status, optional verified APK installation,
+  launch, screenshot, bounded UI/log evidence, optional caller-supplied tap and
+  text, and force stop.
 
-There is no prompt-to-tool planning and no LLM integration in Sprint C.
+Tap coordinates and text are never invented. Missing optional actions are
+persisted as `SKIPPED` with an explicit reason.
 
-## Current architecture
+## Architecture
 
 ```text
-Browser (session authentication + CSRF)
+Auditor (session authentication + CSRF)
     |
     v
-Django REST API (RBAC and input validation)
+Django plan API (RBAC + audit-authorized target)
+    |
+    v
+Planner provider (OpenAI GPT-5.5 or deterministic local provider)
+    |
+    v
+Strict plan schema + backend policy validator
+    |
+    v
+Persistent GENERATED -> VALIDATED -> APPROVED plan
+
+No execution edge exists from an AssessmentPlan in Sprint D.
+
+Existing deterministic execution remains separate:
+
+Browser (fixed objective input only)
+    |
+    v
+Django run API (RBAC, audit/APK ownership, typed input validation)
     |
     v
 Agent Controller (deterministic objective plan)
     |
-    v
-Internal Controller OR Ephemeral Container Sandbox
+    +--> Internal Controller
+    |
+    +--> Ephemeral Container Sandbox
+             |
+             v
+       Run-scoped Django Tool Gateway
+             |
+             v
+Django Host-Agent Client (host token remains backend-only)
     |
     v
-Run-scoped Tool Gateway (hashed expiring credential + exact two-tool plan)
-    |
-    v
-Existing token-authenticated Host Agent (token remains backend-only)
-    |
-    v
-Managed Android Emulator
+Allowlisted Host Agent actions -> Managed Android Emulator
 ```
 
-The controller persists `AgentRun`, `AgentRunStep`, and `AgentRunArtifact`
-records around the boundary calls. Seeded runtimes describe the default
-`INTERNAL_CONTROLLER` and opt-in `CONTAINER_SANDBOX` modes. The browser selects
-only one of those enum values; it cannot select a command, image, network, tool,
-argument, path, or prompt.
+The browser chooses an objective, runtime enum, authorized audit/app target,
+and bounded optional interaction values. It cannot choose a tool list, command,
+executable, filesystem path, container image, environment variable, or prompt.
 
-## Control and data flow
+The container calls only
+`POST /api/dynamic/agent/runs/{id}/tool-call/`. Its short-lived run credential is
+stored by Django only as a digest and is bound to one run. Before each action,
+Django checks the token, expiry, run state, persisted step order, tool name, and
+exact resolved arguments. Values derived at runtime are limited to the package
+name returned by `install_verified_apk` and the collector ID returned by
+`start_logcat`.
 
-1. The browser submits only a supported objective and an optional audit ID.
-2. Django session authentication, CSRF middleware, and MSAP RBAC are applied.
-3. The controller independently selects an enabled runtime of the requested
-   enum type. Container selection additionally requires the operator setting.
-4. Both planned steps are persisted before execution to make skipped work
-   explicit when a preceding step fails.
-5. Internal mode executes the fixed plan in Django. Container mode hashes a
-   newly generated run token, gives the plaintext token only to the subprocess
-   environment, and launches one hardened container with fixed argv.
-6. The container requests each exact step from its own run-scoped route. Django
-   validates token digest, expiry, route/run binding, run state, objective,
-   order, tool name, and exact arguments before calling the existing host-agent
-   client.
-7. Outputs are normalized to bounded fields before persistence or API exposure.
-8. The controller stores a readiness-only result summary and records completion
-   in the MSAP security audit log.
+## Deterministic mobile tool manifest
 
-Host-agent unavailability creates a truthful failed run with
-`HOST_AGENT_UNAVAILABLE`; later work is marked `SKIPPED`. Controlled errors are
-returned without a Python traceback, host token, environment variables, or
-host-agent response internals.
+The backend manifest contains only:
 
-## Runtime and persistence model
+1. `get_device_status`
+2. `list_packages`
+3. `install_verified_apk`
+4. `launch_package`
+5. `force_stop_package`
+6. `clear_package_data`
+7. `take_screenshot`
+8. `start_logcat`
+9. `stop_logcat`
+10. `get_logcat_excerpt`
+11. `dump_ui`
+12. `tap_coordinates`
+13. `type_text`
+14. `frida_status`
+15. `frida_ps`
+16. `frida_setup`
+17. `frida_attach`
+18. `frida_run_js`
 
-`AgentRuntime` records runtime type, health state, declared capabilities, and
-isolation level. Sprint B's internal runtime remains available. Sprint C also
-seeds `Sprint C Container Sandbox` with `CONTAINER_ISOLATED`; its effective
-availability is false unless `MSAP_AGENT_CONTAINER_ENABLED=true`.
+Every schema rejects unknown fields. Package names use a strict Android package
+regex. APK installation accepts IDs only, verifies that the APK belongs to the
+audit, requires a `VERIFIED` object, checks size/signature/SHA-256, and then
+reuses the backend-to-host APK byte stream. No local path crosses the browser or
+sandbox boundary.
 
-- runtime type `INTERNAL_CONTROLLER`;
-- status `AVAILABLE`;
-- isolation level `INTERNAL_ONLY`;
-- objective `DEVICE_READINESS_CHECK`;
-- tools `get_device_status` and `take_screenshot`.
+`clear_package_data` requires `confirm=true` and an Analyst/Admin requester. It
+is deliberately absent from the current deterministic objectives. Uninstall is
+not in the agent tool manifest.
 
-`AgentRun` records the requesting user, optional audit/device, selected runtime,
-lifecycle timestamps, a normalized result, and controlled failure information.
-It also stores only a SHA-256 run-token digest and expiry, never the plaintext
-run token.
-`AgentRunStep` provides a unique ordered audit trail for tool invocation input
-and output summaries. `AgentRunArtifact` links evidence metadata to the run and
-originating step.
+Coordinates are numeric and bounded twice: the backend applies a hard schema
+limit and the host agent checks the reported device dimensions when available.
+Text is limited to 128 characters, rejects controls and shell metacharacters,
+uses fixed ADB argv, and is persisted only as length plus a redacted preview.
 
-Screenshot binary data is not stored in PostgreSQL. Sprint C records its PNG
-content type, dimensions when detectable, byte size, SHA-256, and capture time.
-`AgentRunArtifact.object_reference` is ready to reference object storage when
-the evidence upload path is added.
+## Evidence primitives
+
+- Screenshot: bounded PNG metadata, dimensions, size, digest, and capture time.
+- UI hierarchy: bounded XML processing, node count, redacted visible-text and
+  resource-ID samples, bounded raw preview, focused package, and XML digest.
+- Logcat: bounded completed capture, package PID filter when available, at most
+  100 excerpt lines returned to the objective, and redaction status.
+
+The Sprint C2 logcat implementation is a completed bounded capture, not a live
+collector. It returns a real collector ID for excerpt lookup. `stop_logcat`
+truthfully returns `supported=false` and `stopped=false` for that completed
+capture rather than faking success.
+
+These records are evidence primitives only. Instrumentation screenshots are
+stored in the evidence bucket through `ObjectStorageReference`; PostgreSQL
+stores only their bounded metadata, digests, and linkage. Raw huge XML/log
+output is not exposed by default.
+
+## Sprint C3 real Frida instrumentation
+
+The Frida tools use the managed emulator serial and fixed host-agent argv only.
+`frida_status` requires a real `frida-ps` RPC enumeration and, when the target
+is running, a real in-process attach probe. Binary presence alone cannot produce
+PASS. `frida_setup` records before state, fixed setup actions, after state, and
+post-setup RPC verification. Client/server versions must agree.
+
+`frida_run_js` is the only code-bearing action. Its bounded JavaScript is sent
+to the selected Android application through Frida; it is never interpreted as
+a host command. Script size, timeout, event count/size, logcat, and screenshot
+capture are bounded. Analyst custom scripts require explicit confirmation and
+are redacted from persisted objective and step inputs after execution.
+
+The built-in `Frida — Runtime UI Modification Proof` is backend-owned and uses
+a fixed sentinel in the deterministic plan. Django resolves that sentinel to
+the canonical JavaScript; the sandbox cannot substitute source. The proof
+launches the target, captures before screenshot/UI evidence, verifies Frida and
+attach, changes the focused Activity title on Android's UI thread, requires the
+structured `ui_modification` event, captures after screenshot/UI evidence and
+bounded PID-filtered logcat, compares digests, then force-stops the app. A proof
+run cannot succeed without both the successful event and a changed screenshot.
+
+Each proof/custom run also creates a bounded instrumentation evidence record
+containing run/package/PID/device/version/script metadata, timing, attach and
+event/error counts, before/after digests, logcat digest/summary, interpretation,
+and limitations. This proves runtime instrumentation, not a vulnerability.
 
 ## Security boundaries
 
-The following constraints are architectural, not UI-only:
+- Host-agent authentication remains only in Django's backend client. It is
+  never passed to the browser or sandbox.
+- Host actions use fixed argv and `shell=False`; there is no arbitrary command,
+  path, process, ADB, or environment inspection tool.
+- Responses, package lists, UI values, XML previews, log lines, text, timeouts,
+  and coordinates are bounded and normalized before persistence.
+- Every executed or skipped step is audited. Destructive and navigation actions
+  additionally create host-agent action records when a managed device exists.
+- Viewer is read-only. Only Analyst/Admin can create runs. Django sessions,
+  CSRF middleware, django-axes, and existing RBAC remain enabled.
+- The sandbox remains non-root, read-only, unprivileged, capability-free, and
+  resource bounded, without mounts, Docker socket, host network, repository,
+  SSH, Git, database, MinIO, or host-agent credentials.
+- The sandbox receives only run ID, gateway URL, run token, fixed objective, and
+  the validated bounded objective input required to reproduce the plan.
 
-- The browser cannot provide a tool sequence, runtime ID, command, path, or
-  custom executable content.
-- The tool gateway rejects unknown tools and unknown or invalid arguments.
-- Each host-agent call uses a bounded timeout and bounded response handling.
-- No arbitrary shell or process execution exists in the agent runtime.
-- No `shell=True`, direct host filesystem access, home-directory access, or
-  environment exposure is introduced.
-- Docker is invoked with fixed argv and `shell=False`. The browser cannot supply
-  the image, network, name, entrypoint, command, environment, or resource flags.
-- The container has no mounts, Docker socket, host network, privileged mode, or
-  added capabilities. It runs non-root with a read-only filesystem,
-  `no-new-privileges`, a small `noexec` tmpfs, and CPU/memory/PID limits.
-- Its four allowed environment values are run ID, fixed objective, configured
-  gateway URL, and short-lived run token. Host-agent, database, MinIO, `.env`,
-  SSH, repository, and home data are not passed.
-- The host-agent token remains inside the existing backend client and is never
-  serialized into a model or browser response.
-- Viewer can list and inspect runtimes, runs, steps, and artifacts, but cannot
-  create runs. Analyst and Admin can create the one supported objective.
-- Existing Django CSRF protection, session authentication, django-axes, and
-  MSAP RBAC remain enabled.
-- Result language is limited to environment readiness. It does not confirm a
-  vulnerability and does not classify an application as malware.
+## Sprint D AI assessment planner
 
-## Future GPT-5.5 planner placeholder
+`AssessmentPlan` stores the audit, authorized package, objective, scope,
+provider/model identity, generated and normalized JSON, planner-input hash,
+plan hash, lifecycle state, validation result, and timestamps.
+`AssessmentPlanStep` stores a stable identifier, deterministic sequence,
+rationale, structured tool references and arguments, expected observation,
+success condition, bounded evidence requirements, dependencies, and state.
 
-A future planner configuration is documented as:
+The planner capability source is the existing `TOOL_MANIFEST`; no second tool
+registry exists. Provider output is strict JSON and is rejected before plan
+creation when it contains unknown fields/tools, malformed tool arguments,
+unauthorized packages/APKs, dependency cycles, excessive steps/evidence,
+arbitrary Frida source, shell/path/environment/Docker/credential instructions,
+or unsupported/unbounded behavior. The only Frida JavaScript a generated plan
+may reference is the backend-owned built-in proof sentinel. The provider is not
+given OpenAI-hosted tools or an MSAP execution endpoint.
 
-```ini
-planner_provider = OPENAI
-planner_model = GPT-5.5
-```
+The backend builds bounded planner context from persisted MSAP data only:
+audit identity, authorized APK metadata, a bounded finding summary, persisted
+device capabilities, and the public schemas of the real gateway manifest.
+Unavailable context is represented explicitly. It does not query or mutate the
+emulator while planning. Only a SHA-256 of the sanitized planner input is
+persisted; API credentials and raw prompts are not stored.
 
-This is documentation only. A later planner must emit tool-plan JSON, never get
-the host-agent token, and only request allowlisted tools. Django must validate
-the plan and arguments, execute the tools, and audit every call. There is no API
-key, OpenAI dependency, model call, or planner output parser in Sprint C.
+The OpenAI provider uses the Responses API with model `gpt-5.5` and strict
+JSON-schema output. Provider/model/key/timeout configuration is backend-only.
+Local development and tests default to `DETERMINISTIC`, which produces the same
+validated six-step AndroGoat-compatible plan without an API key.
 
-## Sprint C limitations
+Plan API lifecycle:
 
-- One fixed objective and two harmless tools only.
-- Synchronous execution in the API request lifecycle.
-- No cancellation endpoint or asynchronous worker scheduling for agent runs.
-- No LLM, autonomous planner, freeform prompt, chat UI, arbitrary code, Frida,
-  mitmproxy, UI automation, or arbitrary shell.
-- Screenshot metadata is persisted; screenshot bytes are not yet uploaded as an
-  agent-run object-storage artifact.
-- The default Docker bridge is not an egress allowlist. Operators needing strict
-  network isolation must provide a dedicated network/gateway topology with
-  `MSAP_AGENT_CONTAINER_NETWORK`; host networking is never selected by MSAP.
+1. Analyst/Admin creates a structurally and policy-checked `GENERATED` plan.
+2. Analyst/Admin explicitly promotes it to `VALIDATED`; policy is rerun.
+3. Analyst/Admin approves it, producing `APPROVED` state only.
+4. Viewer can list and inspect plans but cannot mutate them.
+
+Approval never creates an `AgentRun`, calls the run-scoped gateway, contacts the
+host agent, or changes emulator state. The future GPT-5.5 execution agent must
+consume only an approved plan and remain behind the existing gateway and policy
+boundaries.
+
+## Remaining limitations
+
+- Execution remains synchronous in the API request lifecycle.
+- Logcat uses bounded completed captures rather than live streaming sessions.
+- Package list version metadata is returned only when the host can obtain it;
+  unavailable values remain empty/null.
+- Full UI XML and unbounded log streams are intentionally not retained.
+- No GPT execution agent, chat UI, autonomous plan execution, mitmproxy tool,
+  MASVS playbook, vulnerability confirmation, malware verdict, or autonomous
+  interaction is implemented.
