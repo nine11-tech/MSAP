@@ -93,6 +93,16 @@ UNSAFE_INSTRUCTION_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
+        r"\b(?:bypass|disable|remove|weaken)\b.{0,48}\b(?:gateway|security\s+controls?|"
+        r"run[- ]scoped\s+authorization|rbac|approval|policy\s+validation)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:create|start|invoke)\s+(?:an?\s+)?AgentRun\b|"
+        r"\b(?:call|invoke|execute)\b.{0,32}\b(?:tool\s+gateway|gateway\s+directly|tool\s+directly)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"(?:^|\s)(?:/bin/(?:sh|bash)|/(?:etc|home|root|proc|sys|tmp|usr|var)/|"
         r"[A-Za-z]:\\)",
         re.IGNORECASE,

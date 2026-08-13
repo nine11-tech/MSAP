@@ -83,6 +83,7 @@ from apps.dynamic_analysis.services.agent_gateway import (
 from apps.dynamic_analysis.services.assessment_planner import (
     AssessmentPlannerError,
     AssessmentPlannerService,
+    configured_planner_provider,
 )
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
@@ -580,7 +581,10 @@ class AssessmentPlanViewSet(
         serializer = AssessmentPlanCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            plan = AssessmentPlannerService().generate(
+            provider = configured_planner_provider(
+                serializer.validated_data.get("planner_provider")
+            )
+            plan = AssessmentPlannerService(provider).generate(
                 audit=serializer.validated_data["audit"],
                 target_package=serializer.validated_data["target_package"],
                 objective=serializer.validated_data["objective"],

@@ -110,6 +110,9 @@ export function DynamicLabPage() {
   const [fridaTimeout, setFridaTimeout] = useState(12);
   const [assessmentPlan, setAssessmentPlan] = useState<AssessmentPlan | null>(null);
   const [plannerPackageName, setPlannerPackageName] = useState("");
+  const [plannerProvider, setPlannerProvider] = useState<
+    "" | "DETERMINISTIC" | "OPENAI"
+  >("");
   const [plannerObjective, setPlannerObjective] = useState(
     "Assess authorized runtime behavior with bounded evidence.",
   );
@@ -562,6 +565,7 @@ export function DynamicLabPage() {
         target_package: plannerPackageName,
         objective: plannerObjective.trim(),
         scope: plannerScope.trim(),
+        ...(plannerProvider ? { planner_provider: plannerProvider } : {}),
       });
       setAssessmentPlan(plan);
       setNotice(`Assessment plan #${plan.id} generated. No tools were executed.`);
@@ -921,6 +925,22 @@ export function DynamicLabPage() {
               {authorizedPlannerPackages.map((target) => (
                 <option key={target} value={target}>{target}</option>
               ))}
+            </select>
+          </label>
+          <label>
+            <span>Planner provider</span>
+            <select
+              value={plannerProvider}
+              onChange={(event) =>
+                setPlannerProvider(
+                  event.target.value as "" | "DETERMINISTIC" | "OPENAI",
+                )
+              }
+              disabled={Boolean(working)}
+            >
+              <option value="">Server default</option>
+              <option value="OPENAI">OpenAI · GPT-5.5</option>
+              <option value="DETERMINISTIC">Deterministic reference</option>
             </select>
           </label>
           <label className="planner-objective-field">
@@ -1443,10 +1463,24 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
       <div className="planner-summary-facts">
         <StatusFact label="Provider" value={plan.planner_provider} detail={plan.planner_model} />
         <StatusFact label="Validation" value={plan.validation_status} state={plan.validation_status === "PASSED" ? "online" : "warning"} />
+        <StatusFact label="Policy" value={plan.policy_status} state={plan.policy_status === "PASSED" ? "online" : "warning"} />
         <StatusFact label="Steps" value={String(plan.steps.length)} />
         <StatusFact label="Bounded tool references" value={String(toolCount)} />
         <StatusFact label="Created" value={formatDate(plan.created_at)} />
         <StatusFact label="Plan hash" value={plan.plan_hash ? `${plan.plan_hash.slice(0, 16)}…` : "Unavailable"} />
+        <StatusFact
+          label="Planner latency"
+          value={
+            plan.provider_metadata.latency_ms === undefined
+              ? "Unavailable"
+              : `${plan.provider_metadata.latency_ms} ms`
+          }
+          detail={
+            plan.provider_metadata.retry_count === undefined
+              ? undefined
+              : `${plan.provider_metadata.retry_count} retries`
+          }
+        />
       </div>
 
       <div className="planner-scope-summary">
@@ -1465,6 +1499,17 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
         future execution agent. It does not contact the gateway, host agent, or
         emulator.
       </div>
+
+      {plan.validation_errors.length ? (
+        <div className="planner-validation-errors" role="alert">
+          <strong>Controlled validation failure</strong>
+          <ul>
+            {plan.validation_errors.map((message, index) => (
+              <li key={`${index}-${message}`}>{message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <ol className="planner-step-list">
         {plan.steps.map((step) => (

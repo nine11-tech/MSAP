@@ -4080,6 +4080,24 @@ tbody tr:hover td {
   color: #9ee8d8;
 }
 
+.planner-validation-errors {
+  padding: 0.75rem;
+  color: #d7b8b8;
+  background: rgba(127, 29, 29, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 6px;
+  font-size: 0.72rem;
+}
+
+.planner-validation-errors strong {
+  color: #fecaca;
+}
+
+.planner-validation-errors ul {
+  margin: 0.45rem 0 0;
+  padding-left: 1.2rem;
+}
+
 .planner-step-list {
   margin: 0;
   padding: 0;
