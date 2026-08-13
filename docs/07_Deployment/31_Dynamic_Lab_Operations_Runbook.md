@@ -249,6 +249,17 @@ with an Analyst/Admin account:
 6. Verify that no `AgentRun` was created and that foreground package, target PID,
    screenshot/UI state, and device action records did not change.
 
+The API's `normalized_plan` is the versioned
+`msap.assessment-plan/v1` representation. Provider `generated_plan` JSON is
+retained for auditability but is never valid executor input. Approval rechecks
+the canonical document and its stored hash before changing state. The guarded
+`msap.approved-assessment-plan/v1` projection exists for future execution-agent
+work; there is no API action that executes or schedules it in D1.
+
+If validation reports `PLAN_CONTRACT_INVALID`, treat the plan as tampered or
+stale: do not approve or manually translate its text into commands. Generate a
+new plan through the backend so schema and policy validation run again.
+
 Viewer accounts may inspect plans but cannot generate, validate, or approve
 them. Approval does not contact the gateway, host agent, or emulator and does
 not authorize direct execution outside a future execution-agent policy.
