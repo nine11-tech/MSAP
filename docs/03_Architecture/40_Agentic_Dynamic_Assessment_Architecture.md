@@ -217,6 +217,59 @@ host agent, or changes emulator state. The future GPT-5.5 execution agent must
 consume only an approved plan and remain behind the existing gateway and policy
 boundaries.
 
+### Sprint D1 planner/executor contracts
+
+Provider output is untrusted planner **intent**, not executor input. Existing
+deterministic/provider output is accepted through a compatibility adapter, then
+normalized into the closed `msap.assessment-plan/v1` contract. That canonical
+document contains provider/model and audit traceability, the authorized package,
+objective and scope, fixed plan constraints, and ordered steps. Each canonical
+step has a stable identifier and sequence, one of the supported action types,
+structured tool references and arguments, dependencies, evidence and success
+requirements, an explicit destructive-step approval flag, and resource limits
+derived from the real `TOOL_MANIFEST` timeouts.
+
+The normalization path is deliberately one-way:
+
+```text
+raw provider JSON
+    -> legacy intent schema validation
+    -> contextual plan policy validation
+    -> msap.assessment-plan/v1 normalization
+    -> canonical contract validation + SHA-256
+    -> persisted plan
+    -> auditor validation and approval
+    -> msap.approved-assessment-plan/v1 projection (future executor input)
+```
+
+The approved executor projection can be built only from a persisted
+`AssessmentPlan` whose state is `APPROVED`, whose validation state is `PASSED`,
+whose approval actor/time exist, and whose canonical JSON still matches the
+persisted plan hash and audit/package/provider fields. It contains no raw
+provider response. Passing arbitrary LLM text to this boundary is rejected; D1
+does not parse text into execution requests.
+
+Validation boundaries remain distinct:
+
+- **Schema/contract validation** closes fields, types, identifiers, tool
+  capability vocabulary, arguments, dependencies, sizes, evidence values,
+  action types, and manifest-derived resource bounds. Host command/path,
+  credential, environment, Docker, subprocess, and arbitrary Frida-source
+  representations have no executable contract shape.
+- **Plan policy validation** checks the selected audit and authorized package,
+  package/audit arguments, the built-in-only planner Frida proof, and explicit
+  destructive scope. D3 may extend this layer without changing either contract.
+- **Approval** records auditor authorization for the canonical plan. It does not
+  authorize an individual tool invocation or cause execution.
+- **Execution authorization** remains future work. Every eventual tool call must
+  still pass the run-scoped token, persisted step order, RBAC/scope policy, real
+  gateway manifest schema, and backend/host-agent enforcement.
+
+A recognized tool identifier therefore expresses a requested capability only;
+it is never a permission. The model is neither the schema, policy, approval, nor
+execution security boundary. The deterministic planner remains the local/test
+fallback, compatibility reference, and safe fixture for future executor work.
+
 ## Remaining limitations
 
 - Execution remains synchronous in the API request lifecycle.
@@ -227,3 +280,6 @@ boundaries.
 - No GPT execution agent, chat UI, autonomous plan execution, mitmproxy tool,
   MASVS playbook, vulnerability confirmation, malware verdict, or autonomous
   interaction is implemented.
+- D1 does not schedule approved plans, convert them to `AgentRun` records, or
+  implement the D3 policy engine. The approved executor projection is a guarded
+  data contract only; D4 will consume it through a separate execution service.

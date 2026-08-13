@@ -149,6 +149,13 @@ Local demo mode uses the deterministic provider and requires no OpenAI key. The
 OpenAI provider is backend-only, is configured for `gpt-5.5`, and returns the
 same strict plan schema. Viewer can inspect plans but cannot mutate them.
 
+For Sprint D1 contract acceptance, inspect the plan detail response and confirm
+that `normalized_plan.contract_version` is `msap.assessment-plan/v1`, steps have
+stable IDs/action types and manifest-derived bounds, and the plan hash is
+present. Approval must still leave the AgentRun count and emulator unchanged.
+Raw `generated_plan` content is planner intent only; it must never be copied to
+a runner, shell, Frida CLI, or host-agent request.
+
 ## Operational checks
 
 Dynamic Lab reports:
@@ -187,3 +194,9 @@ execution agent. A future execution agent may consume only an approved plan,
 must use the run-scoped gateway, and must never receive host-agent, database,
 MinIO, Docker, shell, repository, or provider credentials. Django remains
 responsible for validating and auditing every future tool call.
+
+The D1 executor-facing contract is a hash-checked projection of a persisted,
+validated, explicitly approved canonical plan. It is not an execution API and
+cannot be constructed from arbitrary raw model text. Tool identifiers in that
+projection describe intent; the gateway must independently authorize every
+future invocation.

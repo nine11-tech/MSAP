@@ -21,26 +21,28 @@ from apps.dynamic_analysis.services.agent_tools import (
     TOOL_MANIFEST,
     public_tool_manifest,
 )
+from apps.dynamic_analysis.services.assessment_execution_contract import (
+    AssessmentExecutionContractError,
+    validate_persisted_plan_contract,
+)
+from apps.dynamic_analysis.services.assessment_plan_contract import (
+    EVIDENCE_TYPES,
+    MAX_EVIDENCE_REQUIREMENTS,
+    MAX_PLAN_BYTES,
+    MAX_PLAN_STEPS,
+    MAX_TOOL_ARGUMENT_BYTES,
+    MAX_TOOLS_PER_STEP,
+    AssessmentPlanContractError,
+    normalize_assessment_plan_contract,
+    reject_unsafe_instruction,
+)
 from apps.findings.models import Finding
 
 
-MAX_PLAN_STEPS = 12
-MAX_PLAN_BYTES = 64 * 1024
-MAX_TOOLS_PER_STEP = 8
-MAX_EVIDENCE_REQUIREMENTS = 6
 MAX_CONTEXT_FINDINGS = 25
 MAX_CONTEXT_APKS = 10
 MAX_CONTEXT_DEVICES = 5
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-
-EVIDENCE_TYPES = (
-    "screenshot",
-    "ui_hierarchy",
-    "logcat",
-    "frida_events",
-    "tool_output",
-    "before_after_comparison",
-)
 
 PLAN_FIELDS = {
     "target_package",
@@ -63,22 +65,6 @@ TOOL_CALL_FIELDS = {"name", "arguments"}
 STEP_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 PACKAGE_NAME_RE = re.compile(
     r"^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+$"
-)
-UNSAFE_INSTRUCTION_PATTERNS = (
-    re.compile(
-        r"\b(?:adb\s+shell|shell\s+command|docker(?:\s+socket)?|filesystem|"
-        r"file\s+path|environment\s+variables?|host[- ]agent|api[-_ ]?keys?|"
-        r"credentials?|passwords?|secrets?|ssh|git\s+(?:clone|checkout|reset)|"
-        r"repository\s+access)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"(?:^|\s)(?:/home/|/etc/|/var/run/docker\.sock|[A-Za-z]:\\)"),
-    re.compile(r"\.\./|\$\(|`|&&|\|\||;\s*(?:sh|bash|cmd)\b", re.IGNORECASE),
-    re.compile(
-        r"\b(?:while\s*\(\s*true|while\s+true|for\s*\(\s*;\s*;\s*\)|"
-        r"infinite\s+loop|unbounded\s+(?:loop|timeout|execution))\b",
-        re.IGNORECASE,
-    ),
 )
 
 
@@ -435,6 +421,9 @@ class AssessmentPlannerService:
             target_package=target_package,
             objective=objective,
             scope=scope,
+            planner_provider=self.provider.name,
+            planner_model=self.provider.model,
+            planner_input_hash=input_hash,
         )
         with transaction.atomic():
             plan = AssessmentPlan.objects.create(
@@ -472,6 +461,9 @@ class AssessmentPlannerService:
                 target_package=plan.target_package,
                 objective=plan.objective,
                 scope=plan.scope,
+                planner_provider=plan.planner_provider,
+                planner_model=plan.planner_model,
+                planner_input_hash=plan.planner_input_hash,
             )
         except PlanValidationError as exc:
             plan.status = AssessmentPlan.Status.REJECTED
@@ -515,6 +507,9 @@ class AssessmentPlannerService:
 
     @staticmethod
     def approve(plan: AssessmentPlan, *, approved_by) -> AssessmentPlan:
+        # Preserve the existing idempotent approval behavior. Historical plans
+        # remain readable; only a new VALIDATED -> APPROVED transition must pass
+        # the D1 canonical integrity gate.
         if plan.status == AssessmentPlan.Status.APPROVED:
             return plan
         if (
@@ -525,6 +520,13 @@ class AssessmentPlannerService:
                 "Only a validated assessment plan can be approved.",
                 code="PLAN_NOT_VALIDATED",
             )
+        try:
+            validate_persisted_plan_contract(plan)
+        except AssessmentExecutionContractError:
+            raise PlanValidationError(
+                "The validated assessment plan failed its canonical integrity check.",
+                code="PLAN_CONTRACT_INVALID",
+            ) from None
         with transaction.atomic():
             plan.status = AssessmentPlan.Status.APPROVED
             plan.approved_by = approved_by
@@ -639,7 +641,18 @@ def validate_generated_plan(
     target_package: str,
     objective: str,
     scope: str,
+    planner_provider: str = "LEGACY_ADAPTER",
+    planner_model: str = "legacy-structured-planner",
+    planner_input_hash: str | None = None,
 ) -> dict[str, Any]:
+    """Validate untrusted provider intent and return the canonical v1 plan.
+
+    The first phase below is schema/shape validation. Contextual audit, target,
+    and destructive-operation checks are deliberately delegated to
+    ``validate_plan_policy`` before the legacy intent is adapted to the stable
+    planner/executor contract.
+    """
+
     if not isinstance(generated, dict):
         raise PlanValidationError("Planner output must be a JSON object.")
     try:
@@ -649,13 +662,11 @@ def validate_generated_plan(
     if len(serialized.encode("utf-8")) > MAX_PLAN_BYTES:
         raise PlanValidationError("Planner output exceeds the bounded size limit.")
     _require_exact_fields(generated, PLAN_FIELDS, "plan")
-    if generated["target_package"] != target_package:
-        raise PlanValidationError("Planner target package does not match the authorized package.")
-    if generated["assessment_objective"] != objective:
-        raise PlanValidationError("Planner objective does not match the requested objective.")
-    if generated["scope"] != scope:
-        raise PlanValidationError("Planner scope does not match the requested scope.")
-    _safe_text("target_package", generated["target_package"], max_length=255)
+    generated_package = _safe_text(
+        "target_package", generated["target_package"], max_length=255
+    )
+    if PACKAGE_NAME_RE.fullmatch(generated_package) is None:
+        raise PlanValidationError("Invalid Android package name.")
     _safe_text("assessment_objective", generated["assessment_objective"], max_length=500)
     _safe_text("scope", generated["scope"], max_length=2000)
     steps = generated["steps"]
@@ -681,27 +692,21 @@ def validate_generated_plan(
         if step_id in identifiers:
             raise PlanValidationError("Plan step identifiers must be unique.")
         identifiers.add(step_id)
-        normalized_tools = _validate_step_tools(
-            raw_step["tools"],
-            audit=audit,
-            target_package=target_package,
-            objective=objective,
-            scope=scope,
-        )
+        normalized_tools = _validate_step_tools(raw_step["tools"])
         evidence = raw_step["evidence_requirements"]
         if (
             not isinstance(evidence, list)
             or not 1 <= len(evidence) <= MAX_EVIDENCE_REQUIREMENTS
+            or any(not isinstance(item, str) or item not in EVIDENCE_TYPES for item in evidence)
             or len(evidence) != len(set(evidence))
-            or any(item not in EVIDENCE_TYPES for item in evidence)
         ):
             raise PlanValidationError("Evidence requirements must be unique bounded supported values.")
         dependencies = raw_step["dependencies"]
         if (
             not isinstance(dependencies, list)
             or len(dependencies) > MAX_PLAN_STEPS
-            or len(dependencies) != len(set(dependencies))
             or any(not isinstance(item, str) or not STEP_ID_RE.fullmatch(item) for item in dependencies)
+            or len(dependencies) != len(set(dependencies))
         ):
             raise PlanValidationError("Step dependencies must be unique stable identifiers.")
         if step_id in dependencies:
@@ -739,21 +744,80 @@ def validate_generated_plan(
     for step in normalized_steps:
         if any(sequence_by_id[item] >= step["sequence"] for item in step["dependencies"]):
             raise PlanValidationError("Plan dependencies must reference earlier ordered steps.")
-    return {
-        "target_package": target_package,
-        "assessment_objective": objective,
-        "scope": scope,
+    normalized_intent = {
+        "target_package": generated_package,
+        "assessment_objective": generated["assessment_objective"].strip(),
+        "scope": generated["scope"].strip(),
         "steps": normalized_steps,
     }
+    validate_plan_policy(
+        normalized_intent,
+        audit=audit,
+        target_package=target_package,
+        objective=objective,
+        scope=scope,
+    )
+    if planner_input_hash is None:
+        planner_input_hash = _json_hash(
+            {
+                "audit_id": audit.id,
+                "target_package": target_package,
+                "assessment_objective": objective,
+                "scope": scope,
+            }
+        )
+    try:
+        return normalize_assessment_plan_contract(
+            normalized_intent,
+            audit_id=audit.id,
+            planner_provider=planner_provider,
+            planner_model=planner_model,
+            planner_input_hash=planner_input_hash,
+        )
+    except AssessmentPlanContractError as exc:
+        raise PlanValidationError(str(exc)) from None
 
 
-def _validate_step_tools(
-    tools: Any,
+def validate_plan_policy(
+    normalized_intent: dict[str, Any],
     *,
     audit: Audit,
     target_package: str,
     objective: str,
     scope: str,
+) -> None:
+    """Apply current audit/target/tool policy after structural validation.
+
+    This D1 boundary intentionally remains smaller than the future D3 policy
+    engine. In particular, recognizing a capability identifier here is never
+    permission to execute it through the gateway.
+    """
+
+    _validated_target_package(audit, target_package)
+    if normalized_intent["target_package"] != target_package:
+        raise PlanValidationError(
+            "Planner target package does not match the authorized package."
+        )
+    if normalized_intent["assessment_objective"] != objective:
+        raise PlanValidationError(
+            "Planner objective does not match the requested objective."
+        )
+    if normalized_intent["scope"] != scope:
+        raise PlanValidationError("Planner scope does not match the requested scope.")
+    for step in normalized_intent["steps"]:
+        for tool_call in step["tools"]:
+            _validate_tool_policy(
+                tool_call["name"],
+                tool_call["arguments"],
+                audit=audit,
+                target_package=target_package,
+                objective=objective,
+                scope=scope,
+            )
+
+
+def _validate_step_tools(
+    tools: Any,
 ) -> list[dict[str, Any]]:
     if not isinstance(tools, list) or len(tools) > MAX_TOOLS_PER_STEP:
         raise PlanValidationError(
@@ -774,15 +838,24 @@ def _validate_step_tools(
         arguments = tool_call["arguments"]
         if not isinstance(arguments, dict):
             raise PlanValidationError(f"Arguments for {name} must be a JSON object.")
+        try:
+            argument_size = len(
+                json.dumps(
+                    arguments,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError):
+            raise PlanValidationError(
+                f"Arguments for {name} must contain JSON-compatible values."
+            ) from None
+        if argument_size > MAX_TOOL_ARGUMENT_BYTES:
+            raise PlanValidationError(
+                f"Arguments for {name} exceed the bounded size limit."
+            )
         _validate_value_against_schema(arguments, TOOL_MANIFEST[name].input_schema, f"{name}.arguments")
-        _validate_tool_policy(
-            name,
-            arguments,
-            audit=audit,
-            target_package=target_package,
-            objective=objective,
-            scope=scope,
-        )
         normalized.append({"name": name, "arguments": deepcopy(arguments)})
     return normalized
 
@@ -892,10 +965,10 @@ def _safe_text(field: str, value: Any, *, max_length: int) -> str:
 
 
 def _reject_unsafe_instructions(value: str, *, field: str) -> None:
-    if any(pattern.search(value) for pattern in UNSAFE_INSTRUCTION_PATTERNS):
-        raise PlanValidationError(
-            f"{field} contains an unsupported execution instruction."
-        )
+    try:
+        reject_unsafe_instruction(value, field=field)
+    except AssessmentPlanContractError as exc:
+        raise PlanValidationError(str(exc)) from None
 
 
 def _require_exact_fields(value: dict[str, Any], expected: set[str], label: str) -> None:
