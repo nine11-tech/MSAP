@@ -5,6 +5,8 @@ from apps.dynamic_analysis.models import (
     AgentRunArtifact,
     AgentRuntime,
     AgentRunStep,
+    AssessmentPlan,
+    AssessmentPlanStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -17,6 +19,30 @@ from apps.dynamic_analysis.models import (
     DynamicSessionEvent,
     DynamicSessionStage,
 )
+
+
+@admin.register(AssessmentPlan)
+class AssessmentPlanAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "audit",
+        "target_package",
+        "planner_provider",
+        "planner_model",
+        "status",
+        "validation_status",
+        "created_at",
+    )
+    list_filter = ("planner_provider", "status", "validation_status")
+    search_fields = ("target_package", "objective", "audit__name")
+    readonly_fields = ("planner_input_hash", "plan_hash")
+
+
+@admin.register(AssessmentPlanStep)
+class AssessmentPlanStepAdmin(admin.ModelAdmin):
+    list_display = ("plan", "sequence", "step_identifier", "status")
+    list_filter = ("status",)
+    search_fields = ("step_identifier", "objective", "rationale")
 
 
 @admin.register(AgentRuntime)

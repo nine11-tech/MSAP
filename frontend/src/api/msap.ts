@@ -1,9 +1,12 @@
 import { apiDownload, apiGet, apiPost, apiPostBlob } from "./client";
 import type {
   AgentRun,
+  AgentObjective,
+  AgentObjectiveInput,
   AgentRunArtifact,
   AgentRuntime,
   AgentRunStep,
+  AssessmentPlan,
   AnalysisStartResponse,
   AnalysisStatusResponse,
   ApkFile,
@@ -236,24 +239,54 @@ export const listAgentRuns = (auditId?: number) =>
   );
 export const getAgentRun = (runId: number) =>
   apiGet<AgentRun>(`dynamic/agent/runs/${runId}/`);
-export const createAgentRun = (
-  audit?: number,
-  runtimeType: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX" =
-    "INTERNAL_CONTROLLER",
-) =>
+export const createAgentRun = (data: {
+  objective: AgentObjective;
+  runtime_type: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
+  audit?: number;
+  objective_input?: AgentObjectiveInput;
+}) =>
   apiPost<
     AgentRun,
     {
-      objective: "DEVICE_READINESS_CHECK";
+      objective: AgentObjective;
       runtime_type: "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
       audit?: number;
+      objective_input?: AgentObjectiveInput;
     }
-  >("dynamic/agent/runs/", {
-    objective: "DEVICE_READINESS_CHECK",
-    runtime_type: runtimeType,
-    ...(audit === undefined ? {} : { audit }),
-  });
+  >("dynamic/agent/runs/", data);
 export const listAgentRunSteps = (runId: number) =>
   apiGet<AgentRunStep[]>(`dynamic/agent/runs/${runId}/steps/`);
 export const listAgentRunArtifacts = (runId: number) =>
   apiGet<AgentRunArtifact[]>(`dynamic/agent/runs/${runId}/artifacts/`);
+
+export const listAssessmentPlans = (auditId?: number) =>
+  apiGet<AssessmentPlan[]>(
+    `dynamic/agent/plans/${auditId === undefined ? "" : `?audit=${encodeURIComponent(auditId)}`}`,
+  );
+export const getAssessmentPlan = (planId: number) =>
+  apiGet<AssessmentPlan>(`dynamic/agent/plans/${planId}/`);
+export const createAssessmentPlan = (data: {
+  audit: number;
+  target_package: string;
+  objective: string;
+  scope: string;
+}) =>
+  apiPost<
+    AssessmentPlan,
+    {
+      audit: number;
+      target_package: string;
+      objective: string;
+      scope: string;
+    }
+  >("dynamic/agent/plans/", data);
+export const validateAssessmentPlan = (planId: number) =>
+  apiPost<AssessmentPlan, Record<string, never>>(
+    `dynamic/agent/plans/${planId}/validate/`,
+    {},
+  );
+export const approveAssessmentPlan = (planId: number) =>
+  apiPost<AssessmentPlan, Record<string, never>>(
+    `dynamic/agent/plans/${planId}/approve/`,
+    {},
+  );

@@ -1,17 +1,33 @@
 # MSAP Agent Runtime
 
-This image is the untrusted side of the Sprint C deterministic sandbox. It
-supports only `DEVICE_READINESS_CHECK` and always requests exactly:
+This image is the untrusted side of the deterministic sandbox. It supports
+`DEVICE_READINESS_CHECK`, `BASIC_APP_INTERACTION_CHECK`, the fixed Frida
+environment actions, the backend-owned runtime UI modification proof, and
+confirmed bounded custom Frida scripts. The
+runner derives the fixed sequence from the validated objective input and calls
+only:
 
-1. `get_device_status` with `{}`;
-2. `take_screenshot` with `{"capture_reason":"device_readiness"}`.
+```text
+POST /api/dynamic/agent/runs/{id}/tool-call/
+```
+
+Optional APK install, tap, and text calls are omitted exactly when their input
+is absent; Django has already recorded those steps as `SKIPPED`. Runtime package
+and collector values can only come from the preceding verified install and
+bounded logcat outputs.
 
 The runner reads only `MSAP_AGENT_RUN_ID`, `MSAP_AGENT_GATEWAY_URL`,
-`MSAP_AGENT_RUN_TOKEN`, and `MSAP_AGENT_OBJECTIVE`. It uses the run token only
-as a Bearer credential for the matching Django tool-gateway route. It has no
-host-agent credential, database or object-storage credential, ADB client,
-Docker client/socket, repository mount, prompt, shell-tool interface, or direct
-emulator route.
+`MSAP_AGENT_RUN_TOKEN`, `MSAP_AGENT_OBJECTIVE`, and the bounded validated
+`MSAP_AGENT_OBJECTIVE_INPUT`. It has no host-agent credential, database or
+object-storage credential, ADB client, Docker client/socket, repository mount,
+prompt, shell-tool interface, Frida/ADB client, or direct emulator route. Even
+Frida objectives call only Django's run-scoped gateway; only the host agent
+communicates with the managed emulator.
+
+Sprint D assessment planning does not run in this image. Plan generation,
+validation, and approval remain backend-only and never start this container.
+The future execution agent may use this isolation boundary only after a separate
+approved-plan policy is implemented.
 
 Build it from the repository root:
 

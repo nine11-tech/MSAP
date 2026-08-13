@@ -12,10 +12,11 @@ from apps.dynamic_analysis.models import (
 )
 from apps.dynamic_analysis.services.agent_controller import (
     AgentController,
-    OBJECTIVE_PLANS,
+    resolve_runtime_arguments,
 )
 from apps.dynamic_analysis.services.agent_tools import (
     AgentToolError,
+    TOOL_MANIFEST,
     execute_agent_tool,
 )
 
@@ -56,8 +57,9 @@ def execute_run_tool_call(
                 code="RUN_NOT_RUNNING",
                 http_status=409,
             )
-        plan = OBJECTIVE_PLANS.get(run.objective)
-        if plan is None or tool_name not in {item[0] for item in plan}:
+        if tool_name not in TOOL_MANIFEST or not run.steps.filter(
+            tool_name=tool_name
+        ).exists():
             raise AgentGatewayRequestError(
                 "The requested tool is not allowed for this objective.",
                 code="TOOL_NOT_ALLOWED",
@@ -67,7 +69,11 @@ def execute_run_tool_call(
             (
                 step
                 for step in steps
-                if step.status != AgentRunStep.Status.SUCCEEDED
+                if step.status
+                not in {
+                    AgentRunStep.Status.SUCCEEDED,
+                    AgentRunStep.Status.SKIPPED,
+                }
             ),
             None,
         )
@@ -76,12 +82,20 @@ def execute_run_tool_call(
                 "The deterministic tool sequence is already complete.",
                 code="TOOL_SEQUENCE_COMPLETE",
             )
-        expected_tool, expected_arguments = plan[expected_step.sequence_number - 1]
-        if tool_name != expected_tool:
+        if tool_name != expected_step.tool_name:
             raise AgentGatewayRequestError(
                 "The requested tool is out of sequence for this objective.",
                 code="TOOL_OUT_OF_SEQUENCE",
             )
+        completed_outputs = {
+            step.tool_name: step.output_summary
+            for step in steps
+            if step.status == AgentRunStep.Status.SUCCEEDED
+        }
+        expected_arguments = resolve_runtime_arguments(
+            expected_step.input_summary,
+            completed_outputs,
+        )
         if arguments != expected_arguments:
             raise AgentGatewayRequestError(
                 "The requested tool arguments do not match the objective contract.",
@@ -94,8 +108,9 @@ def execute_run_tool_call(
                 http_status=409,
             )
         expected_step.status = AgentRunStep.Status.RUNNING
+        expected_step.input_summary = expected_arguments
         expected_step.started_at = timezone.now()
-        expected_step.save(update_fields=["status", "started_at"])
+        expected_step.save(update_fields=["input_summary", "status", "started_at"])
         step_id = expected_step.pk
 
     try:
@@ -160,23 +175,42 @@ def execute_run_tool_call(
             run.device = DynamicDevice.objects.filter(serial=output["serial"]).first()
             run.save(update_fields=["device", "updated_at"])
         completed = not run.steps.exclude(
-            status=AgentRunStep.Status.SUCCEEDED
+            status__in=[AgentRunStep.Status.SUCCEEDED, AgentRunStep.Status.SKIPPED]
         ).exists()
         if completed:
             outputs = AgentController._completed_outputs(run)
-            run.status = AgentRun.Status.SUCCEEDED
             run.finished_at = timezone.now()
             run.result_summary = AgentController._result_summary(
                 outputs,
                 succeeded=True,
                 runtime=run.runtime,
+                run=run,
             )
+            proof_failed = bool(
+                run.objective
+                == AgentRun.Objective.FRIDA_RUNTIME_UI_MODIFICATION_PROOF
+                and not run.result_summary.get("evidence_confirmed")
+            )
+            run.status = (
+                AgentRun.Status.FAILED if proof_failed else AgentRun.Status.SUCCEEDED
+            )
+            if proof_failed:
+                run.failure_category = AgentRun.FailureCategory.TOOL_EXECUTION_FAILED
+                run.failure_message = (
+                    "Frida executed, but the required before/after visible modification "
+                    "evidence was not confirmed."
+                )
+            AgentController._record_instrumentation_evidence(run, outputs)
+            AgentController._redact_persisted_text(run)
             run.save(
                 update_fields=[
                     "status",
                     "finished_at",
                     "duration_seconds",
                     "result_summary",
+                    "failure_category",
+                    "failure_message",
+                    "objective_input",
                     "updated_at",
                 ]
             )

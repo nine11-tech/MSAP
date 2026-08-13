@@ -30,6 +30,7 @@ from apps.api.auth_views import (
 from apps.dynamic_analysis.views import (
     AgentRunViewSet,
     AgentRuntimeViewSet,
+    AssessmentPlanViewSet,
     DynamicAnalysisJobViewSet,
     DynamicDeviceCapabilityViewSet,
     DynamicDeviceEventViewSet,
@@ -148,6 +149,11 @@ router.register(
     "dynamic/agent/runs",
     AgentRunViewSet,
     basename="agent-run",
+)
+router.register(
+    "dynamic/agent/plans",
+    AssessmentPlanViewSet,
+    basename="assessment-plan",
 )
 router.register(
     "dynamic/host-agent",

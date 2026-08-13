@@ -844,8 +844,33 @@ class DynamicSessionArtifact(models.Model):
 
 def default_agent_runtime_capabilities() -> dict:
     return {
-        "objectives": ["DEVICE_READINESS_CHECK"],
-        "tools": ["get_device_status", "take_screenshot"],
+        "objectives": [
+            "DEVICE_READINESS_CHECK",
+            "BASIC_APP_INTERACTION_CHECK",
+            "FRIDA_RUNTIME_ACTION",
+            "FRIDA_RUNTIME_UI_MODIFICATION_PROOF",
+            "FRIDA_CUSTOM_SCRIPT",
+        ],
+        "tools": [
+            "get_device_status",
+            "list_packages",
+            "install_verified_apk",
+            "launch_package",
+            "force_stop_package",
+            "clear_package_data",
+            "take_screenshot",
+            "start_logcat",
+            "stop_logcat",
+            "get_logcat_excerpt",
+            "dump_ui",
+            "tap_coordinates",
+            "type_text",
+            "frida_status",
+            "frida_ps",
+            "frida_setup",
+            "frida_attach",
+            "frida_run_js",
+        ],
     }
 
 
@@ -909,6 +934,22 @@ class AgentRun(models.Model):
             "DEVICE_READINESS_CHECK",
             "Device readiness check",
         )
+        BASIC_APP_INTERACTION_CHECK = (
+            "BASIC_APP_INTERACTION_CHECK",
+            "Basic app interaction check",
+        )
+        FRIDA_RUNTIME_ACTION = (
+            "FRIDA_RUNTIME_ACTION",
+            "Frida runtime action",
+        )
+        FRIDA_RUNTIME_UI_MODIFICATION_PROOF = (
+            "FRIDA_RUNTIME_UI_MODIFICATION_PROOF",
+            "Frida runtime UI modification proof",
+        )
+        FRIDA_CUSTOM_SCRIPT = (
+            "FRIDA_CUSTOM_SCRIPT",
+            "Frida custom script",
+        )
 
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -953,6 +994,7 @@ class AgentRun(models.Model):
         related_name="runs",
     )
     objective = models.CharField(max_length=64, choices=Objective.choices)
+    objective_input = models.JSONField(default=dict, blank=True)
     status = models.CharField(
         max_length=32,
         choices=Status.choices,
@@ -1099,3 +1141,142 @@ class AgentRunArtifact(models.Model):
 
     def __str__(self) -> str:
         return f"{self.artifact_type} artifact for run {self.run_id}"
+
+
+class AssessmentPlan(models.Model):
+    class PlannerProvider(models.TextChoices):
+        DETERMINISTIC = "DETERMINISTIC", "Deterministic"
+        OPENAI = "OPENAI", "OpenAI"
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        GENERATED = "GENERATED", "Generated"
+        VALIDATED = "VALIDATED", "Validated"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        EXECUTING = "EXECUTING", "Executing"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    class ValidationStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PASSED = "PASSED", "Passed"
+        FAILED = "FAILED", "Failed"
+
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.CASCADE,
+        related_name="assessment_plans",
+    )
+    target_package = models.CharField(max_length=255)
+    planner_provider = models.CharField(
+        max_length=32,
+        choices=PlannerProvider.choices,
+    )
+    planner_model = models.CharField(max_length=128)
+    objective = models.CharField(max_length=500)
+    scope = models.TextField()
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    validation_status = models.CharField(
+        max_length=32,
+        choices=ValidationStatus.choices,
+        default=ValidationStatus.PENDING,
+    )
+    generated_plan = models.JSONField(default=dict, blank=True)
+    normalized_plan = models.JSONField(default=dict, blank=True)
+    validation_errors = models.JSONField(default=list, blank=True)
+    planner_input_hash = models.CharField(max_length=64, blank=True)
+    plan_hash = models.CharField(max_length=64, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_assessment_plans",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_assessment_plans",
+    )
+    validated_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["audit", "status"]),
+            models.Index(fields=["target_package", "status"]),
+            models.Index(fields=["validation_status", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Assessment plan {self.id} for {self.target_package}"
+
+
+class AssessmentPlanStep(models.Model):
+    class Status(models.TextChoices):
+        PROPOSED = "PROPOSED", "Proposed"
+        VALIDATED = "VALIDATED", "Validated"
+        APPROVED = "APPROVED", "Approved"
+        EXECUTING = "EXECUTING", "Executing"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+        SKIPPED = "SKIPPED", "Skipped"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    plan = models.ForeignKey(
+        AssessmentPlan,
+        on_delete=models.CASCADE,
+        related_name="steps",
+    )
+    sequence = models.PositiveIntegerField()
+    step_identifier = models.CharField(max_length=64)
+    objective = models.CharField(max_length=500)
+    rationale = models.TextField()
+    required_tools = models.JSONField(default=list)
+    tool_arguments = models.JSONField(default=dict, blank=True)
+    expected_observation = models.TextField()
+    success_condition = models.TextField()
+    evidence_requirements = models.JSONField(default=list)
+    dependencies = models.JSONField(default=list)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.PROPOSED,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["plan", "sequence"]
+        indexes = [
+            models.Index(fields=["plan", "status"]),
+            models.Index(fields=["plan", "sequence"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plan", "sequence"],
+                name="unique_assessment_plan_step_sequence",
+            ),
+            models.UniqueConstraint(
+                fields=["plan", "step_identifier"],
+                name="unique_assessment_plan_step_identifier",
+            ),
+            models.CheckConstraint(
+                condition=Q(sequence__gte=1),
+                name="assessment_plan_step_sequence_gte_1",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.step_identifier} for assessment plan {self.plan_id}"

@@ -89,14 +89,14 @@ Use **Refresh Packages** to reload the bounded installed-package inventory.
 Viewer accounts can inspect status, package inventory, and screenshots but
 cannot install or mutate packages.
 
-## Agentic Dynamic Assessment sandbox foundation
+## Agentic Dynamic Assessment mobile tools
 
-Sprint C retains the one deterministic readiness workflow and adds an optional
-per-run container boundary:
+Sprint C2 retains the readiness workflow and adds the deterministic Basic App
+Interaction Check to both runtime modes:
 
 1. Select **Internal Controller** and confirm the card reports **Foundation
    available**.
-2. As an Analyst or Admin, click **Run Device Readiness Check** and confirm it
+2. As an Analyst or Admin, select **Device Readiness Check**, run it, and confirm it
    succeeds.
 3. Confirm the persisted run contains exactly `get_device_status` followed by
    `take_screenshot`.
@@ -110,6 +110,14 @@ per-run container boundary:
    screenshot metadata remains visible.
 8. Inspect the bounded backend logs and confirm no host-agent token or run token
    was emitted. Confirm there is still no prompt or chat control.
+9. Select **Basic App Interaction Check**, an audit, and either a verified APK
+   or an installed authorized package.
+10. Run without tap/text. Confirm launch, screenshot, UI hierarchy, bounded
+    logcat, explicit tap/text `SKIPPED` steps, and force stop.
+11. Optionally repeat with simple authorized tap coordinates. Do not enter
+    credentials in the text field, clear data, or uninstall for this check.
+12. Confirm the result says evidence only and makes no vulnerability or malware
+    verdict.
 
 Viewer accounts can inspect existing runtimes, runs, steps, and artifact
 metadata but cannot start a run. The page has no freeform prompt, agent chat,
@@ -118,6 +126,28 @@ custom tool selector, or autonomous pentesting control.
 To fall back, select **Internal Controller**. To disable all future container
 launches, restart the backend with `MSAP_AGENT_CONTAINER_ENABLED=false`; the UI
 will show **Container Sandbox (Unavailable)**.
+
+## AI Assessment Planner
+
+Sprint D adds a separate **PLAN ONLY** section and does not replace the existing
+deterministic run controls:
+
+1. Select the AndroGoat audit and `owasp.sat.agoat` from the verified-package
+   targets.
+2. Keep or edit the bounded objective and scope.
+3. Click **Generate Plan** and inspect six structured steps.
+4. Confirm every visible tool is one of the existing gateway tools and that the
+   plan includes expected observations, success conditions, evidence, and
+   dependencies.
+5. Click **Validate Plan** and then **Approve Plan**.
+6. Confirm the final state is `APPROVED` and the page explicitly says approval
+   does not execute anything.
+7. Confirm the AgentRun count and emulator foreground/PID/UI state did not
+   change during generation, validation, or approval.
+
+Local demo mode uses the deterministic provider and requires no OpenAI key. The
+OpenAI provider is backend-only, is configured for `gpt-5.5`, and returns the
+same strict plan schema. Viewer can inspect plans but cannot mutate them.
 
 ## Operational checks
 
@@ -141,19 +171,19 @@ launch, force stop, clear data, and uninstall actions.
 - The host agent uses argument arrays and never invokes `shell=True`.
 - The host-agent token is server-side only and is redacted from propagated
   errors.
-- The sandbox receives only a run ID, fixed objective, gateway URL, and
-  short-lived run token. It receives no host-agent, database, MinIO, or OpenAI
-  credential.
+- The sandbox receives only a run ID, fixed objective, bounded validated
+  objective input, gateway URL, and short-lived run token. It receives no
+  host-agent, database, MinIO, or OpenAI credential.
 - The container is non-root, non-privileged, read-only, capability-free,
   resource-bounded, and receives no repository, home, Docker-socket, `.env`, or
   SSH mount.
 - Clear Data and Uninstall require browser confirmation.
 - Analyst or administrator access is required for device mutation.
 
-## Future planner placeholder
+## Future execution-agent boundary
 
-A later sprint may add a planner with `planner_provider = OPENAI` and
-`planner_model = GPT-5.5`. No OpenAI dependency, key, or network call exists in
-Sprint C. The future planner must return tool-plan JSON, never receive the
-host-agent token, and only request allowlisted tools. Django remains responsible
-for validating and executing every requested tool and auditing every call.
+Sprint D implements the GPT-5.5-compatible planner boundary but no autonomous
+execution agent. A future execution agent may consume only an approved plan,
+must use the run-scoped gateway, and must never receive host-agent, database,
+MinIO, Docker, shell, repository, or provider credentials. Django remains
+responsible for validating and auditing every future tool call.

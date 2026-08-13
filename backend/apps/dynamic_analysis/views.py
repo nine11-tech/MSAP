@@ -20,6 +20,7 @@ from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
     AgentRun,
     AgentRuntime,
+    AssessmentPlan,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -43,6 +44,9 @@ from apps.dynamic_analysis.serializers import (
     AgentRuntimeSerializer,
     AgentRunStepSerializer,
     AgentToolCallSerializer,
+    AssessmentPlanCreateSerializer,
+    AssessmentPlanSerializer,
+    StrictEmptySerializer,
     DynamicAnalysisJobSerializer,
     DynamicDeviceCapabilitySerializer,
     DynamicDeviceEventSerializer,
@@ -75,6 +79,10 @@ from apps.dynamic_analysis.services.agent_controller import (
 from apps.dynamic_analysis.services.agent_gateway import (
     AgentGatewayRequestError,
     execute_run_tool_call,
+)
+from apps.dynamic_analysis.services.assessment_planner import (
+    AssessmentPlannerError,
+    AssessmentPlannerService,
 )
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
@@ -536,6 +544,93 @@ class AgentRuntimeViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsMSAPViewerOrAbove]
 
 
+class AssessmentPlanViewSet(
+    DynamicFilterMixin,
+    mixins.CreateModelMixin,
+    viewsets.ReadOnlyModelViewSet,
+):
+    queryset = AssessmentPlan.objects.select_related(
+        "audit",
+        "created_by",
+        "approved_by",
+    ).prefetch_related("steps")
+    serializer_class = AssessmentPlanSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+    filter_fields = (
+        "audit",
+        "target_package",
+        "status",
+        "validation_status",
+        "planner_provider",
+    )
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsMSAPAnalystOrAdmin]
+            if self.action in {"create", "validate_plan", "approve"}
+            else [IsMSAPViewerOrAbove]
+        )
+        return [permission() for permission in permission_classes]
+
+    @extend_schema(
+        request=AssessmentPlanCreateSerializer,
+        responses={201: AssessmentPlanSerializer},
+    )
+    def create(self, request, *args, **kwargs):
+        serializer = AssessmentPlanCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            plan = AssessmentPlannerService().generate(
+                audit=serializer.validated_data["audit"],
+                target_package=serializer.validated_data["target_package"],
+                objective=serializer.validated_data["objective"],
+                scope=serializer.validated_data["scope"],
+                requested_by=request.user,
+            )
+        except AssessmentPlannerError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            AssessmentPlanSerializer(plan, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: AssessmentPlanSerializer})
+    @action(detail=True, methods=["post"], url_path="validate")
+    def validate_plan(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = self.get_object()
+        try:
+            plan = AssessmentPlannerService().validate(plan)
+        except AssessmentPlannerError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(AssessmentPlanSerializer(plan, context={"request": request}).data)
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: AssessmentPlanSerializer})
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = self.get_object()
+        try:
+            plan = AssessmentPlannerService().approve(
+                plan,
+                approved_by=request.user,
+            )
+        except AssessmentPlannerError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(AssessmentPlanSerializer(plan, context={"request": request}).data)
+
+
 class AgentRunViewSet(
     DynamicFilterMixin,
     mixins.CreateModelMixin,
@@ -571,6 +666,7 @@ class AgentRunViewSet(
             run = AgentController().run(
                 objective=serializer.validated_data["objective"],
                 audit=serializer.validated_data.get("audit"),
+                objective_input=serializer.validated_data.get("objective_input", {}),
                 requested_by=request.user,
                 runtime_type=serializer.validated_data["runtime_type"],
             )

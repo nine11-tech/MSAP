@@ -4,11 +4,14 @@ from rest_framework import serializers
 
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
+from apps.storage.models import ObjectStorageReference
 from apps.dynamic_analysis.models import (
     AgentRun,
     AgentRunArtifact,
     AgentRuntime,
     AgentRunStep,
+    AssessmentPlan,
+    AssessmentPlanStep,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -26,6 +29,41 @@ from apps.dynamic_analysis.models import (
 ANDROID_PACKAGE_NAME_RE = re.compile(
     r"^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+$"
 )
+SAFE_AGENT_TEXT_RE = re.compile(r"^[A-Za-z0-9 @._,:+!?/\-]{1,128}$")
+MAX_FRIDA_SCRIPT_BYTES = 32 * 1024
+
+
+class AssessmentPlanCreateSerializer(serializers.Serializer):
+    audit = serializers.PrimaryKeyRelatedField(queryset=Audit.objects.all())
+    target_package = serializers.CharField(max_length=255)
+    objective = serializers.CharField(max_length=500, trim_whitespace=True)
+    scope = serializers.CharField(max_length=2000, trim_whitespace=True)
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"audit", "target_package", "objective", "scope"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+    def validate_target_package(self, value):
+        if not ANDROID_PACKAGE_NAME_RE.fullmatch(value):
+            raise serializers.ValidationError("Invalid Android package name.")
+        return value
+
+
+class StrictEmptySerializer(serializers.Serializer):
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        if data:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in sorted(data)}
+            )
+        return {}
 
 
 class DynamicHostAgentPackageActionSerializer(serializers.Serializer):
@@ -53,16 +91,263 @@ class AgentRunCreateSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    objective_input = serializers.JSONField(required=False, default=dict)
 
     def to_internal_value(self, data):
         if not isinstance(data, dict):
             raise serializers.ValidationError("Request body must be a JSON object.")
-        unexpected = sorted(set(data) - {"objective", "runtime_type", "audit"})
+        unexpected = sorted(
+            set(data) - {"objective", "runtime_type", "audit", "objective_input"}
+        )
         if unexpected:
             raise serializers.ValidationError(
                 {key: "This field is not permitted." for key in unexpected}
             )
         return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        objective = attrs["objective"]
+        objective_input = attrs.get("objective_input", {})
+        if not isinstance(objective_input, dict):
+            raise serializers.ValidationError(
+                {"objective_input": "This field must be a JSON object."}
+            )
+        if objective == AgentRun.Objective.DEVICE_READINESS_CHECK:
+            if objective_input:
+                raise serializers.ValidationError(
+                    {"objective_input": "Device readiness does not accept objective input."}
+                )
+            return attrs
+        if objective in {
+            AgentRun.Objective.FRIDA_RUNTIME_ACTION,
+            AgentRun.Objective.FRIDA_RUNTIME_UI_MODIFICATION_PROOF,
+            AgentRun.Objective.FRIDA_CUSTOM_SCRIPT,
+        }:
+            return _validate_frida_objective(attrs, objective, objective_input)
+
+        allowed = {"audit_id", "apk_file_id", "package_name", "tap", "text"}
+        unexpected = sorted(set(objective_input) - allowed)
+        if unexpected:
+            raise serializers.ValidationError(
+                {
+                    "objective_input": {
+                        key: "This field is not permitted." for key in unexpected
+                    }
+                }
+            )
+        audit_id = objective_input.get("audit_id")
+        if isinstance(audit_id, bool) or not isinstance(audit_id, int) or audit_id < 1:
+            raise serializers.ValidationError(
+                {"objective_input": {"audit_id": "A positive audit_id is required."}}
+            )
+        audit = Audit.objects.filter(pk=audit_id).first()
+        if audit is None:
+            raise serializers.ValidationError(
+                {"objective_input": {"audit_id": "Audit does not exist."}}
+            )
+        top_level_audit = attrs.get("audit")
+        if top_level_audit is not None and top_level_audit.pk != audit.pk:
+            raise serializers.ValidationError(
+                {"audit": "Audit must match objective_input.audit_id."}
+            )
+
+        apk_file_id = objective_input.get("apk_file_id")
+        package_name = objective_input.get("package_name")
+        if (apk_file_id is None) == (package_name is None):
+            raise serializers.ValidationError(
+                {
+                    "objective_input": (
+                        "Provide exactly one of apk_file_id or package_name."
+                    )
+                }
+            )
+        normalized = {"audit_id": audit.pk}
+        if apk_file_id is not None:
+            if (
+                isinstance(apk_file_id, bool)
+                or not isinstance(apk_file_id, int)
+                or apk_file_id < 1
+            ):
+                raise serializers.ValidationError(
+                    {"objective_input": {"apk_file_id": "Must be a positive integer."}}
+                )
+            apk_file = APKFile.objects.filter(pk=apk_file_id, audit=audit).first()
+            if apk_file is None:
+                raise serializers.ValidationError(
+                    {
+                        "objective_input": {
+                            "apk_file_id": "APK file must belong to the selected audit."
+                        }
+                    }
+                )
+            normalized["apk_file_id"] = apk_file.pk
+        else:
+            if not isinstance(package_name, str) or not ANDROID_PACKAGE_NAME_RE.fullmatch(
+                package_name
+            ):
+                raise serializers.ValidationError(
+                    {
+                        "objective_input": {
+                            "package_name": "Invalid Android package name."
+                        }
+                    }
+                )
+            normalized["package_name"] = package_name
+
+        tap = objective_input.get("tap")
+        if tap is not None:
+            if not isinstance(tap, dict) or set(tap) != {"x", "y"}:
+                raise serializers.ValidationError(
+                    {"objective_input": {"tap": "Tap requires only integer x and y."}}
+                )
+            for coordinate in ("x", "y"):
+                value = tap.get(coordinate)
+                if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 10000:
+                    raise serializers.ValidationError(
+                        {
+                            "objective_input": {
+                                "tap": f"{coordinate} must be an integer from 0 to 10000."
+                            }
+                        }
+                    )
+            normalized["tap"] = {"x": tap["x"], "y": tap["y"]}
+
+        text = objective_input.get("text")
+        if text is not None:
+            if not isinstance(text, str) or not 1 <= len(text) <= 128:
+                raise serializers.ValidationError(
+                    {"objective_input": {"text": "Text must contain 1 to 128 characters."}}
+                )
+            if any(ord(character) < 32 or ord(character) == 127 for character in text):
+                raise serializers.ValidationError(
+                    {"objective_input": {"text": "Text cannot contain control characters."}}
+                )
+            if not SAFE_AGENT_TEXT_RE.fullmatch(text):
+                raise serializers.ValidationError(
+                    {
+                        "objective_input": {
+                            "text": "Text contains characters that cannot be typed safely."
+                        }
+                    }
+                )
+            normalized["text"] = text
+
+        attrs["audit"] = audit
+        attrs["objective_input"] = normalized
+        return attrs
+
+
+def _validate_frida_objective(attrs, objective: str, objective_input: dict):
+    common = {"audit_id", "package_name"}
+    allowed_by_objective = {
+        AgentRun.Objective.FRIDA_RUNTIME_ACTION: common
+        | {"operation", "mode", "timeout"},
+        AgentRun.Objective.FRIDA_RUNTIME_UI_MODIFICATION_PROOF: common,
+        AgentRun.Objective.FRIDA_CUSTOM_SCRIPT: common
+        | {"mode", "source", "timeout", "capture_logcat", "confirm"},
+    }
+    unexpected = sorted(set(objective_input) - allowed_by_objective[objective])
+    if unexpected:
+        raise serializers.ValidationError(
+            {
+                "objective_input": {
+                    key: "This field is not permitted." for key in unexpected
+                }
+            }
+        )
+    audit_id = objective_input.get("audit_id")
+    if isinstance(audit_id, bool) or not isinstance(audit_id, int) or audit_id < 1:
+        raise serializers.ValidationError(
+            {"objective_input": {"audit_id": "A positive audit_id is required."}}
+        )
+    audit = Audit.objects.filter(pk=audit_id).first()
+    if audit is None:
+        raise serializers.ValidationError(
+            {"objective_input": {"audit_id": "Audit does not exist."}}
+        )
+    if attrs.get("audit") is not None and attrs["audit"].pk != audit.pk:
+        raise serializers.ValidationError(
+            {"audit": "Audit must match objective_input.audit_id."}
+        )
+    package_name = objective_input.get("package_name")
+    if not isinstance(package_name, str) or not ANDROID_PACKAGE_NAME_RE.fullmatch(
+        package_name
+    ):
+        raise serializers.ValidationError(
+            {"objective_input": {"package_name": "Invalid Android package name."}}
+        )
+    # Installed-package objectives are explicitly authorized by an
+    # Analyst/Admin for this audit and the host agent independently requires
+    # the exact package to exist on the managed emulator. APK installation
+    # remains separately audit-owned and VERIFIED-only.
+    normalized = {"audit_id": audit.pk, "package_name": package_name}
+    if objective == AgentRun.Objective.FRIDA_RUNTIME_ACTION:
+        operation = objective_input.get("operation")
+        if operation not in {"status", "setup", "ps", "attach"}:
+            raise serializers.ValidationError(
+                {
+                    "objective_input": {
+                        "operation": "Use status, setup, ps, or attach."
+                    }
+                }
+            )
+        normalized["operation"] = operation
+        mode = objective_input.get("mode", "attach")
+        timeout = objective_input.get("timeout", 10)
+        if mode not in {"attach", "spawn"}:
+            raise serializers.ValidationError(
+                {"objective_input": {"mode": "Use attach or spawn."}}
+            )
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 30:
+            raise serializers.ValidationError(
+                {"objective_input": {"timeout": "Must be an integer from 1 to 30."}}
+            )
+        normalized.update({"mode": mode, "timeout": timeout})
+    elif objective == AgentRun.Objective.FRIDA_CUSTOM_SCRIPT:
+        if objective_input.get("confirm") is not True:
+            raise serializers.ValidationError(
+                {"objective_input": {"confirm": "Custom script execution requires confirm=true."}}
+            )
+        source = objective_input.get("source")
+        if not isinstance(source, str) or not source.strip():
+            raise serializers.ValidationError(
+                {"objective_input": {"source": "JavaScript source cannot be empty."}}
+            )
+        if "\x00" in source or len(source.encode("utf-8")) > MAX_FRIDA_SCRIPT_BYTES:
+            raise serializers.ValidationError(
+                {
+                    "objective_input": {
+                        "source": f"JavaScript must be at most {MAX_FRIDA_SCRIPT_BYTES} bytes with no NUL characters."
+                    }
+                }
+            )
+        mode = objective_input.get("mode", "attach")
+        timeout = objective_input.get("timeout", 12)
+        capture_logcat = objective_input.get("capture_logcat", True)
+        if mode not in {"attach", "spawn"}:
+            raise serializers.ValidationError(
+                {"objective_input": {"mode": "Use attach or spawn."}}
+            )
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= 30:
+            raise serializers.ValidationError(
+                {"objective_input": {"timeout": "Must be an integer from 1 to 30."}}
+            )
+        if not isinstance(capture_logcat, bool):
+            raise serializers.ValidationError(
+                {"objective_input": {"capture_logcat": "Must be a boolean."}}
+            )
+        normalized.update(
+            {
+                "mode": mode,
+                "source": source,
+                "timeout": timeout,
+                "capture_logcat": capture_logcat,
+                "confirm": True,
+            }
+        )
+    attrs["audit"] = audit
+    attrs["objective_input"] = normalized
+    return attrs
 
 
 class AgentToolCallSerializer(serializers.Serializer):
@@ -194,6 +479,21 @@ class AgentRunStepSerializer(serializers.ModelSerializer):
 
 
 class AgentRunArtifactSerializer(serializers.ModelSerializer):
+    download_url = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_download_url(artifact):
+        reference = artifact.object_reference
+        if reference is None or reference.storage_status != ObjectStorageReference.StorageStatus.VERIFIED:
+            return ""
+        from apps.storage.services.minio_storage import MinIOStorageService
+
+        return MinIOStorageService().generate_presigned_download_url(
+            reference.bucket,
+            reference.object_key,
+            expires_in=300,
+        )
+
     class Meta:
         model = AgentRunArtifact
         fields = [
@@ -204,8 +504,75 @@ class AgentRunArtifactSerializer(serializers.ModelSerializer):
             "name",
             "content_type",
             "object_reference",
+            "download_url",
             "metadata",
             "created_at",
+        ]
+        read_only_fields = fields
+
+
+class AssessmentPlanStepSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AssessmentPlanStep
+        fields = [
+            "id",
+            "plan",
+            "sequence",
+            "step_identifier",
+            "objective",
+            "rationale",
+            "required_tools",
+            "tool_arguments",
+            "expected_observation",
+            "success_condition",
+            "evidence_requirements",
+            "dependencies",
+            "status",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class AssessmentPlanSerializer(serializers.ModelSerializer):
+    steps = AssessmentPlanStepSerializer(many=True, read_only=True)
+    created_by_username = serializers.CharField(
+        source="created_by.username",
+        read_only=True,
+        allow_null=True,
+    )
+    approved_by_username = serializers.CharField(
+        source="approved_by.username",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = AssessmentPlan
+        fields = [
+            "id",
+            "audit",
+            "target_package",
+            "planner_provider",
+            "planner_model",
+            "objective",
+            "scope",
+            "status",
+            "validation_status",
+            "generated_plan",
+            "normalized_plan",
+            "validation_errors",
+            "planner_input_hash",
+            "plan_hash",
+            "created_by",
+            "created_by_username",
+            "approved_by",
+            "approved_by_username",
+            "validated_at",
+            "approved_at",
+            "created_at",
+            "updated_at",
+            "steps",
         ]
         read_only_fields = fields
 

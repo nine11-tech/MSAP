@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 import re
 import subprocess
@@ -17,6 +18,7 @@ _RUN_ENVIRONMENT_KEYS = (
     "MSAP_AGENT_GATEWAY_URL",
     "MSAP_AGENT_RUN_TOKEN",
     "MSAP_AGENT_OBJECTIVE",
+    "MSAP_AGENT_OBJECTIVE_INPUT",
 )
 
 
@@ -39,7 +41,13 @@ class ContainerLaunch:
 def build_container_launch(*, run: AgentRun, run_token: str) -> ContainerLaunch:
     """Build a fixed, operator-configured Docker invocation for one run."""
 
-    if run.objective != AgentRun.Objective.DEVICE_READINESS_CHECK:
+    if run.objective not in {
+        AgentRun.Objective.DEVICE_READINESS_CHECK,
+        AgentRun.Objective.BASIC_APP_INTERACTION_CHECK,
+        AgentRun.Objective.FRIDA_RUNTIME_ACTION,
+        AgentRun.Objective.FRIDA_RUNTIME_UI_MODIFICATION_PROOF,
+        AgentRun.Objective.FRIDA_CUSTOM_SCRIPT,
+    }:
         raise ContainerRuntimeError("The sandbox objective is not supported.")
     image = _validated_docker_resource(
         settings.MSAP_AGENT_CONTAINER_IMAGE,
@@ -58,7 +66,12 @@ def build_container_launch(*, run: AgentRun, run_token: str) -> ContainerLaunch:
         "MSAP_AGENT_GATEWAY_URL": gateway_url,
         "MSAP_AGENT_RUN_TOKEN": run_token,
         "MSAP_AGENT_OBJECTIVE": run.objective,
+        "MSAP_AGENT_OBJECTIVE_INPUT": json.dumps(
+            run.objective_input or {}, separators=(",", ":"), sort_keys=True
+        ),
     }
+    if len(container_environment["MSAP_AGENT_OBJECTIVE_INPUT"].encode("utf-8")) > 40 * 1024:
+        raise ContainerRuntimeError("The bounded objective input is too large.")
     argv = [
         "docker",
         "run",

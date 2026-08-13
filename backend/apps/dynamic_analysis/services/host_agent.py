@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
@@ -14,11 +15,14 @@ import subprocess
 import tempfile
 import threading
 import time
+from uuid import uuid4
 from urllib.parse import urlsplit
+from xml.etree import ElementTree
 
 from django.conf import settings
 
 from apps.dynamic_analysis.services.local_scripts import _redacted_preview
+from apps.dynamic_analysis.services.frida_runtime import FridaRuntime, FridaRuntimeError
 
 
 logger = logging.getLogger("msap.security")
@@ -34,10 +38,18 @@ ACTIVITY_COMPONENT_RE = re.compile(
 )
 SHA256_RE = re.compile(r"^[a-fA-F0-9]{64}$")
 APK_ZIP_PREFIXES = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
-MAX_JSON_BODY_BYTES = 16 * 1024
+MAX_JSON_BODY_BYTES = 48 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 256 * 1024
 MAX_SCREENSHOT_BYTES = 24 * 1024 * 1024
 MAX_PACKAGES = 5000
+MAX_AGENT_PACKAGES = 500
+MAX_UI_XML_BYTES = 256 * 1024
+MAX_UI_VALUES = 100
+UI_DUMP_DEVICE_PATH = "/data/local/tmp/msap-ui-hierarchy.xml"
+MAX_LOGCAT_BYTES = 128 * 1024
+MAX_LOGCAT_LINES = 500
+MAX_LOGCAT_CAPTURES = 20
+SAFE_INPUT_TEXT_RE = re.compile(r"^[A-Za-z0-9 @._,:+!?/\-]{1,128}$")
 
 class HostAgentRequestError(ValueError):
     def __init__(self, message: str, status_code: int = HTTPStatus.BAD_REQUEST):
@@ -53,6 +65,8 @@ class DynamicHostAgent:
             raise ValueError("A non-empty dynamic host-agent token is required.")
         self.token = token
         self.serial = serial or settings.MSAP_DYNAMIC_ADB_SERIAL
+        self._logcat_captures: dict[str, dict] = {}
+        self._capture_lock = threading.Lock()
 
     def health(self) -> dict:
         adb_path = self._adb_path()
@@ -162,26 +176,411 @@ class DynamicHostAgent:
             )
         return screenshot
 
-    def list_packages(self) -> dict:
+    def frida_status(self, body: dict) -> dict:
+        if set(body) != {"package_name"}:
+            raise HostAgentRequestError("frida-status requires only package_name.")
+        package_name = self._validated_package(body.get("package_name"))
+        return self._frida_call(self._frida_runtime().status, package_name)
+
+    def frida_setup(self, body: dict) -> dict:
+        if set(body) != {"package_name"}:
+            raise HostAgentRequestError("frida-setup requires only package_name.")
+        package_name = self._validated_package(body.get("package_name"))
+        return self._frida_call(self._frida_runtime().setup, package_name)
+
+    def frida_ps(self, body: dict) -> dict:
+        if body:
+            raise HostAgentRequestError("frida-ps does not accept arguments.")
+        return self._frida_call(self._frida_runtime().ps)
+
+    def frida_attach(self, body: dict) -> dict:
+        if set(body) != {"package_name", "mode", "timeout"}:
+            raise HostAgentRequestError(
+                "frida-attach requires package_name, mode, and timeout."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        mode = body.get("mode")
+        if mode not in {"attach", "spawn"}:
+            raise HostAgentRequestError("Frida attach mode must be attach or spawn.")
+        timeout_seconds = _bounded_integer(body.get("timeout"), 1, 30, "timeout")
+        return self._frida_call(
+            self._frida_runtime().attach,
+            package_name,
+            mode,
+            timeout_seconds,
+        )
+
+    def frida_run_js(self, body: dict) -> dict:
+        required = {
+            "package_name",
+            "mode",
+            "source",
+            "timeout",
+            "capture_logcat",
+            "capture_screenshot",
+        }
+        if set(body) != required:
+            raise HostAgentRequestError(
+                "frida-run-js requires package_name, mode, source, timeout, "
+                "capture_logcat, and capture_screenshot."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        return self._frida_call(
+            self._frida_runtime().run_js,
+            package_name=package_name,
+            mode=body.get("mode"),
+            source=body.get("source"),
+            timeout_seconds=body.get("timeout"),
+            capture_logcat=body.get("capture_logcat"),
+            capture_screenshot=body.get("capture_screenshot"),
+        )
+
+    def _frida_runtime(self) -> FridaRuntime:
+        return FridaRuntime(
+            serial=self.serial,
+            run_adb=self._run_adb,
+            run_adb_binary=self._run_adb_binary,
+            adb_text=self._adb_text,
+            run_command=self._run_command,
+            screenshot=self.screenshot,
+            device_status=self.devices,
+            require_installed_package=self._require_installed_package,
+            package_pid=self._package_pid,
+        )
+
+    @staticmethod
+    def _frida_call(callback, *args, **kwargs) -> dict:
+        try:
+            return callback(*args, **kwargs)
+        except FridaRuntimeError as exc:
+            raise HostAgentRequestError(str(exc), exc.status_code) from exc
+
+    def list_packages(self, body: dict | None = None) -> dict:
+        body = body or {}
+        if set(body) - {"include_system"}:
+            raise HostAgentRequestError("list-packages accepts only include_system.")
+        detailed = "include_system" in body
+        include_system = body.get("include_system", True)
+        if not isinstance(include_system, bool):
+            raise HostAgentRequestError("include_system must be a boolean.")
+        args = ["shell", "pm", "list", "packages"]
+        if not include_system:
+            args.append("-3")
         result = self._run_adb(
-            "shell", "pm", "list", "packages", timeout_seconds=30
+            *args, timeout_seconds=30
         )
         packages = []
         for line in result["stdout_preview"].splitlines():
             package_name = line.strip().removeprefix("package:")
             if PACKAGE_NAME_RE.fullmatch(package_name):
                 packages.append(package_name)
-            if len(packages) >= MAX_PACKAGES:
+            if len(packages) >= (MAX_AGENT_PACKAGES if detailed else MAX_PACKAGES):
                 break
+        package_output: list[str] | list[dict]
+        if detailed:
+            system_packages: set[str] = set()
+            if include_system:
+                system_result = self._run_adb(
+                    "shell", "pm", "list", "packages", "-s", timeout_seconds=30
+                )
+                for line in system_result["stdout_preview"].splitlines():
+                    candidate = line.strip().removeprefix("package:")
+                    if PACKAGE_NAME_RE.fullmatch(candidate):
+                        system_packages.add(candidate)
+            package_output = [
+                {
+                    "package_name": package_name,
+                    "version_name": "",
+                    "version_code": None,
+                    "is_system": package_name in system_packages if include_system else False,
+                }
+                for package_name in packages
+            ]
+        else:
+            package_output = packages
         return {
             "success": result["return_code"] == 0,
             "serial": self.serial,
             "count": len(packages),
-            "packages": packages,
-            "truncated": len(packages) >= MAX_PACKAGES,
+            "packages": package_output,
+            "truncated": len(packages) >= (MAX_AGENT_PACKAGES if detailed else MAX_PACKAGES),
             "return_code": result["return_code"],
             "duration_seconds": result["duration_seconds"],
         }
+
+    def bounded_logcat_capture(self, body: dict) -> dict:
+        if set(body) != {"package_name", "reason", "max_seconds"}:
+            raise HostAgentRequestError(
+                "logcat-bounded-capture requires package_name, reason, and max_seconds."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        if body.get("reason") not in {"manual_observation", "agent_step"}:
+            raise HostAgentRequestError("Invalid logcat capture reason.")
+        max_seconds = _bounded_integer(body.get("max_seconds"), 1, 60, "max_seconds")
+        self._require_installed_package(package_name)
+        pid_output = self._adb_text("shell", "pidof", package_name, timeout_seconds=10)
+        pid = next((value for value in pid_output.split() if value.isascii() and value.isdigit()), "")
+        args = ["exec-out", "logcat", "-d", "-v", "threadtime", "-t", "1000"]
+        if pid:
+            args.extend(["--pid", pid])
+        started_at = datetime.now(timezone.utc).isoformat()
+        result = self._run_adb_binary(
+            *args,
+            timeout_seconds=max_seconds,
+            max_output_bytes=MAX_LOGCAT_BYTES + 1,
+        )
+        raw = result["stdout"][:MAX_LOGCAT_BYTES]
+        preview, redaction_applied = _redacted_preview(
+            raw.decode("utf-8", errors="replace")
+        )
+        lines = preview.replace("\r", "").splitlines()[:MAX_LOGCAT_LINES]
+        collector_id = uuid4().hex
+        capture = {
+            "collector_id": collector_id,
+            "started_at": started_at,
+            "max_seconds": max_seconds,
+            "package_name": package_name,
+            "package_filter_applied": bool(pid),
+            "lines": lines,
+            "redaction_applied": bool(redaction_applied),
+            "truncated": len(result["stdout"]) > MAX_LOGCAT_BYTES,
+        }
+        with self._capture_lock:
+            while len(self._logcat_captures) >= MAX_LOGCAT_CAPTURES:
+                oldest = next(iter(self._logcat_captures))
+                self._logcat_captures.pop(oldest, None)
+            self._logcat_captures[collector_id] = capture
+        return {
+            "success": result["return_code"] == 0,
+            "status": "PASS" if result["return_code"] == 0 else "FAIL",
+            "collector_id": collector_id,
+            "started_at": started_at,
+            "max_seconds": max_seconds,
+            "package_filter_applied": bool(pid),
+        }
+
+    def stop_logcat(self, body: dict) -> dict:
+        collector_id = self._validated_collector_body(body, allow_max_lines=False)
+        with self._capture_lock:
+            if collector_id not in self._logcat_captures:
+                raise HostAgentRequestError("Unknown bounded logcat collector_id.", HTTPStatus.NOT_FOUND)
+        return {
+            "collector_id": collector_id,
+            "stopped": False,
+            "supported": False,
+            "status": "UNSUPPORTED_BOUNDED_CAPTURE",
+            "detail": "The bounded capture already completed; there is no live collector to stop.",
+        }
+
+    def logcat_excerpt(self, body: dict) -> dict:
+        collector_id = self._validated_collector_body(body, allow_max_lines=True)
+        max_lines = _bounded_integer(body.get("max_lines"), 1, 100, "max_lines")
+        with self._capture_lock:
+            capture = self._logcat_captures.get(collector_id)
+        if capture is None:
+            raise HostAgentRequestError("Unknown bounded logcat collector_id.", HTTPStatus.NOT_FOUND)
+        lines = list(capture["lines"][:max_lines])
+        return {
+            "collector_id": collector_id,
+            "line_count": len(lines),
+            "lines": lines,
+            "redaction_applied": bool(capture["redaction_applied"]),
+        }
+
+    def ui_dump(self, body: dict) -> dict:
+        if set(body) != {"package_name"}:
+            raise HostAgentRequestError("ui-dump requires only package_name.")
+        package_name = self._validated_package(body.get("package_name"))
+        self._require_installed_package(package_name)
+        pid = self._package_pid(package_name)
+        if not pid:
+            raise HostAgentRequestError(
+                f"Target package is installed but not running: {package_name}",
+                HTTPStatus.CONFLICT,
+            )
+        focused_package, focused_activity = self._foreground_component()
+        dump_result = self._run_adb(
+            "shell",
+            "uiautomator",
+            "dump",
+            "--compressed",
+            UI_DUMP_DEVICE_PATH,
+            timeout_seconds=30,
+        )
+        if dump_result["return_code"] != 0:
+            raise HostAgentRequestError(
+                "Android UI hierarchy command failed before producing XML.",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        try:
+            result = self._run_adb_binary(
+                "exec-out",
+                "cat",
+                UI_DUMP_DEVICE_PATH,
+                timeout_seconds=15,
+                max_output_bytes=MAX_UI_XML_BYTES + 1,
+            )
+        finally:
+            self._run_adb(
+                "shell",
+                "rm",
+                "-f",
+                UI_DUMP_DEVICE_PATH,
+                timeout_seconds=10,
+            )
+        if result["return_code"] != 0 or not result["stdout"]:
+            raise HostAgentRequestError(
+                "Android UI hierarchy XML was not available after capture.",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        if len(result["stdout"]) > MAX_UI_XML_BYTES:
+            raise HostAgentRequestError(
+                "Android UI hierarchy exceeded the response limit.",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        xml_bytes = result["stdout"]
+        decoded = xml_bytes.decode("utf-8", errors="strict").strip()
+        xml_start = decoded.find("<?xml")
+        if xml_start < 0:
+            raise HostAgentRequestError(
+                "Android UI hierarchy response did not contain XML.",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        xml_payload = decoded[xml_start:]
+        text_values: list[str] = []
+        resource_ids: list[str] = []
+        try:
+            root = ElementTree.fromstring(xml_payload)
+        except (ElementTree.ParseError, UnicodeError) as exc:
+            raise HostAgentRequestError(
+                "Android UI hierarchy XML could not be parsed.",
+                HTTPStatus.BAD_GATEWAY,
+            ) from exc
+        nodes = list(root.iter("node"))
+        node_count = len(nodes)
+        if node_count == 0:
+            raise HostAgentRequestError(
+                "Android UI hierarchy XML was valid but contained zero nodes.",
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+            )
+        for node in nodes:
+            text_value = node.attrib.get("text", "").strip()
+            content_description = node.attrib.get("content-desc", "").strip()
+            resource_id = node.attrib.get("resource-id", "").strip()
+            visible_value = text_value or content_description
+            if visible_value and len(text_values) < MAX_UI_VALUES:
+                redacted_text, _was_redacted = _redacted_preview(visible_value)
+                text_values.append(redacted_text[:256])
+            if resource_id and len(resource_ids) < MAX_UI_VALUES:
+                resource_ids.append(resource_id[:255])
+        raw_preview, _redaction_applied = _redacted_preview(xml_payload)
+        return {
+            "success": True,
+            "status": "PASS",
+            "capture_status": "CAPTURED",
+            "reason": "",
+            "node_count": node_count,
+            "focused_package": focused_package,
+            "focused_activity": focused_activity,
+            "target_package_running": True,
+            "target_pid": int(pid),
+            "text_values": text_values,
+            "resource_ids": resource_ids,
+            "raw_preview": raw_preview[:8000],
+            "xml_sha256": sha256(xml_payload.encode("utf-8")).hexdigest(),
+        }
+
+    def _package_pid(self, package_name: str) -> str:
+        output = self._adb_text(
+            "shell", "pidof", package_name, timeout_seconds=10
+        )
+        return next(
+            (
+                value
+                for value in output.split()
+                if value.isascii() and value.isdigit() and int(value) > 0
+            ),
+            "",
+        )
+
+    def _foreground_component(self) -> tuple[str, str]:
+        window_output = self._adb_text(
+            "shell", "dumpsys", "window", timeout_seconds=15
+        )
+        package_name, activity = _focused_component(window_output)
+        if package_name:
+            return package_name, activity
+        activity_output = self._adb_text(
+            "shell", "dumpsys", "activity", "activities", timeout_seconds=15
+        )
+        package_name, activity = _focused_component(activity_output)
+        if package_name:
+            return package_name, activity
+        top_output = self._adb_text(
+            "shell", "dumpsys", "activity", "top", timeout_seconds=15
+        )
+        return _top_activity_component(top_output)
+
+    def tap(self, body: dict) -> dict:
+        if set(body) != {"x", "y", "reason"}:
+            raise HostAgentRequestError("tap requires x, y, and reason.")
+        if body.get("reason") not in {"manual_navigation", "agent_navigation"}:
+            raise HostAgentRequestError("Invalid tap reason.")
+        x = _bounded_integer(body.get("x"), 0, 10000, "x")
+        y = _bounded_integer(body.get("y"), 0, 10000, "y")
+        width, height = _screen_dimensions(
+            self._adb_text("shell", "wm", "size", timeout_seconds=10)
+        )
+        if width is not None and height is not None and (x >= width or y >= height):
+            raise HostAgentRequestError(
+                f"Tap coordinates must be within the {width}x{height} screen."
+            )
+        result = self._run_adb("shell", "input", "tap", str(x), str(y), timeout_seconds=10)
+        return {
+            "action": "tap",
+            "success": result["return_code"] == 0,
+            "status": "PASS" if result["return_code"] == 0 else "FAIL",
+            "x": x,
+            "y": y,
+        }
+
+    def type_text(self, body: dict) -> dict:
+        if set(body) != {"text", "reason"}:
+            raise HostAgentRequestError("type-text requires text and reason.")
+        text = body.get("text")
+        if not isinstance(text, str) or not SAFE_INPUT_TEXT_RE.fullmatch(text):
+            raise HostAgentRequestError(
+                "Text must be 1 to 128 safe printable characters with no controls."
+            )
+        if body.get("reason") not in {"manual_navigation", "agent_navigation"}:
+            raise HostAgentRequestError("Invalid text input reason.")
+        encoded_text = text.replace(" ", "%s")
+        result = self._run_adb(
+            "shell", "input", "text", encoded_text, timeout_seconds=10
+        )
+        return {
+            "action": "type-text",
+            "success": result["return_code"] == 0,
+            "status": "PASS" if result["return_code"] == 0 else "FAIL",
+            "length": len(text),
+            "preview_redacted": "[redacted]",
+        }
+
+    @staticmethod
+    def _validated_package(value) -> str:
+        if not isinstance(value, str) or not PACKAGE_NAME_RE.fullmatch(value):
+            raise HostAgentRequestError("A valid Android package name is required.")
+        return value
+
+    @staticmethod
+    def _validated_collector_body(body: dict, *, allow_max_lines: bool) -> str:
+        expected = {"collector_id", "max_lines"} if allow_max_lines else {"collector_id"}
+        if set(body) != expected:
+            raise HostAgentRequestError("Invalid bounded logcat request fields.")
+        collector_id = body.get("collector_id")
+        if not isinstance(collector_id, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", collector_id):
+            raise HostAgentRequestError("Invalid collector_id.")
+        return collector_id
 
     def package_action(self, action: str, body: dict) -> dict:
         package_name = body.get("package_name")
@@ -231,15 +630,20 @@ class DynamicHostAgent:
                 timeout_seconds=45,
             )
             launch_method = "bounded_monkey_fallback"
-        success = result["return_code"] == 0
+        command_succeeded = result["return_code"] == 0
         focused_app = ""
         focused_activity = ""
-        if success:
-            time.sleep(1)
-            focus_output = self._adb_text(
-                "shell", "dumpsys", "window", "windows", timeout_seconds=15
-            )
-            focused_app, focused_activity = _focused_component(focus_output)
+        target_pid = ""
+        if command_succeeded:
+            for _attempt in range(10):
+                target_pid = self._package_pid(package_name)
+                focused_app, focused_activity = self._foreground_component()
+                if target_pid and focused_app == package_name:
+                    break
+                time.sleep(0.25)
+        success = bool(
+            command_succeeded and target_pid and focused_app == package_name
+        )
         return {
             "action": "launch-package",
             "package_name": package_name,
@@ -249,6 +653,9 @@ class DynamicHostAgent:
             "launchable_activity": component,
             "focused_app": focused_app,
             "focused_activity": focused_activity,
+            "target_pid": int(target_pid) if target_pid else None,
+            "target_running": bool(target_pid),
+            "foreground_verified": focused_app == package_name,
             **_public_command_result(result),
         }
 
@@ -505,7 +912,12 @@ class DynamicHostAgent:
             timeout_seconds=timeout_seconds,
         )
 
-    def _run_adb_binary(self, *args: str, timeout_seconds: int) -> dict:
+    def _run_adb_binary(
+        self,
+        *args: str,
+        timeout_seconds: int,
+        max_output_bytes: int = MAX_SCREENSHOT_BYTES + 1,
+    ) -> dict:
         adb_path = self._adb_path()
         if not adb_path:
             raise HostAgentRequestError(
@@ -516,6 +928,7 @@ class DynamicHostAgent:
             [adb_path, "-s", self.serial, *args],
             timeout_seconds=timeout_seconds,
             binary=True,
+            max_output_bytes=max_output_bytes,
         )
 
     def _run_command(self, argv: list[str], *, timeout_seconds: int) -> dict:
@@ -560,8 +973,38 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                 self._send_png(self.server.agent.screenshot())
                 return
             if path == "/actions/list-packages":
-                self._require_empty_or_json_body()
-                self._send_json(HTTPStatus.OK, self.server.agent.list_packages())
+                body = self._read_json_body()
+                self._send_json(HTTPStatus.OK, self.server.agent.list_packages(body))
+                return
+            if path == "/actions/frida-status":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.frida_status(self._read_json_body()),
+                )
+                return
+            if path == "/actions/frida-setup":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.frida_setup(self._read_json_body()),
+                )
+                return
+            if path == "/actions/frida-ps":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.frida_ps(self._read_json_body()),
+                )
+                return
+            if path == "/actions/frida-attach":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.frida_attach(self._read_json_body()),
+                )
+                return
+            if path == "/actions/frida-run-js":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.frida_run_js(self._read_json_body()),
+                )
                 return
             if path in {
                 "/actions/launch-package",
@@ -574,6 +1017,42 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     self.server.agent.package_action(action_name, body),
+                )
+                return
+            if path == "/actions/logcat-bounded-capture":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.bounded_logcat_capture(self._read_json_body()),
+                )
+                return
+            if path == "/actions/logcat-stop":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.stop_logcat(self._read_json_body()),
+                )
+                return
+            if path == "/actions/logcat-excerpt":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.logcat_excerpt(self._read_json_body()),
+                )
+                return
+            if path == "/actions/ui-dump":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.ui_dump(self._read_json_body()),
+                )
+                return
+            if path == "/actions/tap":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.tap(self._read_json_body()),
+                )
+                return
+            if path == "/actions/type-text":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.type_text(self._read_json_body()),
                 )
                 return
             if path == "/actions/install-apk":
@@ -655,7 +1134,13 @@ def serve_dynamic_host_agent(*, host: str, port: int, token: str) -> None:
         server.server_close()
 
 
-def _run_process(argv: list[str], *, timeout_seconds: int, binary: bool) -> dict:
+def _run_process(
+    argv: list[str],
+    *,
+    timeout_seconds: int,
+    binary: bool,
+    max_output_bytes: int | None = None,
+) -> dict:
     started = time.monotonic()
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
@@ -673,7 +1158,9 @@ def _run_process(argv: list[str], *, timeout_seconds: int, binary: bool) -> dict
             HTTPStatus.SERVICE_UNAVAILABLE,
         ) from exc
     stdout_limit = (
-        MAX_SCREENSHOT_BYTES + 1 if binary else MAX_COMMAND_OUTPUT_BYTES
+        max_output_bytes or (MAX_SCREENSHOT_BYTES + 1)
+        if binary
+        else MAX_COMMAND_OUTPUT_BYTES
     )
     stdout_reader = threading.Thread(
         target=_drain_stream_bounded,
@@ -787,19 +1274,55 @@ def _integer_or_none(value: str) -> int | None:
         return None
 
 
+def _bounded_integer(value, minimum: int, maximum: int, label: str) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not minimum <= value <= maximum
+    ):
+        raise HostAgentRequestError(
+            f"{label} must be an integer from {minimum} to {maximum}."
+        )
+    return value
+
+
+def _screen_dimensions(output: str) -> tuple[int | None, int | None]:
+    matches = re.findall(r"(?:Physical|Override) size:\s*(\d+)x(\d+)", output)
+    if not matches:
+        match = re.search(r"\b(\d+)x(\d+)\b", output)
+        matches = [match.groups()] if match else []
+    if not matches:
+        return None, None
+    width, height = matches[-1]
+    return int(width), int(height)
+
+
 def _focused_package(output: str) -> str:
     package_name, _activity = _focused_component(output)
     return package_name
 
 
 def _focused_component(output: str) -> tuple[str, str]:
+    component_match = re.search(
+        r"(?:mCurrentFocus|mFocusedApp|mResumedActivity|topResumedActivity|"
+        r"mTopFullscreenOpaqueWindow|mObscuringWindow|"
+        r"imeLayeringTarget|imeInputTarget|imeControlTarget)"
+        r"[^\n]*?\b([a-zA-Z][a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)",
+        output,
+        re.IGNORECASE,
+    )
+    if component_match is None:
+        return "", ""
+    component = component_match.group(1)
+    return component.split("/", 1)[0], component
+
+def _top_activity_component(output: str) -> tuple[str, str]:
     match = re.search(
-        r"(?:mCurrentFocus|mFocusedApp).*?\s([a-zA-Z][a-zA-Z0-9_.]+)/",
+        r"^\s*ACTIVITY\s+([a-zA-Z][a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)\b",
         output,
+        re.MULTILINE,
     )
-    package_name = match.group(1) if match else ""
-    activity_match = re.search(
-        r"(?:mCurrentFocus|mFocusedApp).*?\s([a-zA-Z][a-zA-Z0-9_.]+/[a-zA-Z0-9_.$]+)",
-        output,
-    )
-    return package_name, activity_match.group(1) if activity_match else ""
+    if match is None:
+        return "", ""
+    component = match.group(1)
+    return component.split("/", 1)[0], component
