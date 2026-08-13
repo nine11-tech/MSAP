@@ -1,4 +1,5 @@
 from celery import shared_task
+import logging
 from django.conf import settings
 from django.utils import timezone
 
@@ -7,6 +8,13 @@ from apps.dynamic_analysis.services.mvp_runner import (
     DynamicMvpRunnerError,
     run_dynamic_mvp_job,
 )
+from apps.dynamic_analysis.services.assessment_executor import (
+    AssessmentExecutionError,
+    AssessmentExecutor,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 @shared_task(bind=True)
@@ -42,6 +50,35 @@ def run_dynamic_mvp_job_task(
             "Dynamic MVP runner task failed unexpectedly.",
         )
         raise exc
+
+
+@shared_task(bind=True)
+def execute_assessment_plan_run_task(self, run_id: int) -> dict:
+    """Execute only the immutable approved-plan snapshot already linked to a run."""
+
+    try:
+        run = AssessmentExecutor().execute(run_id)
+    except AssessmentExecutionError as exc:
+        logger.warning(
+            "assessment_execution_task_failed run_id=%s code=%s",
+            run_id,
+            exc.code,
+        )
+        run = AssessmentExecutor.mark_execution_failed(
+            run_id,
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error(
+            "assessment_execution_task_failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        run = AssessmentExecutor.mark_execution_failed(
+            run_id,
+            message="The bounded assessment execution worker failed unexpectedly.",
+        )
+    return {"run_id": run.id, "run_status": run.status}
 
 
 def _mark_job_failed(job_id: int, category: str, message: str) -> None:

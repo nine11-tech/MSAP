@@ -2,12 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   approveAssessmentPlan,
+  cancelAssessmentExecution,
   captureDynamicHostAgentScreenshot,
   createAgentRun,
   createAssessmentPlan,
+  executeAssessmentPlan,
+  getAgentRun,
+  getAssessmentPlan,
   getDynamicHostAgentStatus,
   installDynamicAuditApk,
   listAgentRunArtifacts,
+  listAgentRunEvidence,
   listAgentRuns,
   listAgentRunSteps,
   listAgentRuntimes,
@@ -30,6 +35,7 @@ import type {
   Audit,
   DynamicHostAgentInstallResult,
   DynamicHostAgentStatus,
+  Evidence,
   SystemComponent,
 } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
@@ -64,7 +70,9 @@ type WorkingAction =
   | "frida-custom"
   | "planner-generate"
   | "planner-validate"
-  | "planner-approve";
+  | "planner-approve"
+  | "planner-execute"
+  | "planner-cancel";
 
 type PackageAction =
   | "launch-package"
@@ -93,6 +101,7 @@ export function DynamicLabPage() {
   const [agentRun, setAgentRun] = useState<AgentRun | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentRunStep[]>([]);
   const [agentArtifacts, setAgentArtifacts] = useState<AgentRunArtifact[]>([]);
+  const [agentEvidence, setAgentEvidence] = useState<Evidence[]>([]);
   const [selectedAgentRuntime, setSelectedAgentRuntime] =
     useState<AgentRuntimeType>("INTERNAL_CONTROLLER");
   const [selectedObjective, setSelectedObjective] =
@@ -152,15 +161,20 @@ export function DynamicLabPage() {
       const latestRun = runData[0] || null;
       setAgentRun(latestRun);
       if (latestRun) {
-        const [stepData, artifactData] = await Promise.all([
+        const [stepData, artifactData, evidenceData] = await Promise.all([
           listAgentRunSteps(latestRun.id),
           listAgentRunArtifacts(latestRun.id),
+          latestRun.objective === "ASSESSMENT_PLAN_EXECUTION"
+            ? listAgentRunEvidence(latestRun.id)
+            : Promise.resolve([]),
         ]);
         setAgentSteps(stepData);
         setAgentArtifacts(artifactData);
+        setAgentEvidence(evidenceData);
       } else {
         setAgentSteps([]);
         setAgentArtifacts([]);
+        setAgentEvidence([]);
       }
       setSelectedAuditId((current) => {
         if (current && auditData.some((audit) => audit.id === current)) {
@@ -184,6 +198,34 @@ export function DynamicLabPage() {
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    if (
+      !agentRun ||
+      agentRun.objective !== "ASSESSMENT_PLAN_EXECUTION" ||
+      !["QUEUED", "RUNNING"].includes(agentRun.status)
+    ) {
+      return;
+    }
+    const runId = agentRun.id;
+    const timer = window.setInterval(() => {
+      void Promise.all([
+        getAgentRun(runId),
+        listAgentRunSteps(runId),
+        listAgentRunArtifacts(runId),
+        listAgentRunEvidence(runId),
+      ]).then(async ([run, steps, artifacts, evidence]) => {
+        setAgentRun(run);
+        setAgentSteps(steps);
+        setAgentArtifacts(artifacts);
+        setAgentEvidence(evidence);
+        if (run.assessment_plan) {
+          setAssessmentPlan(await getAssessmentPlan(run.assessment_plan));
+        }
+      }).catch((requestError) => setError(errorMessage(requestError)));
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [agentRun]);
 
   useEffect(
     () => () => {
@@ -608,6 +650,50 @@ export function DynamicLabPage() {
     }
   }
 
+  async function handleExecuteAssessmentPlan() {
+    if (!assessmentPlan) return;
+    setWorking("planner-execute");
+    setError("");
+    setNotice("");
+    try {
+      const response = await executeAssessmentPlan(assessmentPlan.id);
+      const [steps, artifacts, evidence, plan] = await Promise.all([
+        listAgentRunSteps(response.run.id),
+        listAgentRunArtifacts(response.run.id),
+        listAgentRunEvidence(response.run.id),
+        getAssessmentPlan(assessmentPlan.id),
+      ]);
+      setAgentRun(response.run);
+      setAgentSteps(steps);
+      setAgentArtifacts(artifacts);
+      setAgentEvidence(evidence);
+      setAssessmentPlan(plan);
+      setNotice(`Approved plan #${assessmentPlan.id} queued as AgentRun #${response.run.id}.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleCancelAssessmentExecution() {
+    if (!agentRun || agentRun.objective !== "ASSESSMENT_PLAN_EXECUTION") return;
+    setWorking("planner-cancel");
+    setError("");
+    try {
+      const run = await cancelAssessmentExecution(agentRun.id);
+      setAgentRun(run);
+      if (run.assessment_plan) {
+        setAssessmentPlan(await getAssessmentPlan(run.assessment_plan));
+      }
+      setNotice(`Cancellation recorded for AgentRun #${run.id}.`);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
   if (loading && !agentStatus) {
     return <LoadingState label="Loading Dynamic Lab..." />;
   }
@@ -890,7 +976,7 @@ export function DynamicLabPage() {
       <Card className="dynamic-mvp-section assessment-planner-card">
         <SectionHeader
           title="AI Assessment Planner"
-          actions={<span className="planner-only-badge">PLAN ONLY</span>}
+          actions={<span className="planner-only-badge">APPROVAL REQUIRED</span>}
         />
         <p className="muted planner-intro">
           Generate a structured assessment plan from audit context and the existing
@@ -1003,6 +1089,18 @@ export function DynamicLabPage() {
           >
             {working === "planner-approve" ? "Approving..." : "Approve Plan"}
           </button>
+          <button
+            className="button button-primary"
+            onClick={() => void handleExecuteAssessmentPlan()}
+            disabled={
+              !canOperate ||
+              !assessmentPlan ||
+              assessmentPlan.status !== "APPROVED" ||
+              Boolean(working)
+            }
+          >
+            {working === "planner-execute" ? "Queuing..." : "Execute Assessment"}
+          </button>
         </div>
 
         {!canOperate ? (
@@ -1018,7 +1116,22 @@ export function DynamicLabPage() {
         ) : null}
 
         {assessmentPlan ? (
-          <AssessmentPlanResult plan={assessmentPlan} />
+          <>
+            <AssessmentPlanResult plan={assessmentPlan} />
+            {agentRun &&
+            agentRun.objective === "ASSESSMENT_PLAN_EXECUTION" &&
+            agentRun.assessment_plan === assessmentPlan.id ? (
+              <AssessmentExecutionResult
+                run={agentRun}
+                steps={agentSteps}
+                artifacts={agentArtifacts}
+                evidence={agentEvidence}
+                canCancel={canOperate && ["QUEUED", "RUNNING"].includes(agentRun.status)}
+                cancelling={working === "planner-cancel"}
+                onCancel={() => void handleCancelAssessmentExecution()}
+              />
+            ) : null}
+          </>
         ) : (
           <div className="planner-empty-result">
             No assessment plan has been generated yet.
@@ -1220,7 +1333,9 @@ export function DynamicLabPage() {
           </div>
         ) : null}
 
-        {agentRun && !isFridaObjective(agentRun.objective) ? (
+        {agentRun &&
+        !isFridaObjective(agentRun.objective) &&
+        agentRun.objective !== "ASSESSMENT_PLAN_EXECUTION" ? (
           <div className="agent-run-layout">
             <section className="agent-run-result" aria-label="Latest agent run result">
               <div className="agent-run-heading">
@@ -1495,9 +1610,9 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
       </div>
 
       <div className="planner-no-execution-note">
-        <strong>Plan only.</strong> Approval records auditor authorization for a
-        future execution agent. It does not contact the gateway, host agent, or
-        emulator.
+        <strong>Approval boundary.</strong> Generation, validation, and approval do
+        not contact the emulator. Only Execute Assessment can create one immutable,
+        bounded AgentRun through the restricted gateway.
       </div>
 
       {plan.validation_errors.length ? (
@@ -1562,6 +1677,92 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+function AssessmentExecutionResult({
+  run,
+  steps,
+  artifacts,
+  evidence,
+  canCancel,
+  cancelling,
+  onCancel,
+}: {
+  run: AgentRun;
+  steps: AgentRunStep[];
+  artifacts: AgentRunArtifact[];
+  evidence: Evidence[];
+  canCancel: boolean;
+  cancelling: boolean;
+  onCancel: () => void;
+}) {
+  const succeeded = steps.filter((step) => step.status === "SUCCEEDED").length;
+  return (
+    <section className="planner-execution-result" aria-label="Approved assessment execution">
+      <div className="planner-result-heading">
+        <div>
+          <span className="eyebrow">Bounded assessment execution</span>
+          <h3>AgentRun #{run.id} · {run.target_package}</h3>
+        </div>
+        <div className="planner-execution-heading-actions">
+          <span className={`agent-run-state state-${run.status.toLowerCase()}`}>
+            {run.status}
+          </span>
+          {canCancel ? (
+            <button className="button button-secondary" onClick={onCancel} disabled={cancelling}>
+              {cancelling ? "Cancelling..." : "Cancel Run"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="planner-summary-facts">
+        <StatusFact label="Plan" value={`#${run.assessment_plan ?? "Unavailable"}`} />
+        <StatusFact label="Plan hash" value={run.approved_plan_hash ? `${run.approved_plan_hash.slice(0, 16)}…` : "Unavailable"} />
+        <StatusFact label="Execution" value="Sequential / gateway only" />
+        <StatusFact label="Steps" value={`${succeeded} / ${steps.length} succeeded`} />
+        <StatusFact label="Tool calls" value={String(run.tool_call_count)} />
+        <StatusFact label="Artifacts" value={String(artifacts.length)} />
+        <StatusFact label="Evidence" value={String(evidence.length)} />
+        <StatusFact label="Duration" value={formatDuration(run.duration_seconds)} />
+      </div>
+
+      {run.failure_message ? (
+        <p className="agent-failure-message">
+          {run.failure_category || "CONTROLLED_FAILURE"}: {run.failure_message}
+        </p>
+      ) : null}
+
+      <ol className="agent-step-list planner-execution-timeline">
+        {steps.map((step) => (
+          <li key={step.id}>
+            <span className="agent-step-sequence">{step.sequence_number}</span>
+            <div>
+              <span className="eyebrow mono">{step.plan_step_identifier}</span>
+              <strong className="mono">
+                {step.is_control_step ? "Plan observation (no tool)" : step.tool_name}
+              </strong>
+              <small>
+                {step.duration_seconds === null ? "Not started" : formatDuration(step.duration_seconds)}
+                {` · ${artifacts.filter((artifact) => artifact.step === step.id).length} artifacts`}
+                {` · ${evidence.filter((item) => item.agent_run_step === step.id).length} evidence records`}
+                {step.retry_count ? ` · ${step.retry_count} retries` : ""}
+              </small>
+              {step.failure_message ? <small>{step.failure_message}</small> : null}
+            </div>
+            <span className={`agent-step-status state-${step.status.toLowerCase()}`}>
+              {step.status}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      <p className="muted agent-scope-note">
+        {run.result_summary.assessment_scope ||
+          "Runtime observations are evidence primitives, not vulnerability or malware verdicts."}
+      </p>
     </section>
   );
 }
@@ -1892,6 +2093,7 @@ function objectiveLabel(value: AgentObjective): string {
     FRIDA_RUNTIME_ACTION: "Frida Environment Action",
     FRIDA_RUNTIME_UI_MODIFICATION_PROOF: "Frida Runtime UI Modification Proof",
     FRIDA_CUSTOM_SCRIPT: "Custom Frida Script",
+    ASSESSMENT_PLAN_EXECUTION: "Approved Assessment Plan",
   }[value];
 }
 

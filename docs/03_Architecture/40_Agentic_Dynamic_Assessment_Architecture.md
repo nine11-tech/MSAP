@@ -215,12 +215,13 @@ Plan API lifecycle:
 1. Analyst/Admin creates a structurally and policy-checked `GENERATED` plan.
 2. Analyst/Admin explicitly promotes it to `VALIDATED`; policy is rerun.
 3. Analyst/Admin approves it, producing `APPROVED` state only.
-4. Viewer can list and inspect plans but cannot mutate them.
+4. Analyst/Admin may explicitly execute the immutable approved contract.
+5. Viewer can inspect plans and execution evidence but cannot mutate them.
 
 Approval never creates an `AgentRun`, calls the run-scoped gateway, contacts the
-host agent, or changes emulator state. The future GPT-5.5 execution agent must
-consume only an approved plan and remain behind the existing gateway and policy
-boundaries.
+host agent, or changes emulator state. The separate Execute Assessment action
+consumes only the approved contract and remains behind the existing gateway and
+policy boundaries.
 
 ### Sprint D1 planner/executor contracts
 
@@ -244,7 +245,7 @@ raw provider JSON
     -> canonical contract validation + SHA-256
     -> persisted plan
     -> auditor validation and approval
-    -> msap.approved-assessment-plan/v1 projection (future executor input)
+    -> msap.approved-assessment-plan/v1 projection (only executor input)
 ```
 
 The approved executor projection can be built only from a persisted
@@ -266,14 +267,14 @@ Validation boundaries remain distinct:
   destructive scope. D3 may extend this layer without changing either contract.
 - **Approval** records auditor authorization for the canonical plan. It does not
   authorize an individual tool invocation or cause execution.
-- **Execution authorization** remains future work. Every eventual tool call must
-  still pass the run-scoped token, persisted step order, RBAC/scope policy, real
-  gateway manifest schema, and backend/host-agent enforcement.
+- **Execution authorization** is enforced again for every run and tool call.
+  Persisted step order, RBAC/scope policy, the real gateway manifest schema,
+  approved arguments, and backend/host-agent enforcement remain mandatory.
 
 A recognized tool identifier therefore expresses a requested capability only;
 it is never a permission. The model is neither the schema, policy, approval, nor
 execution security boundary. The deterministic planner remains the local/test
-fallback, compatibility reference, and safe fixture for future executor work.
+fallback, compatibility reference, and safe end-to-end executor fixture.
 
 ### Sprint D2/D3 GPT planner and production policy
 
@@ -316,16 +317,73 @@ responses, keys, Authorization headers, or provider error bodies. Security logs
 record provider/model, latency, retry count, and result codes without recording
 application context or secrets.
 
+### Bounded approved-plan execution
+
+The MVP execution agent consumes only a persisted
+`msap.approved-assessment-plan/v1` snapshot. Before creating a run, Django
+rechecks approval actor/time, schema and policy status, contract version, plan
+hash, audit existence, audit-owned package, current tool manifest, resource
+bounds, RBAC, and runtime availability. The plan is linked one-to-one with its
+`AgentRun`; a second execution of the same approval is rejected.
+
+```text
+ApprovedAssessmentPlan v1
+    -> immutable execution snapshot
+    -> plan-linked AgentRun + exact AgentRunSteps
+    -> Celery worker (sequential)
+    -> existing execute_run_tool_call gateway
+    -> existing C2/C3 mobile capability
+    -> bounded untrusted observation
+    -> AgentRunArtifact / ObjectStorageReference
+    -> linked Evidence
+```
+
+Canonical tools are flattened in plan and tool order. Before any capability is
+called, the materialized run must still match every approved plan-step ID,
+sequence, tool index, tool name, exact argument object, dependency, evidence
+requirement, retry bound, and manifest timeout. Tool-free planner steps become
+bounded control observations and never invoke a model or tool. Added steps,
+changed arguments, target changes, stale authorization, or changed hashes fail
+closed.
+
+The existing Tool Gateway is the only capability boundary. It revalidates the
+approved snapshot and live audit/package authorization, claims the exact next
+step, bounds total calls, and invokes only `TOOL_MANIFEST` implementations. The
+execution service has no subprocess, ADB, Docker, filesystem, Python-evaluation,
+or Frida CLI interface. Built-in Frida proof calls retain all C3 restrictions.
+
+Execution is sequential. A failed tool blocks later tools in the same plan step
+and every dependent step. Only transient host-connectivity failures are retried,
+at most once by default. Invalid arguments, policy/authorization failures,
+unknown capabilities, integrity failures, and security violations are never
+retried. Manifest timeouts, a 600-second default total deadline, tool/artifact
+counts, observation/artifact byte limits, and cooperative cancellation bound the
+run.
+
+Results are normalized as `msap.agent-observation/v1` and labeled
+`UNTRUSTED_APPLICATION_OBSERVATION`. Secret-shaped values are redacted;
+oversized output retains a bounded preview and digest. Observations are data and
+cannot add steps or become instructions. Existing object storage retains large
+artifacts; PostgreSQL retains references, hashes, sizes, bounded summaries, and
+evidence provenance linking audit, plan hash, run, run step, artifact, and tool.
+
+Execution creates evidence, not verdicts. It does not create severity or
+vulnerability conclusions from tool output. The deterministic finding and
+report pipelines remain separate.
+
 ## Remaining limitations
 
-- Execution remains synchronous in the API request lifecycle.
+- Approved-plan execution uses Celery and status polling. Cancellation is
+  cooperative between calls and cannot interrupt a host operation in progress.
+- Approved-plan execution currently runs in the backend execution worker. The
+  existing container sandbox remains available for C1/C2/C3 objectives but has
+  not yet been extended to consume the approved-plan contract.
 - Logcat uses bounded completed captures rather than live streaming sessions.
 - Package list version metadata is returned only when the host can obtain it;
   unavailable values remain empty/null.
 - Full UI XML and unbounded log streams are intentionally not retained.
-- No GPT execution agent, chat UI, autonomous plan execution, mitmproxy tool,
-  MASVS playbook, vulnerability confirmation, malware verdict, or autonomous
-  interaction is implemented.
-- D2/D3 do not schedule approved plans or convert them to `AgentRun` records.
-  The approved executor projection is a guarded data contract only; the next
-  sprint will consume it through the existing gateway and runtime boundaries.
+- No recursive replanning, chat UI, autonomous tool discovery, mitmproxy tool,
+  MASVS playbook, vulnerability confirmation, malware verdict, or model-driven
+  mid-run adaptation is implemented.
+- An approved plan executes once. A rerun requires a newly generated, validated,
+  and approved plan so evidence remains tied to immutable authorization.

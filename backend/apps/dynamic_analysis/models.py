@@ -950,6 +950,10 @@ class AgentRun(models.Model):
             "FRIDA_CUSTOM_SCRIPT",
             "Frida custom script",
         )
+        ASSESSMENT_PLAN_EXECUTION = (
+            "ASSESSMENT_PLAN_EXECUTION",
+            "Approved assessment plan execution",
+        )
 
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -993,6 +997,16 @@ class AgentRun(models.Model):
         blank=True,
         related_name="runs",
     )
+    assessment_plan = models.OneToOneField(
+        "dynamic_analysis.AssessmentPlan",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="execution_run",
+    )
+    approved_plan_hash = models.CharField(max_length=64, blank=True)
+    target_package = models.CharField(max_length=255, blank=True)
+    execution_contract = models.JSONField(default=dict, blank=True)
     objective = models.CharField(max_length=64, choices=Objective.choices)
     objective_input = models.JSONField(default=dict, blank=True)
     status = models.CharField(
@@ -1016,6 +1030,15 @@ class AgentRun(models.Model):
         blank=True,
     )
     failure_message = models.TextField(blank=True)
+    tool_call_count = models.PositiveIntegerField(default=0)
+    cancellation_requested_at = models.DateTimeField(null=True, blank=True)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cancelled_agent_runs",
+    )
     # The plaintext credential is returned only to the controller that launches
     # the sandbox. Django persists a one-way digest and a short expiry so a
     # database read cannot recover an active run credential.
@@ -1054,6 +1077,7 @@ class AgentRunStep(models.Model):
         FAILED = "FAILED", "Failed"
         SKIPPED = "SKIPPED", "Skipped"
         TIMEOUT = "TIMEOUT", "Timeout"
+        CANCELLED = "CANCELLED", "Cancelled"
 
     run = models.ForeignKey(
         AgentRun,
@@ -1062,6 +1086,12 @@ class AgentRunStep(models.Model):
     )
     sequence_number = models.PositiveIntegerField()
     tool_name = models.CharField(max_length=128)
+    plan_step_identifier = models.CharField(max_length=64, blank=True)
+    plan_step_sequence = models.PositiveIntegerField(null=True, blank=True)
+    tool_call_index = models.PositiveIntegerField(default=1)
+    is_control_step = models.BooleanField(default=False)
+    dependencies = models.JSONField(default=list, blank=True)
+    evidence_requirements = models.JSONField(default=list, blank=True)
     status = models.CharField(
         max_length=32,
         choices=Status.choices,
@@ -1069,6 +1099,10 @@ class AgentRunStep(models.Model):
     )
     input_summary = models.JSONField(default=dict, blank=True)
     output_summary = models.JSONField(default=dict, blank=True)
+    observation = models.JSONField(default=dict, blank=True)
+    retry_count = models.PositiveIntegerField(default=0)
+    max_retries = models.PositiveIntegerField(default=0)
+    timeout_seconds = models.PositiveIntegerField(default=0)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     duration_seconds = models.FloatField(null=True, blank=True)
@@ -1130,6 +1164,8 @@ class AgentRunArtifact(models.Model):
         related_name="agent_run_artifacts",
     )
     metadata = models.JSONField(default=dict, blank=True)
+    size_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    sha256 = models.CharField(max_length=64, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

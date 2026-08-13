@@ -203,10 +203,15 @@ export interface Evidence {
   finding: number | null;
   indicator: number | null;
   storage_reference: number | null;
+  agent_run: number | null;
+  agent_run_step: number | null;
+  agent_run_artifact: number | null;
   evidence_type: string;
   source: string;
   snippet: string;
   redacted: boolean;
+  sha256: string;
+  provenance: Record<string, unknown>;
   created_at: string;
 }
 
@@ -785,6 +790,17 @@ export interface AgentRunResultSummary {
   cleanup_state?: string;
   interpretation?: string;
   limitations?: string;
+  assessment_plan_id?: number;
+  approved_plan_hash?: string;
+  target_package?: string;
+  execution_mode?: string;
+  execution_channel?: string;
+  step_status_counts?: Record<string, number>;
+  tool_call_count?: number;
+  artifact_count?: number;
+  evidence_count?: number;
+  observations_are_untrusted_data?: boolean;
+  finding_count_created?: number;
 }
 
 export type AgentObjective =
@@ -792,7 +808,8 @@ export type AgentObjective =
   | "BASIC_APP_INTERACTION_CHECK"
   | "FRIDA_RUNTIME_ACTION"
   | "FRIDA_RUNTIME_UI_MODIFICATION_PROOF"
-  | "FRIDA_CUSTOM_SCRIPT";
+  | "FRIDA_CUSTOM_SCRIPT"
+  | "ASSESSMENT_PLAN_EXECUTION";
 
 export interface BasicAppInteractionInput {
   audit_id: number;
@@ -842,6 +859,9 @@ export interface AgentRun {
     | "CONTAINER_PLANNED"
     | "CONTAINER_ISOLATED"
     | null;
+  assessment_plan: number | null;
+  approved_plan_hash: string;
+  target_package: string;
   objective: AgentObjective;
   objective_input: Record<string, unknown>;
   status:
@@ -859,6 +879,9 @@ export interface AgentRun {
   result_summary: AgentRunResultSummary;
   failure_category: string;
   failure_message: string;
+  tool_call_count: number;
+  cancellation_requested_at: string | null;
+  cancelled_by: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -885,16 +908,28 @@ export interface AgentRunStep {
     | "frida_ps"
     | "frida_setup"
     | "frida_attach"
-    | "frida_run_js";
+    | "frida_run_js"
+    | "assessment_plan_observation";
+  plan_step_identifier: string;
+  plan_step_sequence: number | null;
+  tool_call_index: number;
+  is_control_step: boolean;
+  dependencies: string[];
+  evidence_requirements: string[];
   status:
     | "PENDING"
     | "RUNNING"
     | "SUCCEEDED"
     | "FAILED"
     | "SKIPPED"
-    | "TIMEOUT";
+    | "TIMEOUT"
+    | "CANCELLED";
   input_summary: Record<string, unknown>;
   output_summary: Record<string, unknown>;
+  observation: Record<string, unknown>;
+  retry_count: number;
+  max_retries: number;
+  timeout_seconds: number;
   started_at: string | null;
   finished_at: string | null;
   duration_seconds: number | null;
@@ -917,6 +952,8 @@ export interface AgentRunArtifact {
   object_reference: number | null;
   download_url: string;
   metadata: Record<string, unknown>;
+  size_bytes: number | null;
+  sha256: string;
   created_at: string;
 }
 

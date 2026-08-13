@@ -231,9 +231,10 @@ instrumentation evidence record. A successful proof establishes in-process
 instrumentation and visible behavior modification; it is not a vulnerability
 or malware verdict.
 
-## Running the AI Assessment Planner
+## Running and executing an AI Assessment Plan
 
-Sprint D is plan-only. In Dynamic Lab, use the **AI Assessment Planner** section
+Planning remains plan-only until the explicit execution action. In Dynamic Lab,
+use the **AI Assessment Planner** section
 with an Analyst/Admin account:
 
 1. Select an audit and one package authorized by a verified APK record.
@@ -247,25 +248,35 @@ with an Analyst/Admin account:
    observations, success conditions, evidence requirements, and dependencies.
 5. Select **Validate Plan**. This reruns backend manifest, schema, package,
    dependency, bounds, and unsafe-instruction policies.
-6. Select **Approve Plan**. Confirm the state becomes `APPROVED` and the page
-   continues to say **PLAN ONLY**.
-7. Verify that no `AgentRun` was created and that foreground package, target PID,
-   screenshot/UI state, and device action records did not change.
+6. Select **Approve Plan**. Confirm the state becomes `APPROVED`; verify that
+   generation, validation, and approval created no `AgentRun` and changed no
+   emulator state.
+7. Select **Execute Assessment** once. This action accepts no command, tool,
+   package, path, prompt, or argument payload.
+8. Confirm a plan-linked `AgentRun` progresses from `QUEUED`/`RUNNING` to a
+   terminal state. Inspect its plan hash, exact sequential timeline, durations,
+   retries, artifacts, evidence, and controlled failure reason.
+9. Confirm evidence provenance identifies the audit, plan hash, run, run step,
+   artifact when present, and capability. Confirm no vulnerability finding was
+   created from application output.
+10. **Cancel Run** stops subsequent calls but cannot interrupt a bounded host
+    operation already in progress.
 
 The API's `normalized_plan` is the versioned
 `msap.assessment-plan/v1` representation. Provider `generated_plan` JSON is
 retained for auditability but is never valid executor input. Approval rechecks
 the canonical document and its stored hash before changing state. The guarded
-`msap.approved-assessment-plan/v1` projection exists for future execution-agent
-work; there is no API action that executes or schedules it in D1.
+`msap.approved-assessment-plan/v1` is the only execution input. The execute API
+snapshots it, creates one linked run, and queues the bounded worker. Raw provider
+output is never accepted by that endpoint.
 
 If validation reports `PLAN_CONTRACT_INVALID`, treat the plan as tampered or
 stale: do not approve or manually translate its text into commands. Generate a
 new plan through the backend so schema and policy validation run again.
 
-Viewer accounts may inspect plans but cannot generate, validate, or approve
-them. Approval does not contact the gateway, host agent, or emulator and does
-not authorize direct execution outside a future execution-agent policy.
+Viewer accounts may inspect plans and runs but cannot generate, validate,
+approve, execute, or cancel them. Approval does not contact the gateway, host
+agent, or emulator; only the separate execution action can queue the plan.
 
 Local development defaults to the deterministic planner. To enable the intended
 OpenAI planner in a backend environment, configure:
@@ -283,6 +294,17 @@ Optional bounded settings are
 `MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS`, and
 `MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT`. Never put the key in frontend
 configuration, a plan, an agent-runtime environment, logs, or evidence.
+
+Approved execution bounds are backend-only:
+
+```text
+MSAP_ASSESSMENT_EXECUTION_TOTAL_TIMEOUT_SECONDS=600
+MSAP_ASSESSMENT_EXECUTION_MAX_RETRIES=1
+MSAP_ASSESSMENT_EXECUTION_MAX_TOOL_CALLS=96
+MSAP_ASSESSMENT_EXECUTION_MAX_OBSERVATION_BYTES=65536
+MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACTS=100
+MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACT_BYTES=25165824
+```
 
 The OpenAI path fails closed. It never silently replaces a timeout, refusal,
 malformed response, schema rejection, or policy rejection with the deterministic
@@ -343,6 +365,9 @@ normalized summaries only; MinIO should store large raw evidence and reports.
 | Planner target rejected | The package is malformed or does not belong to an APK record in the selected audit. | Select the exact verified audit package; do not type an unrelated installed package. |
 | Planner provider unavailable | OpenAI mode lacks a backend key or the bounded provider request failed. | Check backend-only provider configuration; use the deterministic provider for local acceptance. Never expose provider errors or credentials to the browser. |
 | Plan validation rejected | Output referenced an unknown tool/field, unsafe instruction, malformed argument, unsupported script, excessive evidence, or invalid dependency graph. | Review the controlled validation message and generate a new bounded plan. Do not bypass the policy layer. |
+| Approved plan will not execute | Approval/hash/target/runtime changed, the plan already has a run, or current bounds are lower than its requirements. | Do not edit plan/run rows. Restore the target/runtime or generate, validate, and approve a new plan. |
+| Execution step skipped | An earlier tool in the same plan step or a declared dependency failed. | Inspect the first failed step and bounded evidence; do not invoke the skipped capability manually. |
+| Execution remains cancelling | A bounded host action is still in progress. | Wait for that action to return; cancellation is checked before the next gateway call. |
 
 ## Recovery Procedures
 
