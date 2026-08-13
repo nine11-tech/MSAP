@@ -134,15 +134,18 @@ deterministic run controls:
 
 1. Select the AndroGoat audit and `owasp.sat.agoat` from the verified-package
    targets.
-2. Keep or edit the bounded objective and scope.
-3. Click **Generate Plan** and inspect six structured steps.
-4. Confirm every visible tool is one of the existing gateway tools and that the
+2. Select **OpenAI · GPT-5.5** for a configured live provider, or
+   **Deterministic reference** for offline demonstration.
+3. Keep or edit the bounded objective and scope.
+4. Click **Generate Plan** and inspect the structured steps, provider latency,
+   schema status, and policy status.
+5. Confirm every visible tool is one of the existing gateway tools and that the
    plan includes expected observations, success conditions, evidence, and
    dependencies.
-5. Click **Validate Plan** and then **Approve Plan**.
-6. Confirm the final state is `APPROVED` and the page explicitly says approval
+6. Click **Validate Plan** and then **Approve Plan**.
+7. Confirm the final state is `APPROVED` and the page explicitly says approval
    does not execute anything.
-7. Confirm the AgentRun count and emulator foreground/PID/UI state did not
+8. Confirm the AgentRun count and emulator foreground/PID/UI state did not
    change during generation, validation, or approval.
 
 Local demo mode uses the deterministic provider and requires no OpenAI key. The

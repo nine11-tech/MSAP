@@ -967,8 +967,18 @@ export interface AssessmentPlan {
   scope: string;
   status: AssessmentPlanStatus;
   validation_status: "PENDING" | "PASSED" | "FAILED";
+  policy_status: "PENDING" | "PASSED" | "FAILED";
   generated_plan: Record<string, unknown>;
   normalized_plan: Record<string, unknown>;
+  provider_metadata: {
+    provider_status?: string;
+    response_id?: string;
+    retry_count?: number;
+    latency_ms?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+  };
   validation_errors: string[];
   planner_input_hash: string;
   plan_hash: string;

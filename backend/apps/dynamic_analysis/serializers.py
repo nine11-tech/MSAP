@@ -38,11 +38,24 @@ class AssessmentPlanCreateSerializer(serializers.Serializer):
     target_package = serializers.CharField(max_length=255)
     objective = serializers.CharField(max_length=500, trim_whitespace=True)
     scope = serializers.CharField(max_length=2000, trim_whitespace=True)
+    planner_provider = serializers.ChoiceField(
+        choices=AssessmentPlan.PlannerProvider.choices,
+        required=False,
+    )
 
     def to_internal_value(self, data):
         if not isinstance(data, dict):
             raise serializers.ValidationError("Request body must be a JSON object.")
-        unexpected = sorted(set(data) - {"audit", "target_package", "objective", "scope"})
+        unexpected = sorted(
+            set(data)
+            - {
+                "audit",
+                "target_package",
+                "objective",
+                "scope",
+                "planner_provider",
+            }
+        )
         if unexpected:
             raise serializers.ValidationError(
                 {key: "This field is not permitted." for key in unexpected}
@@ -559,8 +572,10 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
             "scope",
             "status",
             "validation_status",
+            "policy_status",
             "generated_plan",
             "normalized_plan",
+            "provider_metadata",
             "validation_errors",
             "planner_input_hash",
             "plan_hash",

@@ -31,11 +31,17 @@ class AssessmentPlanAdmin(admin.ModelAdmin):
         "planner_model",
         "status",
         "validation_status",
+        "policy_status",
         "created_at",
     )
-    list_filter = ("planner_provider", "status", "validation_status")
+    list_filter = (
+        "planner_provider",
+        "status",
+        "validation_status",
+        "policy_status",
+    )
     search_fields = ("target_package", "objective", "audit__name")
-    readonly_fields = ("planner_input_hash", "plan_hash")
+    readonly_fields = ("planner_input_hash", "plan_hash", "provider_metadata")
 
 
 @admin.register(AssessmentPlanStep)

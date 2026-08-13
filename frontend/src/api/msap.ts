@@ -270,6 +270,7 @@ export const createAssessmentPlan = (data: {
   target_package: string;
   objective: string;
   scope: string;
+  planner_provider?: "DETERMINISTIC" | "OPENAI";
 }) =>
   apiPost<
     AssessmentPlan,
@@ -278,6 +279,7 @@ export const createAssessmentPlan = (data: {
       target_package: string;
       objective: string;
       scope: string;
+      planner_provider?: "DETERMINISTIC" | "OPENAI";
     }
   >("dynamic/agent/plans/", data);
 export const validateAssessmentPlan = (planId: number) =>

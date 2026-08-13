@@ -237,16 +237,19 @@ Sprint D is plan-only. In Dynamic Lab, use the **AI Assessment Planner** section
 with an Analyst/Admin account:
 
 1. Select an audit and one package authorized by a verified APK record.
-2. Enter a bounded assessment objective and scope. Do not enter credentials,
+2. Select **OpenAI · GPT-5.5**, **Deterministic reference**, or leave the
+   provider on **Server default**. This selector never sends a credential or
+   model name from the browser.
+3. Enter a bounded assessment objective and scope. Do not enter credentials,
    commands, filesystem paths, or environment instructions.
-3. Select **Generate Plan** and inspect the provider/model, target, plan hash,
+4. Select **Generate Plan** and inspect the provider/model, target, plan hash,
    ordered steps, rationale, allowlisted tools, bounded arguments, expected
    observations, success conditions, evidence requirements, and dependencies.
-4. Select **Validate Plan**. This reruns backend manifest, schema, package,
+5. Select **Validate Plan**. This reruns backend manifest, schema, package,
    dependency, bounds, and unsafe-instruction policies.
-5. Select **Approve Plan**. Confirm the state becomes `APPROVED` and the page
+6. Select **Approve Plan**. Confirm the state becomes `APPROVED` and the page
    continues to say **PLAN ONLY**.
-6. Verify that no `AgentRun` was created and that foreground package, target PID,
+7. Verify that no `AgentRun` was created and that foreground package, target PID,
    screenshot/UI state, and device action records did not change.
 
 The API's `normalized_plan` is the versioned
@@ -275,9 +278,17 @@ MSAP_OPENAI_API_KEY=<backend-only credential>
 
 Optional bounded settings are
 `MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS`,
+`MSAP_ASSESSMENT_PLANNER_MAX_RETRIES`,
+`MSAP_ASSESSMENT_PLANNER_RETRY_BASE_MILLISECONDS`,
 `MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS`, and
 `MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT`. Never put the key in frontend
 configuration, a plan, an agent-runtime environment, logs, or evidence.
+
+The OpenAI path fails closed. It never silently replaces a timeout, refusal,
+malformed response, schema rejection, or policy rejection with the deterministic
+plan. Safe API errors distinguish missing configuration, timeout, unavailable
+provider, rate limit, refusal, incomplete/oversized output, schema rejection,
+and policy rejection without exposing provider response bodies or credentials.
 
 ## Evidence Locations
 

@@ -40,6 +40,7 @@ def build_approved_execution_contract(plan: Any) -> dict[str, Any]:
     if (
         persisted.status != AssessmentPlan.Status.APPROVED
         or persisted.validation_status != AssessmentPlan.ValidationStatus.PASSED
+        or persisted.policy_status != AssessmentPlan.PolicyStatus.PASSED
         or persisted.approved_by_id is None
         or persisted.approved_at is None
     ):

@@ -1164,6 +1164,11 @@ class AssessmentPlan(models.Model):
         PASSED = "PASSED", "Passed"
         FAILED = "FAILED", "Failed"
 
+    class PolicyStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PASSED = "PASSED", "Passed"
+        FAILED = "FAILED", "Failed"
+
     audit = models.ForeignKey(
         "audits.Audit",
         on_delete=models.CASCADE,
@@ -1187,8 +1192,14 @@ class AssessmentPlan(models.Model):
         choices=ValidationStatus.choices,
         default=ValidationStatus.PENDING,
     )
+    policy_status = models.CharField(
+        max_length=32,
+        choices=PolicyStatus.choices,
+        default=PolicyStatus.PENDING,
+    )
     generated_plan = models.JSONField(default=dict, blank=True)
     normalized_plan = models.JSONField(default=dict, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)
     validation_errors = models.JSONField(default=list, blank=True)
     planner_input_hash = models.CharField(max_length=64, blank=True)
     plan_hash = models.CharField(max_length=64, blank=True)

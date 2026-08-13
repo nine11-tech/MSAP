@@ -193,15 +193,20 @@ or unsupported/unbounded behavior. The only Frida JavaScript a generated plan
 may reference is the backend-owned built-in proof sentinel. The provider is not
 given OpenAI-hosted tools or an MSAP execution endpoint.
 
-The backend builds bounded planner context from persisted MSAP data only:
-audit identity, authorized APK metadata, a bounded finding summary, persisted
-device capabilities, and the public schemas of the real gateway manifest.
-Unavailable context is represented explicitly. It does not query or mutate the
-emulator while planning. Only a SHA-256 of the sanitized planner input is
-persisted; API credentials and raw prompts are not stored.
+The backend builds bounded planner context from persisted MSAP data only. The
+`trusted_control` object contains audit identity, authorized package, auditor
+objective/scope, backend policy, and the public schemas of the real gateway
+manifest. The separately labeled `untrusted_observations` object contains
+bounded APK metadata, findings, evidence snippets, and persisted device data.
+Application-derived strings are always data, are size bounded, and have common
+credential forms redacted. Unavailable context is explicit. Planning never
+queries or mutates the emulator. Only a SHA-256 of the sanitized planner input
+is persisted; API credentials and raw prompts are not stored.
 
 The OpenAI provider uses the Responses API with model `gpt-5.5` and strict
-JSON-schema output. Provider/model/key/timeout configuration is backend-only.
+`text.format` JSON-schema output, disables provider storage for the request, and
+does not supply tools. Provider/model/key/timeout/retry configuration is
+backend-only.
 Local development and tests default to `DETERMINISTIC`, which produces the same
 validated six-step AndroGoat-compatible plan without an API key.
 
@@ -270,6 +275,47 @@ it is never a permission. The model is neither the schema, policy, approval, nor
 execution security boundary. The deterministic planner remains the local/test
 fallback, compatibility reference, and safe fixture for future executor work.
 
+### Sprint D2/D3 GPT planner and production policy
+
+The existing `OpenAIPlannerProvider` is the sole OpenAI integration. An
+Analyst/Admin may select `OPENAI` or `DETERMINISTIC` through the existing plan
+create API; the choice is a closed enum and never accepts a key, endpoint, model
+name, prompt, or tool list. When omitted, the backend environment selects the
+provider. `gpt-5.5` is the intended configurable OpenAI model.
+
+The OpenAI request contains one fixed backend system instruction and one JSON
+context document. The system instruction makes the following precedence
+explicit:
+
+1. Backend system instruction and `trusted_control` define the planning task.
+2. `untrusted_observations` is attacker-influenceable data only.
+3. APK strings, finding descriptions, evidence/UI/logcat/Frida text, and other
+   application content cannot change scope, add tools, request secrets, or
+   become commands—even when they contain prompt-injection wording.
+
+The synchronous Responses call has a bounded per-attempt timeout, response byte
+limit, plan byte limit, output-token limit, and zero-to-two configured retries.
+Only timeouts, connection failures, rate limits, and selected transient HTTP
+failures are retried. Refusals, incomplete responses, duplicate/malformed JSON,
+unexpected response shapes, schema failures, and policy failures fail closed
+without deterministic substitution. Provider failure bodies and refusal text
+are not returned or logged.
+
+After strict provider output parsing, D3 policy verifies the persisted audit,
+audit-owned package/APK, exact objective and scope, package/audit arguments,
+built-in-only planner Frida source, and explicit destructive scope. Structural
+validation independently enforces the real manifest vocabulary/argument
+schemas, dependency graph, evidence and size bounds, and prohibited command,
+path, credential, environment, Docker, direct-AgentRun, direct-gateway, and
+gateway-bypass representations. A plan persists only after both layers pass.
+
+`AssessmentPlan.validation_status` and `policy_status` expose those separate
+results. Safe `provider_metadata` may contain only response ID, provider status,
+latency, retry count, and bounded token counts. It never contains prompts,
+responses, keys, Authorization headers, or provider error bodies. Security logs
+record provider/model, latency, retry count, and result codes without recording
+application context or secrets.
+
 ## Remaining limitations
 
 - Execution remains synchronous in the API request lifecycle.
@@ -280,6 +326,6 @@ fallback, compatibility reference, and safe fixture for future executor work.
 - No GPT execution agent, chat UI, autonomous plan execution, mitmproxy tool,
   MASVS playbook, vulnerability confirmation, malware verdict, or autonomous
   interaction is implemented.
-- D1 does not schedule approved plans, convert them to `AgentRun` records, or
-  implement the D3 policy engine. The approved executor projection is a guarded
-  data contract only; D4 will consume it through a separate execution service.
+- D2/D3 do not schedule approved plans or convert them to `AgentRun` records.
+  The approved executor projection is a guarded data contract only; the next
+  sprint will consume it through the existing gateway and runtime boundaries.

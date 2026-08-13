@@ -371,6 +371,22 @@ MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS = min(
     120,
     max(5, int(os.getenv("MSAP_ASSESSMENT_PLANNER_TIMEOUT_SECONDS", "60"))),
 )
+MSAP_ASSESSMENT_PLANNER_MAX_RETRIES = min(
+    2,
+    max(0, int(os.getenv("MSAP_ASSESSMENT_PLANNER_MAX_RETRIES", "1"))),
+)
+MSAP_ASSESSMENT_PLANNER_RETRY_BASE_MILLISECONDS = min(
+    2000,
+    max(
+        0,
+        int(
+            os.getenv(
+                "MSAP_ASSESSMENT_PLANNER_RETRY_BASE_MILLISECONDS",
+                "250",
+            )
+        ),
+    ),
+)
 MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS = min(
     16000,
     max(1024, int(os.getenv("MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS", "8000"))),
