@@ -79,6 +79,23 @@ class StrictEmptySerializer(serializers.Serializer):
         return {}
 
 
+class AdaptiveAssessmentRecommendationSerializer(serializers.Serializer):
+    planner_provider = serializers.ChoiceField(
+        choices=AssessmentPlan.PlannerProvider.choices,
+        required=False,
+    )
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"planner_provider"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+
 class DynamicHostAgentPackageActionSerializer(serializers.Serializer):
     package_name = serializers.CharField(max_length=255)
 
@@ -592,6 +609,10 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "audit",
+            "plan_kind",
+            "parent_plan",
+            "source_run",
+            "adaptive_cycle",
             "target_package",
             "planner_provider",
             "planner_model",

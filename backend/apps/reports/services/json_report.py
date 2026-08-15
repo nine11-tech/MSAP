@@ -11,6 +11,7 @@ from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.evidence.models import Evidence, FindingSourceReference, SourceDocument
+from apps.dynamic_analysis.models import AgentRun
 from apps.findings.models import Finding
 from apps.indicators.models import SuspiciousIndicator
 from apps.normalization.models import NormalizedArtifact
@@ -31,6 +32,31 @@ REPORT_LIMITATIONS = [
     "ATT&CK indicators are triage signals, not malware verdicts",
     "Absence of a finding does not prove absence of a vulnerability",
 ]
+RUNTIME_REPORT_LIMITATIONS = [
+    "Runtime observations are bounded evidence and remain untrusted application data",
+    "AI-generated plans are distinct from approved and actually executed steps",
+    "Evidence does not become a vulnerability finding without a deterministic rule",
+    "Only implemented deterministic rules are evaluated",
+    "ATT&CK indicators are triage signals, not malware verdicts",
+    "Absence of a finding does not prove absence of a vulnerability",
+]
+MAX_REPORTED_AGENT_RUNS = 10
+MAX_REPORTED_AGENT_STEPS = 100
+MAX_REPORTED_AGENT_ARTIFACTS = 100
+MAX_REPORTED_AGENT_EVIDENCE = 200
+MAX_REPORTED_FINDINGS = 500
+MAX_REPORTED_AUDIT_EVIDENCE = 1000
+MAX_REPORTED_METADATA_ROWS = 1000
+REPORT_TEXT_LIMIT = 4000
+REPORT_SECRET_PATTERNS = (
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"),
+    re.compile(
+        r"\b(?:api[_ -]?key|password|secret|token|credential)\s*[:=]\s*[^\s,;]+",
+        re.IGNORECASE,
+    ),
+)
 
 
 @transaction.atomic
@@ -52,22 +78,32 @@ def generate_json_report(audit_id: int) -> dict:
                 ).order_by("-is_primary", "id"),
             )
         )
-        .order_by("id")
+        .order_by("id")[:MAX_REPORTED_FINDINGS]
     )
     indicators = list(
-        SuspiciousIndicator.objects.filter(audit_id=audit_id).order_by("id")
+        SuspiciousIndicator.objects.filter(audit_id=audit_id).order_by("id")[
+            :MAX_REPORTED_FINDINGS
+        ]
     )
-    evidence = list(Evidence.objects.filter(audit_id=audit_id).order_by("id"))
+    evidence = list(
+        Evidence.objects.filter(audit_id=audit_id).order_by("id")[
+            :MAX_REPORTED_AUDIT_EVIDENCE
+        ]
+    )
     artifacts = list(
         NormalizedArtifact.objects.filter(audit_id=audit_id)
         .only("id", "artifact_type", "source", "created_at")
-        .order_by("id")
+        .order_by("id")[:MAX_REPORTED_METADATA_ROWS]
     )
     evaluations = list(
-        RuleEvaluation.objects.filter(audit_id=audit_id).order_by("framework", "rule_id")
+        RuleEvaluation.objects.filter(audit_id=audit_id).order_by(
+            "framework", "rule_id"
+        )[:MAX_REPORTED_METADATA_ROWS]
     )
     analyzer_results = list(
-        RawAnalyzerResult.objects.filter(audit_id=audit_id).order_by("analyzer_name")
+        RawAnalyzerResult.objects.filter(audit_id=audit_id).order_by("analyzer_name")[
+            :MAX_REPORTED_METADATA_ROWS
+        ]
     )
     latest_job = (
         AnalysisJob.objects.filter(audit_id=audit_id)
@@ -77,7 +113,15 @@ def generate_json_report(audit_id: int) -> dict:
     source_documents = list(
         SourceDocument.objects.filter(audit_id=audit_id).order_by(
             "logical_path", "id"
+        )[:MAX_REPORTED_METADATA_ROWS]
+    )
+    agent_runs = list(
+        AgentRun.objects.filter(
+            audit_id=audit_id,
+            objective=AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION,
         )
+        .select_related("assessment_plan", "runtime")
+        .order_by("-created_at", "-id")[:MAX_REPORTED_AGENT_RUNS]
     )
 
     risk = calculate_risk_score(audit_id)
@@ -165,7 +209,137 @@ def generate_json_report(audit_id: int) -> dict:
             ],
         },
         "analysis_job": _analysis_job_data(latest_job),
-        "limitations": REPORT_LIMITATIONS,
+        "dynamic_assessments": {
+            "count": AgentRun.objects.filter(
+                audit_id=audit_id,
+                objective=AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION,
+            ).count(),
+            "items": [_agent_run_data(run) for run in agent_runs],
+            "bounded": True,
+            "planner_is_execution_authority": False,
+            "finding_authority": "DETERMINISTIC_RULES_ONLY",
+        },
+        "limitations": (
+            RUNTIME_REPORT_LIMITATIONS if agent_runs else REPORT_LIMITATIONS
+        ),
+    }
+
+
+def _agent_run_data(run: AgentRun) -> dict:
+    plan = run.assessment_plan
+    steps = list(
+        run.steps.order_by("sequence_number").values(
+            "id",
+            "sequence_number",
+            "plan_step_identifier",
+            "tool_name",
+            "status",
+            "started_at",
+            "finished_at",
+            "duration_seconds",
+            "retry_count",
+            "failure_message",
+        )[:MAX_REPORTED_AGENT_STEPS]
+    )
+    artifacts = list(
+        run.artifacts.order_by("id").values(
+            "id",
+            "step_id",
+            "artifact_type",
+            "name",
+            "content_type",
+            "size_bytes",
+            "sha256",
+            "object_reference_id",
+        )[:MAX_REPORTED_AGENT_ARTIFACTS]
+    )
+    evidence = list(
+        run.evidence_records.order_by("id").values(
+            "id",
+            "finding_id",
+            "agent_run_step_id",
+            "agent_run_artifact_id",
+            "evidence_type",
+            "source",
+            "snippet",
+            "redacted",
+            "sha256",
+            "created_at",
+        )[:MAX_REPORTED_AGENT_EVIDENCE]
+    )
+    capabilities = sorted(
+        {
+            row["tool_name"]
+            for row in steps
+            if row["tool_name"] != "assessment_plan_observation"
+        }
+    )
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "target_package": run.target_package,
+        "started_at": _isoformat(run.started_at),
+        "finished_at": _isoformat(run.finished_at),
+        "duration_seconds": run.duration_seconds,
+        "execution_channel": "RUN_SCOPED_TOOL_GATEWAY",
+        "runtime": run.runtime.name if run.runtime_id else "Unavailable",
+        "plan": {
+            "id": run.assessment_plan_id,
+            "kind": plan.plan_kind if plan is not None else "Unavailable",
+            "adaptive_cycle": plan.adaptive_cycle if plan is not None else 0,
+            "parent_plan_id": plan.parent_plan_id if plan is not None else None,
+            "source_run_id": plan.source_run_id if plan is not None else None,
+            "hash": run.approved_plan_hash,
+            "planner_provider": plan.planner_provider if plan is not None else "Unavailable",
+            "planner_model": plan.planner_model if plan is not None else "Unavailable",
+            "objective": _redact_report_text(plan.objective if plan is not None else ""),
+            "scope": _redact_report_text(plan.scope if plan is not None else ""),
+            "approved_by_id": plan.approved_by_id if plan is not None else None,
+            "approved_at": _isoformat(plan.approved_at) if plan is not None else None,
+        },
+        "capabilities_used": capabilities,
+        "steps": [
+            {
+                **{key: value for key, value in row.items() if key != "failure_message"},
+                "started_at": _isoformat(row["started_at"]),
+                "finished_at": _isoformat(row["finished_at"]),
+                "failure_message": _redact_report_text(row["failure_message"]),
+                "artifact_count": sum(
+                    1 for artifact in artifacts if artifact["step_id"] == row["id"]
+                ),
+                "evidence_count": sum(
+                    1
+                    for item in evidence
+                    if item["agent_run_step_id"] == row["id"]
+                ),
+            }
+            for row in steps
+        ],
+        "artifacts": [
+            {
+                **row,
+                "name": _redact_report_text(row["name"], limit=255),
+            }
+            for row in artifacts
+        ],
+        "evidence": [
+            {
+                **row,
+                "source": _redact_report_text(row["source"], limit=500),
+                "snippet": _redact_report_text(row["snippet"]),
+                "created_at": _isoformat(row["created_at"]),
+            }
+            for row in evidence
+        ],
+        "finding_ids": sorted(
+            {row["finding_id"] for row in evidence if row["finding_id"] is not None}
+        ),
+        "provenance": {
+            "plan": "CANONICAL_APPROVED_ASSESSMENT_PLAN_V1",
+            "execution": "SEQUENTIAL_BOUNDED_EXECUTOR",
+            "observations": "UNTRUSTED_APPLICATION_DATA",
+            "findings": "DETERMINISTIC_RULE_EVALUATION",
+        },
     }
 
 
@@ -190,6 +364,11 @@ def _apk_data(apk_file: APKFile | None) -> dict | None:
 
 
 def _finding_data(finding: Finding) -> dict:
+    linked_evidence = list(
+        finding.evidence.order_by("id").values(
+            "agent_run_id", "agent_run_step_id", "agent_run_artifact_id"
+        )[:MAX_REPORTED_AGENT_EVIDENCE]
+    )
     return {
         "id": finding.id,
         "rule_id": finding.rule_id,
@@ -198,11 +377,30 @@ def _finding_data(finding: Finding) -> dict:
         "confidence": finding.confidence,
         "standard": finding.standard,
         "category": finding.category,
-        "description": finding.description,
+        "description": _redact_report_text(finding.description),
         "mappings": finding.mapping_data,
-        "recommendation": finding.recommendation,
-        "false_positive_guidance": finding.false_positive_guidance,
+        "recommendation": _redact_report_text(finding.recommendation),
+        "false_positive_guidance": _redact_report_text(
+            finding.false_positive_guidance
+        ),
         "requires_manual_validation": finding.requires_manual_validation,
+        "status": finding.status,
+        "evidence_count": finding.evidence.count(),
+        "related_agent_run_ids": sorted(
+            {row["agent_run_id"] for row in linked_evidence if row["agent_run_id"]}
+        ),
+        "related_agent_run_step_ids": sorted(
+            {
+                row["agent_run_step_id"]
+                for row in linked_evidence
+                if row["agent_run_step_id"]
+            }
+        ),
+        "provenance": (
+            "DETERMINISTIC_DYNAMIC_EVIDENCE"
+            if finding.rule_id.startswith("MSAP-DYN-")
+            else "DETERMINISTIC_STATIC_RULE"
+        ),
         "source_evidence": [
             _source_reference_data(reference)
             for reference in finding.source_references.all()
@@ -293,9 +491,13 @@ def _evidence_data(evidence: Evidence) -> dict:
         "finding_id": evidence.finding_id,
         "indicator_id": evidence.indicator_id,
         "evidence_type": evidence.evidence_type,
-        "source": evidence.source,
-        "snippet": evidence.snippet,
+        "agent_run_id": evidence.agent_run_id,
+        "agent_run_step_id": evidence.agent_run_step_id,
+        "agent_run_artifact_id": evidence.agent_run_artifact_id,
+        "source": _redact_report_text(evidence.source, limit=500),
+        "snippet": _redact_report_text(evidence.snippet),
         "redacted": evidence.redacted,
+        "sha256": evidence.sha256,
     }
 
 
@@ -341,3 +543,10 @@ def _isoformat(value) -> str | None:
 def _apk_filename(object_key: str) -> str:
     filename = PurePosixPath(object_key).name
     return re.sub(r"^[0-9a-fA-F]{32}-", "", filename)
+
+
+def _redact_report_text(value, *, limit: int = REPORT_TEXT_LIMIT) -> str:
+    text = str(value or "").replace("\x00", "")
+    for pattern in REPORT_SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text[:limit]

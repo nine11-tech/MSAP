@@ -404,6 +404,14 @@ if MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT not in {
 }:
     MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = "medium"
 
+# Adaptive assessment proposes, validates, and persists a new plan only after a
+# completed run. It never auto-approves or auto-executes. The database contract
+# also caps the lineage at two cycles so configuration cannot create recursion.
+MSAP_ASSESSMENT_MAX_ADAPTIVE_CYCLES = min(
+    2,
+    max(1, int(os.getenv("MSAP_ASSESSMENT_MAX_ADAPTIVE_CYCLES", "2"))),
+)
+
 # Approved AssessmentPlan execution is sequential and remains inside the
 # existing run-scoped gateway. These backend-only bounds cannot be selected by
 # the planner or browser.

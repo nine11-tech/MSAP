@@ -70,7 +70,7 @@ def generate_pdf_report(audit_id: int) -> bytes:
         bottomMargin=18 * mm,
         title="MSAP Mobile Application Security Assessment Report",
         author=settings.MSAP_REPORT_AUTHOR,
-        subject="Deterministic static Android security assessment",
+        subject="Auditable static and approved dynamic Android security assessment",
     )
     styles = _build_styles()
     story = _build_story(report_data, styles)
@@ -258,7 +258,8 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
         Spacer(1, 12 * mm),
         Paragraph(
             "This report is generated deterministically from persisted MSAP "
-            "results. It contains no AI-generated assessment.",
+            "results. AI planning is identified separately from approved execution, "
+            "evidence, and deterministic findings.",
             styles["small_muted"],
         ),
         PageBreak(),
@@ -268,6 +269,7 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
     story.extend(_scope_and_methodology(styles))
     story.extend(_apk_information(apk, audit, styles))
     story.extend(_risk_and_compliance(summary, styles))
+    story.extend(_dynamic_assessments_section(data, styles))
     story.extend(_coverage_section(summary.get("coverage", {}), styles))
     story.extend(
         _findings_section(
@@ -287,6 +289,73 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
     story.extend(_limitations_section(data.get("limitations", []), styles))
     story.extend(_technical_appendix(data, generated_at, styles))
     return story
+
+
+def _dynamic_assessments_section(data, styles) -> list:
+    dynamic = data.get("dynamic_assessments", {})
+    runs = dynamic.get("items", []) if isinstance(dynamic, dict) else []
+    if not runs:
+        return []
+    rows = []
+    for run in runs[:10]:
+        plan = run.get("plan", {}) if isinstance(run.get("plan"), dict) else {}
+        rows.append(
+            [
+                run.get("run_id"),
+                run.get("status"),
+                run.get("target_package"),
+                plan.get("id"),
+                str(plan.get("hash") or "")[:16],
+                len(run.get("steps", [])),
+                len(run.get("evidence", [])),
+                len(run.get("finding_ids", [])),
+            ]
+        )
+    table_data = [
+        [
+            Paragraph(_text(label), styles["table_header"])
+            for label in (
+                "Run",
+                "Status",
+                "Target",
+                "Plan",
+                "Plan hash",
+                "Steps",
+                "Evidence",
+                "Findings",
+            )
+        ]
+    ] + [
+        [Paragraph(_text(value), styles["small"]) for value in row]
+        for row in rows
+    ]
+    table = Table(
+        table_data,
+        colWidths=[12 * mm, 17 * mm, 37 * mm, 11 * mm, 28 * mm, 13 * mm, 16 * mm, 16 * mm],
+        repeatRows=1,
+    )
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), NAVY),
+                ("GRID", (0, 0), (-1, -1), 0.3, BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return [
+        Paragraph("Approved Dynamic Assessments", styles["section"]),
+        Paragraph(
+            "Planner intent, auditor approval, gateway execution, observations, "
+            "and deterministic finding resolution remain separate provenance layers.",
+            styles["notice"],
+        ),
+        table,
+    ]
 
 
 def _cover_details(

@@ -7,6 +7,7 @@ import type {
   AgentRuntime,
   AgentRunStep,
   AssessmentPlan,
+  AssessmentRunSummary,
   AnalysisStartResponse,
   AnalysisStatusResponse,
   ApkFile,
@@ -260,6 +261,20 @@ export const listAgentRunArtifacts = (runId: number) =>
   apiGet<AgentRunArtifact[]>(`dynamic/agent/runs/${runId}/artifacts/`);
 export const listAgentRunEvidence = (runId: number) =>
   apiGet<Evidence[]>(`dynamic/agent/runs/${runId}/evidence/`);
+export const getAgentRunAssessmentSummary = (runId: number) =>
+  apiGet<AssessmentRunSummary>(
+    `dynamic/agent/runs/${runId}/assessment-summary/`,
+  );
+export const recommendNextAssessment = (
+  runId: number,
+  plannerProvider?: "DETERMINISTIC" | "OPENAI",
+) =>
+  apiPost<
+    AssessmentPlan,
+    { planner_provider?: "DETERMINISTIC" | "OPENAI" }
+  >(`dynamic/agent/runs/${runId}/recommend-next-assessment/`, {
+    ...(plannerProvider ? { planner_provider: plannerProvider } : {}),
+  });
 export const cancelAssessmentExecution = (runId: number) =>
   apiPost<AgentRun, Record<string, never>>(
     `dynamic/agent/runs/${runId}/cancel/`,

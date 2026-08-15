@@ -129,32 +129,53 @@ will show **Container Sandbox (Unavailable)**.
 
 ## AI Assessment Planner and bounded execution
 
-Sprint D keeps planning separate from execution and does not replace the
-existing deterministic run controls:
+Sprint D keeps AI planning, approval, execution, evidence, deterministic
+findings, and reporting visibly separate. Use these phases for the final demo:
 
-1. Select the AndroGoat audit and `owasp.sat.agoat` from the verified-package
-   targets.
-2. Select **OpenAI · GPT-5.5** for a configured live provider, or
-   **Deterministic reference** for offline demonstration.
-3. Keep or edit the bounded objective and scope.
-4. Click **Generate Plan** and inspect the structured steps, provider latency,
-   schema status, and policy status.
-5. Confirm every visible tool is one of the existing gateway tools and that the
-   plan includes expected observations, success conditions, evidence, and
-   dependencies.
-6. Click **Validate Plan** and then **Approve Plan**.
-7. Confirm the state is `APPROVED` and generation, validation, and approval did
-   not create an AgentRun or change emulator state.
-8. Click **Execute Assessment**. Confirm one plan-linked AgentRun appears and
-   progresses through only the immutable approved tools in sequence.
-9. Inspect tool/control step status, duration, retry count, observations,
-   artifacts, and linked evidence.
-10. Confirm dependent steps are skipped after a prerequisite failure and that a
-    controlled failure never becomes a new tool request.
-11. Confirm the terminal run/plan state is success/completed or a controlled
-    failed, timeout, or cancelled state with a bounded reason.
-12. Inspect findings/results and confirm execution created evidence only: no
-    autonomous severity, vulnerability, or malware verdict was invented.
+1. **Start infrastructure.** Run the local demo helper and confirm PostgreSQL,
+   Redis, MinIO, Django, Celery, Vite, and the host agent are ready.
+2. **Verify Django/backend.** Open `/api/health/` and confirm authenticated API
+   access works without exposing backend configuration.
+3. **Verify frontend.** Sign in as Analyst/Admin and confirm the system-status
+   banner is operational or explains any controlled degradation.
+4. **Verify Dynamic Lab.** Confirm `emulator-5554`, Android/API/ABI, SELinux,
+   package inventory, and the accepted C2/C3 controls.
+5. **Create/select audit.** Select the authorized AndroGoat audit and verified
+   package `owasp.sat.agoat`.
+6. **Generate GPT-5.5 plan.** Choose **OpenAI · GPT-5.5** when configured or the
+   deterministic reference for an offline demo, then select **Generate Plan**.
+   This phase is AI-generated intent only.
+7. **Inspect validation.** Confirm the canonical plan has ordered IDs,
+   dependencies, bounded arguments/evidence, and only manifest capabilities.
+8. **Inspect policy.** Confirm target, objective, scope, package ownership,
+   destructive controls, and policy status are accepted by Django.
+9. **Approve plan.** Select **Approve Plan** and prove no AgentRun/tool call or
+   emulator change occurred. This is auditor authorization, not execution.
+10. **Execute assessment.** Select **Execute Assessment**. The endpoint accepts
+    no commands/tools/arguments and creates one immutable plan-linked run.
+11. **Inspect AgentRun timeline.** Review sequence, capability, status,
+    start/end, duration, retries, dependency skips, and controlled failures.
+12. **Inspect observations/artifacts.** Confirm observations are labeled
+    untrusted data and large screenshot/log/UI bytes remain referenced artifacts.
+13. **Inspect evidence.** Verify audit/plan hash/run/step/artifact/tool hashes and
+    provenance.
+14. **Generate findings.** Confirm only `MSAP-DYN-*`/existing deterministic rules
+    create or update findings. AI/application prose alone creates none.
+15. **Inspect risk/compliance score.** Confirm existing deterministic scoring is
+    recalculated; informational runtime observations do not inflate risk.
+16. **Open report.** Select **View Assessment Report** and inspect the approved
+    plan, execution, evidence, findings, scores, artifact metadata, provenance,
+    status, and limitations. Download the existing PDF if desired.
+17. **Request next assessment recommendation.** On a completed run, select
+    **Recommend Next Assessment**.
+18. **Inspect proposed adaptive plan.** Confirm it preserves audit, target,
+    objective, and scope; has a new hash; uses only gateway capabilities; and
+    clearly requires auditor approval. No AgentRun is created.
+19. **Approve adaptive plan.** Validate and approve it as a new authorization.
+    The approval step still does not execute tools.
+20. **Execute second assessment if desired.** Select execution explicitly and
+    review a new AgentRun. The lineage is capped at two adaptive cycles and
+    cannot recursively auto-run.
 
 Local demo mode uses the deterministic provider and requires no OpenAI key. The
 OpenAI provider is backend-only, is configured for `gpt-5.5`, and returns the
@@ -167,6 +188,11 @@ present. Approval must still leave the AgentRun count and emulator unchanged.
 Raw `generated_plan` content is planner intent only; it must never be copied to
 a runner, shell, Frida CLI, or host-agent request.
 
+At every phase identify the provenance label: **AI generated**, **schema
+validated**, **policy accepted**, **auditor approved**, **actually executed**,
+**observed**, **deterministic finding**, or **report output**. No phase silently
+promotes data from one label into another.
+
 ## Operational checks
 
 Dynamic Lab reports:
@@ -176,9 +202,10 @@ Dynamic Lab reports:
 - MinIO online or offline.
 - Celery online or offline.
 
-The screenshot is transient browser state and is not retained as a report
-artifact in this MVP. Device events are retained for sync, screenshot, install,
-launch, force stop, clear data, and uninstall actions.
+The standalone manual screenshot control is transient browser state. Screenshots
+captured by approved AgentRuns use the existing bounded artifact/evidence path
+and appear in report metadata. Device events are retained for sync, screenshot,
+install, launch, force stop, clear data, and uninstall actions.
 
 ## Security boundaries
 

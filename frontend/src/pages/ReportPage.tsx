@@ -51,13 +51,14 @@ export function ReportPage() {
 
   if (loading) return <LoadingState label="Generating JSON report…" />;
   if (!report) return <ErrorMessage message={error || "Report unavailable."} />;
+  const dynamicRuns = report.dynamic_assessments?.items || [];
 
   return (
     <>
       <PageHeader
         eyebrow={`JSON report #${report.report.id}`}
         title={report.audit.name}
-        description={`${report.project.name} • On-demand static assessment report`}
+        description={`${report.project.name} • Auditable static and approved dynamic assessment report`}
         actions={
           <>
             <Link className="button button-secondary" to={`/audits/${id}`}>
@@ -79,7 +80,7 @@ export function ReportPage() {
         <Card className="metric-card">
           <span className="metric-label">Audit status</span>
           <StatusBadge value={report.audit.status} />
-          <span className="muted">Static analysis</span>
+          <span className="muted">Static + approved runtime evidence</span>
         </Card>
         <Card className="metric-card">
           <span className="metric-label">Risk score</span>
@@ -106,6 +107,55 @@ export function ReportPage() {
           </span>
         </Card>
       </div>
+
+      <Card title={`Approved dynamic assessments (${dynamicRuns.length})`}>
+        {dynamicRuns.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>Target</th>
+                  <th>Status</th>
+                  <th>Plan / hash</th>
+                  <th>Capabilities</th>
+                  <th>Evidence</th>
+                  <th>Findings</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dynamicRuns.map((item, index) => {
+                  const plan = asRecord(item.plan);
+                  const capabilities = Array.isArray(item.capabilities_used)
+                    ? item.capabilities_used
+                    : [];
+                  const evidence = Array.isArray(item.evidence) ? item.evidence : [];
+                  const findingIds = Array.isArray(item.finding_ids) ? item.finding_ids : [];
+                  return (
+                    <tr key={String(item.run_id ?? index)}>
+                      <td className="mono">#{String(item.run_id ?? "—")}</td>
+                      <td className="mono">{String(item.target_package ?? "—")}</td>
+                      <td><StatusBadge value={String(item.status ?? "Unknown")} /></td>
+                      <td className="mono">
+                        #{String(plan.id ?? "—")} · {String(plan.hash ?? "Unavailable").slice(0, 16)}…
+                      </td>
+                      <td>{capabilities.map(String).join(", ") || "None"}</td>
+                      <td>{evidence.length}</td>
+                      <td>{findingIds.length}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <EmptyState message="No approved AgentRun evidence is recorded for this audit." />
+        )}
+        <p className="notice">
+          AI planning, auditor approval, gateway execution, untrusted observations,
+          and deterministic findings are separate provenance layers.
+        </p>
+      </Card>
 
       <Card title={`Findings (${report.findings.length})`}>
         {report.findings.length ? (
@@ -247,4 +297,10 @@ export function ReportPage() {
       </Card>
     </>
   );
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }

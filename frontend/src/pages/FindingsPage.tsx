@@ -92,7 +92,7 @@ export function FindingsPage() {
       <PageHeader
         eyebrow="Deterministic results"
         title="Security findings"
-        description="Failed static checks backed by normalized evidence. Review confidence and manual-validation guidance before disposition."
+        description="Deterministic static rules and bounded runtime-evidence rules. AI recommendations never create findings or assign risk."
       />
       {error ? <ErrorMessage message={error} /> : null}
       <Card>
@@ -106,7 +106,7 @@ export function FindingsPage() {
           <>
             <div className="table-wrap">
               <table>
-                <thead><tr><th>Rule</th><th>Finding</th><th>Severity</th><th>Confidence</th><th>MASVS control</th><th>Audit / Project</th><th>Created</th></tr></thead>
+                <thead><tr><th>Rule</th><th>Finding</th><th>Severity</th><th>Confidence</th><th>MASVS control</th><th>Provenance</th><th>Audit / Project</th><th>Created</th></tr></thead>
                 <tbody>{visible.map((finding) => {
                   const audit = auditMap.get(finding.audit);
                   const project = audit ? projectMap.get(audit.project) : undefined;
@@ -117,6 +117,7 @@ export function FindingsPage() {
                       <td><SeverityBadge value={finding.severity} /></td>
                       <td>{finding.confidence}</td>
                       <td>{finding.masvs_controls?.join(", ") || finding.category || "—"}</td>
+                      <td><small>{finding.provenance === "DETERMINISTIC_DYNAMIC_EVIDENCE" ? `Runtime evidence · ${finding.evidence_count || 0} records` : "Deterministic static rule"}</small></td>
                       <td>{audit ? <Link to={`/audits/${audit.id}`} onClick={(event) => event.stopPropagation()}>{audit.name}</Link> : `#${finding.audit}`}<small>{project?.name || "Unknown project"}</small></td>
                       <td>{formatDate(finding.created_at)}</td>
                     </tr>
