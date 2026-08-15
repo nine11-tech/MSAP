@@ -83,6 +83,10 @@ export interface Finding {
   status?: string;
   created_at: string;
   source_reference_count?: number;
+  evidence_count?: number;
+  related_agent_runs?: number[];
+  related_agent_run_steps?: number[];
+  provenance?: "DETERMINISTIC_DYNAMIC_EVIDENCE" | "DETERMINISTIC_STATIC_RULE";
 }
 
 export type SourceRepresentation =
@@ -373,6 +377,13 @@ export interface JsonReport {
     items: Array<Record<string, unknown>>;
   };
   analysis_job: Record<string, unknown> | null;
+  dynamic_assessments: {
+    count: number;
+    bounded: boolean;
+    planner_is_execution_authority: boolean;
+    finding_authority: string;
+    items: Array<Record<string, unknown>>;
+  };
   limitations: string[];
 }
 
@@ -801,6 +812,44 @@ export interface AgentRunResultSummary {
   evidence_count?: number;
   observations_are_untrusted_data?: boolean;
   finding_count_created?: number;
+  finding_count_total?: number;
+  risk?: { score?: number | null; severity?: string };
+  compliance?: { standard?: string; score?: number | null };
+  report?: { id?: number; type?: string; status?: string };
+  post_processing?: Record<string, unknown>;
+}
+
+export interface AssessmentRunSummary {
+  contract_version: "msap.assessment-summary/v1";
+  audit_id: number;
+  target_package: string;
+  assessment_status: AgentRun["status"];
+  assessment_plan_id: number;
+  plan_hash: string;
+  agent_run_id: number;
+  steps_total: number;
+  steps_succeeded: number;
+  step_status_counts: Record<string, number>;
+  tool_call_count: number;
+  observation_count: number;
+  artifact_count: number;
+  evidence_count: number;
+  run_finding_count: number;
+  audit_finding_count: number;
+  finding_severity_counts: Record<string, number>;
+  run_findings: Array<{
+    id: number;
+    rule_id: string;
+    title: string;
+    severity: string;
+    confidence: string;
+    status: string;
+    category: string;
+  }>;
+  risk: { score: number | null; severity: string };
+  compliance: { standard: string; score: number | null };
+  report: { id: number | null; status: string; type: string };
+  provenance: Record<string, string>;
 }
 
 export type AgentObjective =
@@ -997,6 +1046,10 @@ export interface AssessmentPlanStep {
 export interface AssessmentPlan {
   id: number;
   audit: number;
+  plan_kind: "INITIAL" | "ADAPTIVE";
+  parent_plan: number | null;
+  source_run: number | null;
+  adaptive_cycle: number;
   target_package: string;
   planner_provider: "DETERMINISTIC" | "OPENAI";
   planner_model: string;

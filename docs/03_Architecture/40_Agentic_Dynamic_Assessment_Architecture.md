@@ -2,11 +2,14 @@
 
 ## Purpose and current scope
 
-Sprint D adds a persistent, plan-only AI assessment planner above the accepted
-Sprint C2/C3 deterministic mobile evidence runtime. The planner can use GPT-5.5
-through a backend provider abstraction, or a deterministic provider for local
-development and tests. It cannot execute tools, perform autonomous pentesting,
-confirm vulnerabilities, or produce malware verdicts.
+Sprint D completes a bounded assessment workflow above the accepted Sprint
+C2/C3 mobile evidence runtime. GPT-5.5 (or the deterministic reference provider)
+produces structured intent only. Django validates policy, records explicit
+auditor approval, executes an immutable approved projection through the existing
+gateway, resolves evidence with deterministic rules, recalculates deterministic
+scores, and renders an auditable report. The model cannot execute tools,
+perform autonomous pentesting, create findings, assign risk, confirm
+vulnerabilities, or produce malware verdicts.
 
 An authenticated Analyst or Admin can request one of two objectives:
 
@@ -34,8 +37,21 @@ Strict plan schema + backend policy validator
     |
     v
 Persistent GENERATED -> VALIDATED -> APPROVED plan
-
-No execution edge exists from an AssessmentPlan in Sprint D.
+    |
+    v
+ApprovedAssessmentPlan v1 -> bounded Assessment Executor -> AgentRun
+    |
+    v
+Existing Tool Gateway -> C2 mobile / C3 Frida capabilities
+    |
+    v
+Bounded observations -> artifacts -> evidence
+    |
+    v
+Deterministic runtime rules -> findings -> risk/compliance -> report
+    |
+    v
+Optional adaptive recommendation -> new validation + new auditor approval
 
 Existing deterministic execution remains separate:
 
@@ -367,9 +383,63 @@ cannot add steps or become instructions. Existing object storage retains large
 artifacts; PostgreSQL retains references, hashes, sizes, bounded summaries, and
 evidence provenance linking audit, plan hash, run, run step, artifact, and tool.
 
-Execution creates evidence, not verdicts. It does not create severity or
-vulnerability conclusions from tool output. The deterministic finding and
-report pipelines remain separate.
+Execution creates evidence, not verdicts. Post-run processing invokes the
+existing deterministic rule, scoring, and report layers; application or model
+text is never a finding condition.
+
+### Deterministic evidence, findings, scores, and reports
+
+After a successful, failed, or timed-out approved-plan run, MSAP evaluates only
+closed runtime conditions over structured gateway observations. The initial
+runtime catalog records: a structured controlled `ui_modification` Frida event,
+a zero-node UI evidence limitation, and incomplete run coverage. These records
+are informational/manual-review findings, not vulnerabilities. Stable
+`MSAP-DYN-*` rule IDs and the existing `(audit, rule_id)` uniqueness constraint
+deduplicate repeated runs. Linked `Evidence` retains run, step, artifact, hash,
+plan hash, and deterministic-rule provenance.
+
+The existing risk service remains authoritative. Informational runtime records
+carry zero risk weight; substantive existing deterministic findings continue to
+drive risk. MASVS compliance remains derived from persisted MASVS
+`RuleEvaluation` records. GPT-5.5 does not assign severity, confidence, risk, or
+compliance.
+
+The existing JSON/PDF report now includes bounded approved-run metadata:
+authorized target, objective/scope, provider/model, approval and plan hash,
+execution timing, ordered capabilities, step state/retries, artifact metadata,
+evidence metadata, linked deterministic findings, scores, and limitations.
+Artifact bytes and full logs/UI XML are referenced rather than embedded.
+Credential-shaped values are redacted. The report explicitly separates AI
+planning, approved execution, untrusted observations, deterministic findings,
+and deterministic scoring.
+
+### Bounded adaptive assessment between runs
+
+Adaptive assessment is a recommendation boundary, not mid-run replanning:
+
+```text
+Completed AgentRun
+    -> bounded/redacted evidence + artifact metadata + observations
+    -> GPT-5.5 or deterministic planner
+    -> new AssessmentPlan candidate
+    -> schema validation + policy validation
+    -> auditor review + explicit approval
+    -> optional new AgentRun
+```
+
+`AssessmentPlan.plan_kind`, `parent_plan`, `source_run`, and `adaptive_cycle`
+provide lineage. One completed run can produce at most one recommendation, and
+the database plus backend configuration cap the lineage at two cycles. The
+candidate must preserve audit, target, objective, and scope, use the current
+manifest, and receive a new canonical hash. It is persisted as `GENERATED`; it
+cannot create a run until the normal validate and approve transitions occur.
+
+Adaptive context labels all run/application observations as untrusted data and
+includes only bounded evidence previews, screenshot/artifact metadata, step
+observations, and deterministic finding summaries. It excludes raw bytes,
+object keys, host paths, environment references, authorization material, and
+credentials. No planner-to-planner recursion, automatic approval, automatic
+execution, or unrestricted autonomous loop exists.
 
 ## Remaining limitations
 
@@ -382,8 +452,11 @@ report pipelines remain separate.
 - Package list version metadata is returned only when the host can obtain it;
   unavailable values remain empty/null.
 - Full UI XML and unbounded log streams are intentionally not retained.
-- No recursive replanning, chat UI, autonomous tool discovery, mitmproxy tool,
-  MASVS playbook, vulnerability confirmation, malware verdict, or model-driven
-  mid-run adaptation is implemented.
+- No recursive replanning, chat UI, autonomous tool discovery, model-driven
+  mid-run adaptation, vulnerability confirmation, or malware verdict is
+  implemented. Adaptive planning is limited to two separately approved cycles.
+- Dynamic rule coverage is intentionally small and evidence-oriented. It does
+  not replace a future expanded deterministic mobile rule catalog or auditor
+  validation.
 - An approved plan executes once. A rerun requires a newly generated, validated,
   and approved plan so evidence remains tied to immutable authorization.

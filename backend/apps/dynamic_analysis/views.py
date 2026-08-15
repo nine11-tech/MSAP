@@ -39,6 +39,7 @@ from apps.dynamic_analysis.authentication import (
     IsAgentRunToken,
 )
 from apps.dynamic_analysis.serializers import (
+    AdaptiveAssessmentRecommendationSerializer,
     AgentRunArtifactSerializer,
     AgentRunCreateSerializer,
     AgentRunSerializer,
@@ -89,6 +90,9 @@ from apps.dynamic_analysis.services.assessment_planner import (
 from apps.dynamic_analysis.services.assessment_executor import (
     AssessmentExecutionError,
     AssessmentExecutor,
+)
+from apps.dynamic_analysis.services.assessment_results import (
+    build_assessment_summary,
 )
 from apps.dynamic_analysis.services.host_agent_sync import (
     fetch_and_sync_host_agent,
@@ -560,6 +564,8 @@ class AssessmentPlanViewSet(
 ):
     queryset = AssessmentPlan.objects.select_related(
         "audit",
+        "parent_plan",
+        "source_run",
         "created_by",
         "approved_by",
     ).prefetch_related("steps")
@@ -706,7 +712,11 @@ class AgentRunViewSet(
     def get_permissions(self):
         if self.action == "tool_call":
             permission_classes = [IsAgentRunToken]
-        elif self.action in {"create", "cancel_execution"}:
+        elif self.action in {
+            "create",
+            "cancel_execution",
+            "recommend_next_assessment",
+        }:
             permission_classes = [IsMSAPAnalystOrAdmin]
         else:
             permission_classes = [IsMSAPViewerOrAbove]
@@ -803,6 +813,47 @@ class AgentRunViewSet(
                 ).all(),
                 many=True,
             ).data
+        )
+
+    @extend_schema(responses={200: dict})
+    @action(detail=True, methods=["get"], url_path="assessment-summary")
+    def assessment_summary(self, request, pk=None):
+        run = self.get_object()
+        if run.objective != AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION:
+            return Response(
+                {
+                    "code": "ASSESSMENT_SUMMARY_UNAVAILABLE",
+                    "detail": "This AgentRun is not an approved assessment execution.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(build_assessment_summary(run))
+
+    @extend_schema(
+        request=AdaptiveAssessmentRecommendationSerializer,
+        responses={201: AssessmentPlanSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="recommend-next-assessment")
+    def recommend_next_assessment(self, request, pk=None):
+        serializer = AdaptiveAssessmentRecommendationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = self.get_object()
+        try:
+            provider = configured_planner_provider(
+                serializer.validated_data.get("planner_provider")
+            )
+            plan = AssessmentPlannerService(provider).recommend_next(
+                source_run=run,
+                requested_by=request.user,
+            )
+        except AssessmentPlannerError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            AssessmentPlanSerializer(plan, context={"request": request}).data,
+            status=status.HTTP_201_CREATED,
         )
 
     @extend_schema(request=StrictEmptySerializer, responses={200: AgentRunSerializer})

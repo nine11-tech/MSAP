@@ -4248,6 +4248,355 @@ tbody tr:hover td {
   white-space: pre-wrap;
 }
 
+/* Auditor-facing dynamic assessment workspace */
+.assessment-workflow {
+  padding: 0.75rem 0.9rem;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0;
+  color: #91a8b8;
+  background: linear-gradient(90deg, rgba(8, 24, 37, 0.96), rgba(8, 31, 43, 0.82));
+  border: 1px solid #29465a;
+  border-radius: 8px;
+}
+
+.assessment-workflow span {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.assessment-workflow span:not(:last-child)::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  margin-right: 0.45rem;
+  background: #315166;
+}
+
+.assessment-workflow b {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  color: #9ee8d8;
+  background: #10302f;
+  border: 1px solid #326962;
+  border-radius: 50%;
+  font: 800 0.61rem "SFMono-Regular", Consolas, monospace;
+}
+
+.device-status-card,
+.target-application-card,
+.primary-assessment-card {
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.12);
+}
+
+.device-status-facts {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.device-status-facts .dynamic-status-fact,
+.target-status-strip .dynamic-status-fact {
+  min-height: 70px;
+}
+
+.device-service-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+  padding-top: 0.15rem;
+  color: #8297a9;
+  font-size: 0.65rem;
+}
+
+.service-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.service-indicator i {
+  width: 7px;
+  height: 7px;
+  background: #71879a;
+  border-radius: 50%;
+}
+
+.service-indicator.state-online i { background: #3fc69b; box-shadow: 0 0 9px rgba(63, 198, 155, 0.6); }
+.service-indicator.state-warning i { background: #e0b64f; }
+.service-indicator.state-offline i { background: #ee6f78; }
+
+.target-application-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  gap: 1rem;
+  align-items: stretch;
+}
+
+.target-application-controls {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+}
+
+.target-application-card .dynamic-apk-controls {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.target-application-card .dynamic-apk-controls label:last-child {
+  grid-column: 1 / -1;
+}
+
+.target-status-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.target-screenshot {
+  min-width: 0;
+  padding: 0.85rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.7rem;
+  background: #06131e;
+  border: 1px solid #294357;
+  border-radius: 7px;
+}
+
+.target-screenshot-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.target-screenshot-heading h3 {
+  margin: 0.14rem 0 0;
+  color: #dce8f1;
+  font-size: 0.8rem;
+}
+
+.target-capture-ready {
+  color: #83dfbd;
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.target-screenshot .dynamic-screenshot-panel,
+.target-screenshot .dynamic-screenshot-panel.has-capture {
+  min-height: 310px;
+}
+
+.target-screenshot .dynamic-screenshot-panel img {
+  height: 420px;
+  max-height: 52vh;
+}
+
+.screenshot-empty-state {
+  max-width: 270px;
+  display: grid;
+  gap: 0.35rem;
+  text-align: center;
+}
+
+.screenshot-empty-state strong {
+  color: #a9bdca;
+  font-size: 0.77rem;
+}
+
+.screenshot-empty-state span {
+  color: #71879a;
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.primary-assessment-card {
+  position: relative;
+  overflow: hidden;
+  border-color: #397083;
+  background: linear-gradient(145deg, rgba(10, 29, 43, 0.98), rgba(6, 20, 31, 0.98));
+}
+
+.primary-assessment-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, #46cdb3, #4b9fc2, transparent 85%);
+}
+
+.planner-field-hint {
+  display: block;
+  margin-top: 0.3rem;
+  color: #738a9c;
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
+.planner-objective-field textarea,
+.planner-scope-field textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.planner-empty-result {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.planner-empty-result strong { color: #b9cbd7; }
+.planner-empty-result span { font-size: 0.68rem; }
+
+.assessment-lifecycle {
+  margin: 0;
+  padding: 0.75rem;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  list-style: none;
+  background: #071521;
+  border: 1px solid #294357;
+  border-radius: 7px;
+}
+
+.assessment-lifecycle li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: #687f91;
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.assessment-lifecycle li:not(:last-child)::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  margin-right: 0.45rem;
+  background: #294357;
+}
+
+.assessment-lifecycle li > span {
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+  display: grid;
+  place-items: center;
+  background: #10202d;
+  border: 1px solid #30495d;
+  border-radius: 50%;
+  font: 800 0.62rem "SFMono-Regular", Consolas, monospace;
+}
+
+.assessment-lifecycle li.is-complete,
+.assessment-lifecycle li.is-current { color: #bfe7df; }
+.assessment-lifecycle li.is-complete > span { color: #a7eadb; background: #11312d; border-color: #317261; }
+.assessment-lifecycle li.is-current > span { color: #06151b; background: #62d9c1; border-color: #79ead3; box-shadow: 0 0 12px rgba(98, 217, 193, 0.25); }
+.assessment-lifecycle li.is-failed > span { color: #ffb6bd; background: #351820; border-color: #74313d; }
+
+.plan-details-disclosure,
+.assessment-evidence-disclosure {
+  border: 1px solid #2a4559;
+  border-radius: 7px;
+  background: rgba(5, 17, 27, 0.65);
+}
+
+.plan-details-disclosure > summary,
+.assessment-evidence-disclosure > summary {
+  padding: 0.75rem 0.85rem;
+  color: #a9d8df;
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+}
+
+.plan-details-content {
+  padding: 0 0.85rem 0.85rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.execution-progress {
+  padding: 0.8rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.7rem;
+  background: #071521;
+  border: 1px solid #294357;
+  border-radius: 7px;
+}
+
+.execution-progress > div { min-width: 0; display: grid; gap: 0.2rem; }
+.execution-progress span { color: #7f94a7; font-size: 0.61rem; font-weight: 700; text-transform: uppercase; }
+.execution-progress strong { color: #d8e6ee; font-size: 0.72rem; overflow-wrap: anywhere; }
+.execution-progress progress { grid-column: 1 / -1; width: 100%; height: 7px; accent-color: #4fcdb3; }
+
+.adaptive-action {
+  display: grid;
+  gap: 0.2rem;
+  text-align: center;
+}
+
+.adaptive-action small { color: #8ca2b2; font-size: 0.58rem; }
+
+.assessment-evidence-disclosure { margin-top: 1rem; scroll-margin-top: 1rem; }
+.assessment-evidence-grid { padding: 0 0.85rem 0.85rem; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; }
+.assessment-evidence-grid section { min-width: 0; padding: 0.75rem; background: #071521; border: 1px solid #243d50; border-radius: 6px; }
+.assessment-evidence-grid h4 { margin: 0; color: #d4e2ea; font-size: 0.76rem; }
+.assessment-evidence-grid ul { margin: 0.65rem 0 0; padding: 0; display: grid; gap: 0.45rem; list-style: none; }
+.assessment-evidence-grid li { min-width: 0; padding: 0.5rem; display: grid; gap: 0.15rem; background: #091a28; border-radius: 5px; }
+.assessment-evidence-grid strong { color: #cfe1e9; font-size: 0.68rem; overflow-wrap: anywhere; }
+.assessment-evidence-grid span,
+.assessment-evidence-grid small,
+.assessment-evidence-grid a { color: #8fa6b5; font-size: 0.62rem; line-height: 1.4; overflow-wrap: anywhere; }
+.assessment-evidence-grid a { color: #80d9cb; }
+
+.advanced-operator-panel {
+  overflow: hidden;
+  background: rgba(5, 16, 25, 0.72);
+  border: 1px solid #263e51;
+  border-radius: 8px;
+}
+
+.advanced-operator-panel > summary {
+  padding: 0.95rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  color: #a9bdca;
+  cursor: pointer;
+  list-style: none;
+}
+
+.advanced-operator-panel > summary::-webkit-details-marker { display: none; }
+.advanced-operator-panel > summary > span:first-child { display: grid; gap: 0.2rem; }
+.advanced-operator-panel > summary strong { color: #c3d3dd; font-size: 0.78rem; }
+.advanced-operator-panel > summary small { color: #718799; font-size: 0.65rem; font-weight: 400; }
+.advanced-toggle-label { color: #82d4c7; font-size: 0.65rem; font-weight: 800; text-transform: uppercase; }
+.advanced-operator-panel[open] .advanced-toggle-label { font-size: 0; }
+.advanced-operator-panel[open] .advanced-toggle-label::after { content: "Hide advanced"; font-size: 0.65rem; }
+
+.advanced-operator-content {
+  padding: 0 0.8rem 0.8rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.advanced-operator-content > .card { margin: 0; box-shadow: none; }
+
 @media (max-width: 980px) {
   .dynamic-device-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4283,6 +4632,20 @@ tbody tr:hover td {
   .runtime-proof-controls {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .assessment-workflow {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.55rem 0;
+  }
+
+  .target-application-layout,
+  .assessment-evidence-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .execution-progress {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -4323,5 +4686,40 @@ tbody tr:hover td {
   .planner-step-state {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .assessment-workflow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .assessment-workflow span:not(:last-child)::after {
+    display: none;
+  }
+
+  .target-application-card .dynamic-apk-controls,
+  .target-status-strip,
+  .assessment-lifecycle {
+    grid-template-columns: 1fr;
+  }
+
+  .assessment-lifecycle {
+    gap: 0.5rem;
+  }
+
+  .assessment-lifecycle li:not(:last-child)::after {
+    display: none;
+  }
+
+  .target-application-card .dynamic-apk-controls label:last-child {
+    grid-column: auto;
+  }
+
+  .target-screenshot .dynamic-screenshot-panel,
+  .target-screenshot .dynamic-screenshot-panel.has-capture {
+    min-height: 260px;
+  }
+
+  .advanced-operator-panel > summary {
+    align-items: flex-start;
   }
 }

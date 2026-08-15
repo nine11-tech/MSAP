@@ -5,6 +5,7 @@ class RuleEvaluation(models.Model):
     class Framework(models.TextChoices):
         MASVS = "MASVS", "OWASP MASVS"
         ATTACK_MOBILE = "ATTACK_MOBILE", "MITRE ATT&CK Mobile"
+        DYNAMIC_RUNTIME = "DYNAMIC_RUNTIME", "MSAP Dynamic Runtime"
 
     class Result(models.TextChoices):
         PASS = "PASS", "Pass"

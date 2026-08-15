@@ -112,7 +112,6 @@ class AssessmentExecutor:
             with transaction.atomic():
                 persisted = (
                     AssessmentPlan.objects.select_for_update()
-                    .select_related("audit", "approved_by")
                     .get(pk=plan.pk)
                 )
                 contract = build_approved_execution_contract(persisted)
@@ -255,7 +254,7 @@ class AssessmentExecutor:
         if user_role(requested_by) not in {"ADMIN", "ANALYST"}:
             raise AssessmentExecutionPermissionError()
         with transaction.atomic():
-            run = AgentRun.objects.select_for_update().select_related("assessment_plan").get(pk=run.pk)
+            run = AgentRun.objects.select_for_update().get(pk=run.pk)
             if run.objective != AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION:
                 raise AssessmentExecutionError(
                     "Only approved-plan execution runs use this cancellation endpoint.",
@@ -299,7 +298,7 @@ class AssessmentExecutor:
     @staticmethod
     def mark_enqueue_failed(run: AgentRun) -> AgentRun:
         with transaction.atomic():
-            run = AgentRun.objects.select_for_update().select_related("assessment_plan").get(pk=run.pk)
+            run = AgentRun.objects.select_for_update().get(pk=run.pk)
             if run.status != AgentRun.Status.QUEUED:
                 return run
             now = timezone.now()
@@ -372,7 +371,6 @@ class AssessmentExecutor:
         with transaction.atomic():
             run = (
                 AgentRun.objects.select_for_update()
-                .select_related("assessment_plan", "runtime", "requested_by")
                 .get(pk=run_id)
             )
             if run.objective != AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION:
@@ -747,6 +745,7 @@ class AssessmentExecutor:
         AssessmentPlan.objects.filter(pk=run.assessment_plan_id).update(
             status=plan_status, updated_at=now
         )
+        self._resolve_post_processing(run)
         if run.runtime_id:
             AgentRuntime.objects.filter(pk=run.runtime_id).update(last_seen_at=now, updated_at=now)
         security_logger.info(
@@ -756,6 +755,39 @@ class AssessmentExecutor:
             run.artifacts.count(), run.evidence_records.count(),
         )
         return run
+
+    @staticmethod
+    def _resolve_post_processing(run: AgentRun) -> None:
+        try:
+            from apps.dynamic_analysis.services.assessment_results import (
+                resolve_completed_assessment,
+            )
+
+            result = resolve_completed_assessment(run)
+        except Exception as exc:  # deterministic reporting must not corrupt run state
+            logger.error(
+                "assessment_post_processing_failed run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            result = {
+                "status": "FAILED",
+                "reason": "Deterministic post-processing failed safely.",
+            }
+        run.refresh_from_db()
+        summary = AssessmentExecutor._result_summary(run)
+        summary["post_processing"] = result
+        deterministic = result.get("deterministic_rules", {})
+        assessment = result.get("assessment_summary", {})
+        summary["finding_count_created"] = deterministic.get(
+            "findings_created", 0
+        )
+        summary["finding_count_total"] = assessment.get("audit_finding_count", 0)
+        summary["risk"] = assessment.get("risk", {})
+        summary["compliance"] = assessment.get("compliance", {})
+        summary["report"] = result.get("report", {"status": "NOT_GENERATED"})
+        run.result_summary = summary
+        run.save(update_fields=["result_summary", "updated_at"])
 
     @staticmethod
     def _sync_plan_step_statuses(run: AgentRun, *, cancelled: bool = False) -> None:

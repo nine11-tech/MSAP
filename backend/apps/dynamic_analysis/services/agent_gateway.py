@@ -79,7 +79,6 @@ def execute_run_tool_call(
     with transaction.atomic():
         run = (
             AgentRun.objects.select_for_update()
-            .select_related("requested_by", "runtime", "assessment_plan")
             .get(pk=run_id)
         )
         if run.status != AgentRun.Status.RUNNING:
@@ -264,7 +263,6 @@ def execute_run_tool_call(
     with transaction.atomic():
         run = (
             AgentRun.objects.select_for_update()
-            .select_related("runtime")
             .get(pk=run_id)
         )
         step = AgentRunStep.objects.select_for_update().get(pk=step_id, run=run)
@@ -354,7 +352,6 @@ def _record_tool_failure(*, run_id: int, step_id: int, error: AgentToolError) ->
     with transaction.atomic():
         run = (
             AgentRun.objects.select_for_update()
-            .select_related("runtime")
             .get(pk=run_id)
         )
         step = AgentRunStep.objects.select_for_update().get(pk=step_id, run=run)

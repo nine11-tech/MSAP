@@ -119,6 +119,16 @@ UNSAFE_INSTRUCTION_PATTERNS = (
         re.IGNORECASE,
     ),
 )
+SAFE_PROHIBITION_PREFIX_RE = re.compile(
+    r"^\s*(?:do\s+not|never)\s+"
+    r"(?:access|bypass|call|create|disable|execute|infer|invoke|read|remove|"
+    r"request|reveal|run|start|use|weaken|write)\b",
+    re.IGNORECASE,
+)
+PROHIBITION_ESCAPE_RE = re.compile(
+    r"[;:`]|\$\(|&&|\|\||\b(?:but|except|however|instead|then|unless)\b",
+    re.IGNORECASE,
+)
 
 
 class AssessmentPlanContractError(ValueError):
@@ -329,7 +339,15 @@ def validate_value_against_schema(
 
 
 def reject_unsafe_instruction(value: str, *, field: str) -> None:
-    if any(pattern.search(value) for pattern in UNSAFE_INSTRUCTION_PATTERNS):
+    clauses = re.split(r"(?<=[.!?])\s+|[\r\n]+", value)
+    for clause in clauses:
+        if not any(pattern.search(clause) for pattern in UNSAFE_INSTRUCTION_PATTERNS):
+            continue
+        if (
+            SAFE_PROHIBITION_PREFIX_RE.search(clause)
+            and PROHIBITION_ESCAPE_RE.search(clause) is None
+        ):
+            continue
         raise AssessmentPlanContractError(
             f"{field} contains an unsupported execution instruction."
         )

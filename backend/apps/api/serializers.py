@@ -210,6 +210,10 @@ class FindingSerializer(serializers.ModelSerializer):
     maswe_ids = serializers.SerializerMethodField()
     mastg_references = serializers.SerializerMethodField()
     source_reference_count = serializers.SerializerMethodField()
+    evidence_count = serializers.SerializerMethodField()
+    related_agent_runs = serializers.SerializerMethodField()
+    related_agent_run_steps = serializers.SerializerMethodField()
+    provenance = serializers.SerializerMethodField()
 
     @staticmethod
     def _mapping(obj, key):
@@ -226,6 +230,32 @@ class FindingSerializer(serializers.ModelSerializer):
 
     def get_source_reference_count(self, obj):
         return obj.source_references.count()
+
+    def get_evidence_count(self, obj):
+        return obj.evidence.count()
+
+    def get_related_agent_runs(self, obj):
+        return list(
+            obj.evidence.exclude(agent_run=None)
+            .order_by("agent_run_id")
+            .values_list("agent_run_id", flat=True)
+            .distinct()[:25]
+        )
+
+    def get_related_agent_run_steps(self, obj):
+        return list(
+            obj.evidence.exclude(agent_run_step=None)
+            .order_by("agent_run_step_id")
+            .values_list("agent_run_step_id", flat=True)
+            .distinct()[:100]
+        )
+
+    def get_provenance(self, obj):
+        return (
+            "DETERMINISTIC_DYNAMIC_EVIDENCE"
+            if obj.rule_id.startswith("MSAP-DYN-")
+            else "DETERMINISTIC_STATIC_RULE"
+        )
 
     class Meta:
         model = Finding
@@ -244,6 +274,10 @@ class FindingSerializer(serializers.ModelSerializer):
             "maswe_ids",
             "mastg_references",
             "source_reference_count",
+            "evidence_count",
+            "related_agent_runs",
+            "related_agent_run_steps",
+            "provenance",
             "recommendation",
             "false_positive_guidance",
             "requires_manual_validation",

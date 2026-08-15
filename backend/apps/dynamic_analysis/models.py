@@ -1180,6 +1180,10 @@ class AgentRunArtifact(models.Model):
 
 
 class AssessmentPlan(models.Model):
+    class PlanKind(models.TextChoices):
+        INITIAL = "INITIAL", "Initial assessment"
+        ADAPTIVE = "ADAPTIVE", "Adaptive recommendation"
+
     class PlannerProvider(models.TextChoices):
         DETERMINISTIC = "DETERMINISTIC", "Deterministic"
         OPENAI = "OPENAI", "OpenAI"
@@ -1210,6 +1214,26 @@ class AssessmentPlan(models.Model):
         on_delete=models.CASCADE,
         related_name="assessment_plans",
     )
+    plan_kind = models.CharField(
+        max_length=16,
+        choices=PlanKind.choices,
+        default=PlanKind.INITIAL,
+    )
+    parent_plan = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="adaptive_plans",
+    )
+    source_run = models.OneToOneField(
+        "dynamic_analysis.AgentRun",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="adaptive_recommendation",
+    )
+    adaptive_cycle = models.PositiveSmallIntegerField(default=0)
     target_package = models.CharField(max_length=255)
     planner_provider = models.CharField(
         max_length=32,
@@ -1264,6 +1288,30 @@ class AssessmentPlan(models.Model):
             models.Index(fields=["audit", "status"]),
             models.Index(fields=["target_package", "status"]),
             models.Index(fields=["validation_status", "created_at"]),
+            models.Index(fields=["audit", "plan_kind", "adaptive_cycle"]),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(adaptive_cycle__lte=2),
+                name="assessment_plan_adaptive_cycle_lte_2",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        plan_kind="INITIAL",
+                        adaptive_cycle=0,
+                        parent_plan__isnull=True,
+                        source_run__isnull=True,
+                    )
+                    | Q(
+                        plan_kind="ADAPTIVE",
+                        adaptive_cycle__gte=1,
+                        parent_plan__isnull=False,
+                        source_run__isnull=False,
+                    )
+                ),
+                name="assessment_plan_adaptive_lineage_valid",
+            ),
         ]
 
     def __str__(self) -> str:

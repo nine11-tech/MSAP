@@ -556,6 +556,9 @@ class EvidenceViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
         "finding",
         "indicator",
         "storage_reference",
+        "agent_run",
+        "agent_run_step",
+        "agent_run_artifact",
     ).all()
     serializer_class = EvidenceSerializer
     permission_classes = [IsMSAPViewerOrAbove]

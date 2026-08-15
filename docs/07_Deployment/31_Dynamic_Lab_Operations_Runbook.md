@@ -257,9 +257,18 @@ with an Analyst/Admin account:
    terminal state. Inspect its plan hash, exact sequential timeline, durations,
    retries, artifacts, evidence, and controlled failure reason.
 9. Confirm evidence provenance identifies the audit, plan hash, run, run step,
-   artifact when present, and capability. Confirm no vulnerability finding was
-   created from application output.
-10. **Cancel Run** stops subsequent calls but cannot interrupt a bounded host
+   artifact when present, and capability.
+10. Inspect deterministic findings, risk/compliance, and **View Assessment
+    Report**. Runtime instrumentation/coverage findings are informational
+    evidence records and are not vulnerability verdicts; only deterministic
+    rules can create them.
+11. For a terminal run, select **Recommend Next Assessment**. Confirm the new
+    plan says **AI-generated recommendation — requires auditor approval**, has a
+    new hash, preserves audit/target/objective/scope, and creates no AgentRun.
+12. Validate and approve the recommendation separately. Execute it only when a
+    second cycle is desired. One source run has one proposal and the lineage is
+    capped at two adaptive cycles.
+13. **Cancel Run** stops subsequent calls but cannot interrupt a bounded host
     operation already in progress.
 
 The API's `normalized_plan` is the versioned
@@ -294,6 +303,7 @@ Optional bounded settings are
 `MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS`, and
 `MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT`. Never put the key in frontend
 configuration, a plan, an agent-runtime environment, logs, or evidence.
+`MSAP_ASSESSMENT_MAX_ADAPTIVE_CYCLES` defaults to and is hard-capped at `2`.
 
 Approved execution bounds are backend-only:
 
@@ -325,8 +335,9 @@ Dynamic evidence should remain local or in MinIO through
 - temporary probe output containing assessed-app context.
 - private CA material.
 
-For Phase 4 implementation, PostgreSQL should store bounded metadata and
-normalized summaries only; MinIO should store large raw evidence and reports.
+PostgreSQL stores bounded metadata, normalized observations, hashes, and
+provenance only. Existing object storage retains large raw evidence; reports
+reference artifact metadata rather than embedding raw screenshot/log/UI bytes.
 
 ## Expected PASS Markers
 
@@ -368,6 +379,8 @@ normalized summaries only; MinIO should store large raw evidence and reports.
 | Approved plan will not execute | Approval/hash/target/runtime changed, the plan already has a run, or current bounds are lower than its requirements. | Do not edit plan/run rows. Restore the target/runtime or generate, validate, and approve a new plan. |
 | Execution step skipped | An earlier tool in the same plan step or a declared dependency failed. | Inspect the first failed step and bounded evidence; do not invoke the skipped capability manually. |
 | Execution remains cancelling | A bounded host action is still in progress. | Wait for that action to return; cancellation is checked before the next gateway call. |
+| Next assessment rejected | The source run is not terminal, already has a proposal, target/scope changed, or the two-cycle bound was reached. | Do not edit lineage rows. Review the existing candidate or start a new auditor-defined initial plan. |
+| Assessment report shows post-processing failure | A deterministic rule/scoring/report service failed after tool execution. | Preserve the terminal AgentRun and evidence, inspect bounded backend logs, fix the deterministic service, and regenerate the audit report; do not reinterpret application text as a finding. |
 
 ## Recovery Procedures
 

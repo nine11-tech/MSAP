@@ -27,6 +27,8 @@ class AssessmentPlanAdmin(admin.ModelAdmin):
         "id",
         "audit",
         "target_package",
+        "plan_kind",
+        "adaptive_cycle",
         "planner_provider",
         "planner_model",
         "status",
@@ -35,6 +37,7 @@ class AssessmentPlanAdmin(admin.ModelAdmin):
         "created_at",
     )
     list_filter = (
+        "plan_kind",
         "planner_provider",
         "status",
         "validation_status",
