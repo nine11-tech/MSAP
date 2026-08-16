@@ -68,6 +68,18 @@ Run:
 scripts/dynamic-lab/preflight.sh
 ```
 
+The default is a strict zero-third-party-package baseline. If the authorized
+target is already installed, scope preflight to that exact package without
+allowing any unrelated application:
+
+```bash
+MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES=owasp.sat.agoat \
+  scripts/dynamic-lab/preflight.sh
+```
+
+This exception applies only to preflight health. Snapshot restoration still
+requires zero third-party packages.
+
 Expected PASS marker:
 
 ```text
@@ -381,6 +393,39 @@ reference artifact metadata rather than embedding raw screenshot/log/UI bytes.
 | Execution remains cancelling | A bounded host action is still in progress. | Wait for that action to return; cancellation is checked before the next gateway call. |
 | Next assessment rejected | The source run is not terminal, already has a proposal, target/scope changed, or the two-cycle bound was reached. | Do not edit lineage rows. Review the existing candidate or start a new auditor-defined initial plan. |
 | Assessment report shows post-processing failure | A deterministic rule/scoring/report service failed after tool execution. | Preserve the terminal AgentRun and evidence, inspect bounded backend logs, fix the deterministic service, and regenerate the audit report; do not reinterpret application text as a finding. |
+
+## Adaptive Security Agent execution
+
+After validating and approving a strategy, choose **Adaptive Security Agent**
+to create an `ADAPTIVE_AGENT` run. The server derives and persists the immutable
+capability envelope before queueing Celery. Approval alone still creates no run
+and executes no capability.
+
+Verify the Dynamic Lab activity stream shows the current hypothesis, decision
+number, provider/model, concise security rationale, exact capability, gateway
+result, deterministic oracle summary, coverage, budgets, and termination
+reason. These summaries are not chain-of-thought.
+
+`PAUSED` with `NEEDS_AUDITOR` is safe: no further action executes. Cancel records
+a controlled cancellation. Sequential execution remains available as
+**Sequential Approved Plan**.
+
+```dotenv
+MSAP_AGENT_DECISION_PROVIDER=OPENAI
+MSAP_AGENT_MAX_DECISIONS=24
+MSAP_AGENT_MAX_TOOL_CALLS=24
+MSAP_AGENT_MAX_PROVIDER_CALLS=24
+MSAP_AGENT_MAX_CONSECUTIVE_FAILURES=3
+MSAP_AGENT_MAX_DURATION_SECONDS=480
+MSAP_AGENT_MAX_ARTIFACTS=50
+MSAP_AGENT_MAX_EVIDENCE_RECORDS=50
+MSAP_AGENT_MAX_STATE_CONTEXT_BYTES=65536
+```
+
+OpenAI `429`, refusal, timeout, malformed output, schema/policy rejection,
+integrity drift, replay, target drift, or a budget stop never silently switches
+to deterministic decisions. Tests may select the deterministic reference
+provider explicitly.
 
 ## Recovery Procedures
 

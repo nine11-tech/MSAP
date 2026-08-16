@@ -89,7 +89,12 @@ UNSAFE_INSTRUCTION_PATTERNS = (
         r"\b(?:adb\s+shell|arbitrary\s+adb|shell\s+command|subprocess|"
         r"docker(?:\s+socket)?|host\s+filesystem|environment\s+variables?|"
         r"host[- ]agent\s+(?:token|credentials?|authentication)|api[-_ ]?keys?|"
-        r"credentials?|passwords?|secrets?|ssh\s+keys?|repository\s+access)\b",
+        r"ssh\s+keys?|repository\s+access)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:request|obtain|retrieve|read|copy|upload|send|exfiltrate)\b"
+        r".{0,48}\b(?:credentials?|passwords?|secrets?)\b",
         re.IGNORECASE,
     ),
     re.compile(

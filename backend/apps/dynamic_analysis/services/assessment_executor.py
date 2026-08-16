@@ -270,11 +270,16 @@ class AssessmentExecutor:
             now = timezone.now()
             run.cancellation_requested_at = now
             run.cancelled_by = requested_by
-            if run.status == AgentRun.Status.QUEUED:
+            if run.status in {AgentRun.Status.QUEUED, AgentRun.Status.PAUSED}:
+                was_paused = run.status == AgentRun.Status.PAUSED
                 run.status = AgentRun.Status.CANCELLED
-                run.started_at = now
+                run.started_at = run.started_at or now
                 run.finished_at = now
-                run.failure_message = "Assessment execution cancelled before worker execution."
+                run.failure_message = (
+                    "Assessment execution cancelled while awaiting auditor action."
+                    if was_paused
+                    else "Assessment execution cancelled before worker execution."
+                )
                 run.steps.filter(status=AgentRunStep.Status.PENDING).update(
                     status=AgentRunStep.Status.CANCELLED,
                     failure_message="Cancelled before execution.",
@@ -639,6 +644,37 @@ class AssessmentExecutor:
     ) -> Evidence:
         encoded = _canonical_json(observation)
         evidence_type = _evidence_type(step.tool_name)
+        provenance = {
+            "contract_version": OBSERVATION_CONTRACT_VERSION,
+            "assessment_plan_id": run.assessment_plan_id,
+            "plan_hash": run.approved_plan_hash,
+            "run_id": run.id,
+            "run_step_id": step.id,
+            "plan_step_id": step.plan_step_identifier,
+            "tool": step.tool_name,
+            "finding_verdict": False,
+        }
+        if run.execution_mode == AgentRun.ExecutionMode.ADAPTIVE_AGENT:
+            from apps.dynamic_analysis.models import AgentActionDecision
+
+            decision = AgentActionDecision.objects.filter(run_step=step).select_related(
+                "hypothesis"
+            ).first()
+            provenance.update(
+                {
+                    "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
+                    "capability_envelope_hash": run.capability_envelope_hash,
+                    "action_decision_id": decision.id if decision else None,
+                    "action_decision_hash": (
+                        decision.decision_output_hash if decision else ""
+                    ),
+                    "hypothesis_id": (
+                        decision.hypothesis.hypothesis_id
+                        if decision and decision.hypothesis_id
+                        else None
+                    ),
+                }
+            )
         return Evidence.objects.create(
             audit_id=run.audit_id,
             storage_reference=(artifact.object_reference if artifact else None),
@@ -650,16 +686,7 @@ class AssessmentExecutor:
             snippet=encoded[:MAX_EVIDENCE_SNIPPET_CHARS],
             redacted=bool(observation.get("redaction_applied")),
             sha256=sha256(encoded.encode("utf-8")).hexdigest(),
-            provenance={
-                "contract_version": OBSERVATION_CONTRACT_VERSION,
-                "assessment_plan_id": run.assessment_plan_id,
-                "plan_hash": run.approved_plan_hash,
-                "run_id": run.id,
-                "run_step_id": step.id,
-                "plan_step_id": step.plan_step_identifier,
-                "tool": step.tool_name,
-                "finding_verdict": False,
-            },
+            provenance=provenance,
         )
 
     @staticmethod

@@ -3,7 +3,7 @@ import logging
 from django.conf import settings
 from django.utils import timezone
 
-from apps.dynamic_analysis.models import DynamicAnalysisJob
+from apps.dynamic_analysis.models import AgentRun, DynamicAnalysisJob
 from apps.dynamic_analysis.services.mvp_runner import (
     DynamicMvpRunnerError,
     run_dynamic_mvp_job,
@@ -11,6 +11,10 @@ from apps.dynamic_analysis.services.mvp_runner import (
 from apps.dynamic_analysis.services.assessment_executor import (
     AssessmentExecutionError,
     AssessmentExecutor,
+)
+from apps.dynamic_analysis.services.assessment_agent import (
+    AssessmentAgent,
+    AssessmentAgentError,
 )
 
 
@@ -77,6 +81,41 @@ def execute_assessment_plan_run_task(self, run_id: int) -> dict:
         run = AssessmentExecutor.mark_execution_failed(
             run_id,
             message="The bounded assessment execution worker failed unexpectedly.",
+        )
+    return {"run_id": run.id, "run_status": run.status}
+
+
+@shared_task(bind=True)
+def execute_adaptive_assessment_run_task(self, run_id: int) -> dict:
+    """Run only persisted adaptive decisions through the existing gateway."""
+
+    try:
+        run = AssessmentAgent().execute(run_id)
+    except (AssessmentAgentError, AssessmentExecutionError) as exc:
+        logger.warning(
+            "adaptive_assessment_task_failed run_id=%s code=%s",
+            run_id,
+            exc.code,
+        )
+        run = AgentRun.objects.get(pk=run_id)
+        run = AssessmentAgent._finish(
+            run,
+            status=AgentRun.Status.FAILED,
+            termination_reason="AGENT_RUNTIME_FAILURE",
+            message=str(exc),
+        )
+    except Exception as exc:
+        logger.error(
+            "adaptive_assessment_task_failed run_id=%s error_type=%s",
+            run_id,
+            type(exc).__name__,
+        )
+        run = AgentRun.objects.get(pk=run_id)
+        run = AssessmentAgent._finish(
+            run,
+            status=AgentRun.Status.FAILED,
+            termination_reason="AGENT_RUNTIME_FAILURE",
+            message="The bounded adaptive assessment worker failed unexpectedly.",
         )
     return {"run_id": run.id, "run_status": run.status}
 

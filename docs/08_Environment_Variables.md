@@ -1,5 +1,23 @@
 # Environment Variables - MSAP
 
+## Adaptive assessment agent
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MSAP_AGENT_DECISION_PROVIDER` | Planner provider | `OPENAI` or explicit deterministic reference; no silent fallback |
+| `MSAP_AGENT_MAX_DECISIONS` | `24` | Maximum persisted decisions per adaptive run |
+| `MSAP_AGENT_MAX_TOOL_CALLS` | `24` | Maximum gateway attempts per adaptive run |
+| `MSAP_AGENT_MAX_PROVIDER_CALLS` | `24` | Maximum decision-provider calls |
+| `MSAP_AGENT_MAX_CONSECUTIVE_FAILURES` | `3` | Controlled failure stop bound |
+| `MSAP_AGENT_MAX_DURATION_SECONDS` | `480` | Total adaptive-loop duration bound |
+| `MSAP_AGENT_MAX_ARTIFACTS` | `50` | Adaptive artifact count bound |
+| `MSAP_AGENT_MAX_EVIDENCE_RECORDS` | `50` | Adaptive evidence count bound |
+| `MSAP_AGENT_MAX_STATE_CONTEXT_BYTES` | `65536` | Serialized trusted/untrusted state bound |
+
+The OpenAI decision provider reuses the planner's backend-only Responses API
+transport, model, timeout, retry, reasoning, token, and API-key settings. No key
+is exposed to the browser, agent state, gateway, target, artifact, or evidence.
+
 ## Django
 | Variable | Required | Secret |
 |---|---|---|

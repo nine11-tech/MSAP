@@ -102,11 +102,17 @@ def build_assessment_summary(run: AgentRun | int) -> dict[str, Any]:
         "assessment_status": run.status,
         "assessment_plan_id": run.assessment_plan_id,
         "plan_hash": run.approved_plan_hash,
+        "execution_mode": run.execution_mode,
+        "capability_envelope_hash": run.capability_envelope_hash,
         "agent_run_id": run.id,
         "steps_total": run.steps.count(),
         "steps_succeeded": step_counts[AgentRunStep.Status.SUCCEEDED],
         "step_status_counts": dict(step_counts),
         "tool_call_count": run.tool_call_count,
+        "decision_count": run.decision_count,
+        "model_call_count": run.model_call_count,
+        "coverage": run.coverage_state,
+        "termination_reason": run.termination_reason,
         "observation_count": run.steps.exclude(observation={}).count(),
         "artifact_count": run.artifacts.count(),
         "evidence_count": run.evidence_records.count(),
@@ -132,7 +138,11 @@ def build_assessment_summary(run: AgentRun | int) -> dict[str, Any]:
         },
         "provenance": {
             "planner": "AI_OR_DETERMINISTIC_PLAN_PROVIDER",
-            "execution": "APPROVED_PLAN_VIA_RUN_SCOPED_TOOL_GATEWAY",
+            "execution": (
+                "ADAPTIVE_DECISIONS_VIA_RUN_SCOPED_TOOL_GATEWAY"
+                if run.execution_mode == AgentRun.ExecutionMode.ADAPTIVE_AGENT
+                else "APPROVED_PLAN_VIA_RUN_SCOPED_TOOL_GATEWAY"
+            ),
             "observations": "UNTRUSTED_APPLICATION_DATA",
             "findings": "DETERMINISTIC_RULES_ONLY",
             "scores": "DETERMINISTIC_SCORING_ONLY",

@@ -61,7 +61,9 @@ The accepted steady state is:
 - APEX CA baseline count `145`
 - no permanent system CA modification
 - no permanent APEX CA modification
-- zero third-party packages
+- zero third-party packages for clean-baseline verification; post-install
+  health may explicitly allow only the current auditor-authorized target with
+  `MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES`
 - no target APK installed
 - Frida not left running
 

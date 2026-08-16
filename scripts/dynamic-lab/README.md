@@ -85,6 +85,18 @@ Run the aggregated health check:
 scripts/dynamic-lab/lab-health.sh
 ```
 
+The clean-baseline default rejects every third-party package. When health is
+checked after an auditor-authorized target has intentionally been installed,
+allow only that exact package for the preflight invocation:
+
+```bash
+MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES=owasp.sat.agoat \
+  scripts/dynamic-lab/lab-health.sh
+```
+
+Any other third-party package still fails preflight. Snapshot restoration and
+cleanup verification remain strict zero-package checks.
+
 Run full platform TLS verification when you are ready for a temporary APK,
 runtime namespace overlay injection, and emulator reboot during cleanup:
 

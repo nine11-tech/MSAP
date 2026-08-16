@@ -440,6 +440,46 @@ MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACT_BYTES = min(
     max(1048576, int(os.getenv("MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACT_BYTES", "25165824"))),
 )
 
+# Adaptive assessment decisions remain inside a plan-derived immutable
+# capability envelope. These bounds are backend-owned and cannot be enlarged by
+# the browser, the planner, application observations, or the decision provider.
+MSAP_AGENT_DECISION_PROVIDER = os.getenv(
+    "MSAP_AGENT_DECISION_PROVIDER",
+    MSAP_ASSESSMENT_PLANNER_PROVIDER,
+).upper()
+MSAP_AGENT_MAX_DECISIONS = min(
+    30,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_DECISIONS", "24"))),
+)
+MSAP_AGENT_MAX_TOOL_CALLS = min(
+    30,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "24"))),
+)
+MSAP_AGENT_MAX_PROVIDER_CALLS = min(
+    30,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_PROVIDER_CALLS", "24"))),
+)
+MSAP_AGENT_MAX_CONSECUTIVE_FAILURES = min(
+    5,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_CONSECUTIVE_FAILURES", "3"))),
+)
+MSAP_AGENT_MAX_DURATION_SECONDS = min(
+    600,
+    max(60, int(os.getenv("MSAP_AGENT_MAX_DURATION_SECONDS", "480"))),
+)
+MSAP_AGENT_MAX_ARTIFACTS = min(
+    MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACTS,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_ARTIFACTS", "50"))),
+)
+MSAP_AGENT_MAX_EVIDENCE_RECORDS = min(
+    100,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_EVIDENCE_RECORDS", "50"))),
+)
+MSAP_AGENT_MAX_STATE_CONTEXT_BYTES = min(
+    131072,
+    max(8192, int(os.getenv("MSAP_AGENT_MAX_STATE_CONTEXT_BYTES", "65536"))),
+)
+
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)
 MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY", "")
