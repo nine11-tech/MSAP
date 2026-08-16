@@ -355,6 +355,23 @@ def public_tool_manifest() -> dict[str, dict[str, Any]]:
     }
 
 
+def validate_agent_tool_arguments(
+    tool_name: str,
+    arguments: Any,
+    *,
+    requested_by=None,
+) -> dict[str, Any]:
+    """Validate one allowlisted call without executing the capability."""
+
+    if tool_name not in TOOL_MANIFEST:
+        raise AgentToolError(
+            "The requested agent tool is not allowlisted.",
+            code="UNKNOWN_TOOL",
+            failure_category="TOOL_EXECUTION_FAILED",
+        )
+    return _validate_arguments(tool_name, arguments, requested_by=requested_by)
+
+
 def execute_agent_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -369,7 +386,11 @@ def execute_agent_tool(
             code="UNKNOWN_TOOL",
             failure_category="TOOL_EXECUTION_FAILED",
         )
-    validated = _validate_arguments(tool_name, arguments, requested_by=requested_by)
+    validated = validate_agent_tool_arguments(
+        tool_name,
+        arguments,
+        requested_by=requested_by,
+    )
     bounded_client = client or DynamicHostAgentClient(
         timeout_seconds=max(6, spec.timeout_seconds),
     )

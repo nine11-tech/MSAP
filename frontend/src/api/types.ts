@@ -806,6 +806,15 @@ export interface AgentRunResultSummary {
   target_package?: string;
   execution_mode?: string;
   execution_channel?: string;
+  capability_envelope_hash?: string;
+  decision_provider?: string;
+  decision_model?: string;
+  decision_count?: number;
+  model_call_count?: number;
+  coverage?: Record<string, string>;
+  termination_reason?: string;
+  hypothesis_status_counts?: Record<string, number>;
+  findings_authority?: string;
   step_status_counts?: Record<string, number>;
   tool_call_count?: number;
   artifact_count?: number;
@@ -826,11 +835,17 @@ export interface AssessmentRunSummary {
   assessment_status: AgentRun["status"];
   assessment_plan_id: number;
   plan_hash: string;
+  execution_mode: "SEQUENTIAL_PLAN" | "ADAPTIVE_AGENT";
+  capability_envelope_hash: string;
   agent_run_id: number;
   steps_total: number;
   steps_succeeded: number;
   step_status_counts: Record<string, number>;
   tool_call_count: number;
+  decision_count: number;
+  model_call_count: number;
+  coverage: Record<string, string>;
+  termination_reason: string;
   observation_count: number;
   artifact_count: number;
   evidence_count: number;
@@ -911,11 +926,29 @@ export interface AgentRun {
   assessment_plan: number | null;
   approved_plan_hash: string;
   target_package: string;
+  execution_mode: "SEQUENTIAL_PLAN" | "ADAPTIVE_AGENT";
+  capability_envelope: Record<string, unknown> & {
+    allowed_capabilities?: string[];
+    allowed_hypothesis_families?: string[];
+    maximum_decisions?: number;
+    maximum_tool_calls?: number;
+    maximum_run_duration_seconds?: number;
+    maximum_model_provider_calls?: number;
+  };
+  capability_envelope_hash: string;
+  decision_provider: string;
+  decision_model: string;
+  decision_count: number;
+  model_call_count: number;
+  consecutive_failure_count: number;
+  coverage_state: Record<string, string>;
+  termination_reason: string;
   objective: AgentObjective;
   objective_input: Record<string, unknown>;
   status:
     | "QUEUED"
     | "RUNNING"
+    | "PAUSED"
     | "SUCCEEDED"
     | "FAILED"
     | "CANCELLED"
@@ -933,6 +966,69 @@ export interface AgentRun {
   cancelled_by: number | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentHypothesis {
+  id: number;
+  run: number;
+  hypothesis_id: string;
+  family: string;
+  title: string;
+  description: string;
+  evidence_requirements: string[];
+  status:
+    | "UNTESTED"
+    | "ACTIVE"
+    | "SUPPORTED"
+    | "REJECTED"
+    | "INCONCLUSIVE"
+    | "BLOCKED";
+  confidence: number;
+  oracle_result: {
+    oracle_id?: string;
+    status?: string;
+    evidence_ids?: number[];
+    reason_code?: string;
+    safe_summary?: string;
+    confidence?: number;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentActionDecision {
+  id: number;
+  run: number;
+  sequence: number;
+  contract_version: string;
+  hypothesis: number | null;
+  hypothesis_identifier: string | null;
+  run_step: number | null;
+  decision_type: "TOOL_ACTION" | "COMPLETE" | "NEEDS_AUDITOR";
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  rationale_summary: string;
+  expected_observation: string;
+  evidence_goals: string[];
+  confidence: number;
+  provider: "OPENAI" | "DETERMINISTIC";
+  model: string;
+  provider_metadata: Record<string, string | number>;
+  decision_input_hash: string;
+  decision_output_hash: string;
+  validation_status: "PENDING" | "PASSED" | "FAILED";
+  policy_status: "PENDING" | "PASSED" | "FAILED";
+  execution_status:
+    | "NOT_EXECUTED"
+    | "RUNNING"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "REJECTED";
+  observation_hash: string;
+  failure_code: string;
+  created_at: string;
+  validated_at: string | null;
+  executed_at: string | null;
 }
 
 export interface AgentRunStep {
@@ -1072,6 +1168,16 @@ export interface AssessmentPlan {
   validation_errors: string[];
   planner_input_hash: string;
   plan_hash: string;
+  agentic_capability_preview: {
+    contract_version?: string;
+    allowed_capabilities?: string[];
+    allowed_hypothesis_families?: string[];
+    maximum_decisions?: number;
+    maximum_tool_calls?: number;
+    maximum_run_duration_seconds?: number;
+    maximum_provider_calls?: number;
+    additional_approval_capabilities?: string[];
+  };
   created_by: number | null;
   created_by_username: string | null;
   approved_by: number | null;

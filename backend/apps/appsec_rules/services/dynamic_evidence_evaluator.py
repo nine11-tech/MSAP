@@ -11,7 +11,7 @@ from typing import Any
 from django.db import transaction
 
 from apps.appsec_rules.models import RuleEvaluation
-from apps.dynamic_analysis.models import AgentRun, AgentRunStep
+from apps.dynamic_analysis.models import AgentHypothesis, AgentRun, AgentRunStep
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 
@@ -64,6 +64,7 @@ def evaluate_dynamic_evidence(run: AgentRun | int) -> dict[str, int]:
                     "agent_run_id": run.id,
                     "assessment_plan_id": run.assessment_plan_id,
                     "plan_hash": run.approved_plan_hash,
+                    "oracle_id": rule.get("oracle_id", ""),
                     "deterministic_runtime_rule": True,
                     "vulnerability_verdict": False,
                 },
@@ -87,6 +88,7 @@ def evaluate_dynamic_evidence(run: AgentRun | int) -> dict[str, int]:
                     "deterministic_rule": rule["rule_id"],
                     "latest_agent_run_id": run.id,
                     "latest_plan_hash": run.approved_plan_hash,
+                    "deterministic_oracle_id": rule.get("oracle_id", ""),
                     "vulnerability_verdict": False,
                 },
                 "recommendation": rule["recommendation"],
@@ -176,6 +178,75 @@ def _resolved_rules(run: AgentRun) -> list[dict[str, Any]]:
                     "tool failure/partial reason before retrying."
                 ),
                 "evidence_ids": _evidence_ids(empty_ui_steps),
+            }
+        )
+
+    oracle_rules = {
+        AgentHypothesis.Family.SENSITIVE_LOG_EXPOSURE: {
+            "rule_id": "MSAP-DYN-004",
+            "title": "Sensitive log pattern requires review",
+            "category": "DYNAMIC_LOGGING_EVIDENCE",
+            "description": (
+                "A deterministic oracle observed a redacted sensitive-assignment "
+                "category in bounded target-correlated logs. This is evidence for "
+                "manual review, not an autonomous vulnerability verdict."
+            ),
+            "recommendation": "Review the linked redacted log event and application context.",
+            "false_positive_guidance": (
+                "Confirm the event belongs to the authorized target and contains "
+                "security-relevant application data rather than a test label."
+            ),
+        },
+        AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE: {
+            "rule_id": "MSAP-DYN-005",
+            "title": "Sensitive UI assignment requires review",
+            "category": "DYNAMIC_UI_EVIDENCE",
+            "description": (
+                "A deterministic oracle observed an explicit security-sensitive "
+                "assignment in bounded parsed target UI text."
+            ),
+            "recommendation": "Review the linked UI evidence and intended disclosure context.",
+            "false_positive_guidance": (
+                "Ordinary labels and intentionally displayed test values are not by "
+                "themselves vulnerabilities."
+            ),
+        },
+        AgentHypothesis.Family.APPLICATION_RUNTIME_STABILITY: {
+            "rule_id": "MSAP-DYN-006",
+            "title": "Runtime crash marker requires review",
+            "category": "DYNAMIC_RUNTIME_STABILITY",
+            "description": (
+                "A deterministic oracle observed a crash or ANR marker in bounded "
+                "target-correlated runtime logs."
+            ),
+            "recommendation": "Reproduce the bounded workflow and inspect the linked crash evidence.",
+            "false_positive_guidance": (
+                "Verify the marker belongs to the authorized target rather than a "
+                "coincident platform process."
+            ),
+        },
+    }
+    for hypothesis in run.hypotheses.filter(
+        status=AgentHypothesis.Status.SUPPORTED,
+        family__in=oracle_rules,
+    ):
+        oracle = hypothesis.oracle_result if isinstance(hypothesis.oracle_result, dict) else {}
+        evidence_ids = [
+            value
+            for value in oracle.get("evidence_ids", [])[:MAX_EVIDENCE_LINKS_PER_RULE]
+            if isinstance(value, int) and not isinstance(value, bool)
+        ]
+        definition = oracle_rules[hypothesis.family]
+        rules.append(
+            {
+                **definition,
+                "severity": "Informational",
+                "oracle_id": oracle.get("oracle_id", ""),
+                "evidence_summary": oracle.get(
+                    "safe_summary",
+                    "A deterministic runtime oracle produced review evidence.",
+                )[:500],
+                "evidence_ids": evidence_ids,
             }
         )
 

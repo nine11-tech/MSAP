@@ -441,6 +441,72 @@ object keys, host paths, environment references, authorization material, and
 credentials. No planner-to-planner recursion, automatic approval, automatic
 execution, or unrestricted autonomous loop exists.
 
+## Bounded adaptive assessment within a run
+
+Adaptive execution is an additional mode; it does not replace the sequential
+`ApprovedAssessmentPlan v1` executor or between-run recommendations.
+
+```text
+Auditor-approved AssessmentPlan strategy
+    -> immutable msap.agent-capability-envelope/v1
+    -> bounded AssessmentAgent state
+    -> one msap.agent-action-decision/v1
+    -> schema + policy + budget + replay validation
+    -> existing run-scoped Tool Gateway
+    -> existing bounded mobile capability
+    -> untrusted observation + artifact + Evidence
+    -> deterministic oracle
+    -> hypothesis + coverage update
+    -> next bounded decision
+```
+
+The envelope records the approved plan/hash, audit, package, objective, scope,
+plan-derived adaptive-safe capabilities, per-capability argument policy,
+hypothesis families, destructive/additional-approval classifications, bounded
+resource limits, and an integrity hash. Plan or envelope drift fails closed.
+
+`AgentActionDecision` persists only concise auditor-facing summaries, expected
+observations, evidence goals, safe provider metadata, integrity hashes,
+validation/policy/execution state, and observation provenance. It never stores
+chain-of-thought, credentials, Authorization headers, or arbitrary provider
+output. `TOOL_ACTION`, `COMPLETE`, and `NEEDS_AUDITOR` are the only types.
+
+The capability intersection is:
+
+```text
+approved strategy
+∩ backend adaptive-safe policy
+∩ current TOOL_MANIFEST
+∩ audit authorization
+∩ target authorization
+```
+
+Destructive setup/data-reset/install capabilities remain unavailable to the
+adaptive loop. `frida_run_js` remains restricted to the existing built-in
+controlled proof identifier. UI input requires recent evidence that the
+authorized target is foregrounded.
+
+The backend hypothesis catalog enables only evidence families supported by the
+actual envelope: sensitive logging, parsed UI exposure, controlled runtime
+tampering evidence, and runtime stability. Network/TLS, local storage, and
+authentication are `NOT_ASSESSABLE_WITH_CURRENT_CAPABILITIES` unless bounded
+tools provide those observations. Only deterministic oracles and rules may
+create findings, severity, risk, MASVS scoring, or reports.
+
+Trust-boundary responsibilities remain separate:
+
+- **Planner:** creates the assessment strategy.
+- **Assessment Agent:** chooses the next safe experiment inside the envelope.
+- **Backend policy:** decides whether that experiment is permitted now.
+- **Tool Gateway:** authorizes and executes the exact persisted call.
+- **Oracle:** decides what supported evidence means.
+- **Finding engine:** creates deterministic evidence-backed findings and scores.
+- **Auditor:** approves strategy and any future destructive escalation.
+
+The model chooses **what safe experiment to try next**. The backend decides
+**whether it is permitted**. The gateway authorizes **the exact call**. The
+oracle decides **what the evidence supports**.
+
 ## Remaining limitations
 
 - Approved-plan execution uses Celery and status polling. Cancellation is
@@ -452,9 +518,10 @@ execution, or unrestricted autonomous loop exists.
 - Package list version metadata is returned only when the host can obtain it;
   unavailable values remain empty/null.
 - Full UI XML and unbounded log streams are intentionally not retained.
-- No recursive replanning, chat UI, autonomous tool discovery, model-driven
-  mid-run adaptation, vulnerability confirmation, or malware verdict is
-  implemented. Adaptive planning is limited to two separately approved cycles.
+- No recursive replanning, chat UI, autonomous tool discovery, vulnerability
+  confirmation, or malware verdict is implemented. Within-run adaptation is
+  bounded by one approved envelope; between-run planning remains capped at two
+  separately approved cycles.
 - Dynamic rule coverage is intentionally small and evidence-oriented. It does
   not replace a future expanded deterministic mobile rule catalog or auditor
   validation.

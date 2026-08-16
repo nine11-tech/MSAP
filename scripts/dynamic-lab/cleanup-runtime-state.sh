@@ -54,8 +54,19 @@ if [[ -n "$pid" ]] && msap_frida_pid_is_managed "$pid"; then
   msap_log "Managed Frida server stopped: PID $pid"
 fi
 
+for pid in $(msap_adb shell pidof msap-frida-server 2>/dev/null | msap_one_line || true); do
+  if msap_frida_pid_is_managed "$pid"; then
+    msap_adb shell kill "$pid" >/dev/null 2>&1 || true
+    msap_log "Managed Frida server stopped without pid file: PID $pid"
+  else
+    msap_fail "Refusing to stop an unrecognized Frida process: PID $pid"
+  fi
+done
+
 msap_adb shell rm -f "$MSAP_FRIDA_REMOTE_PID" "$MSAP_FRIDA_REMOTE_LOG" >/dev/null 2>&1 || true
 msap_log "Managed Frida pid/log files removed"
+
+msap_verify_frida_not_running
 
 msap_adb forward --remove "tcp:$MSAP_FRIDA_ADB_PORT" >/dev/null 2>&1 || true
 

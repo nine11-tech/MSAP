@@ -98,10 +98,7 @@ msap_verify_apex_ca_count
 msap_log "Permanent CA state: clean"
 msap_log "APEX CA count: $MSAP_EXPECTED_APEX_CA_COUNT"
 
-third_party_count="$(msap_count_third_party_packages)"
-[[ "$third_party_count" == "0" ]] ||
-  msap_fail "Expected zero third-party packages, found $third_party_count"
-msap_log "Third-party packages: $third_party_count"
+msap_verify_preflight_third_party_packages
 
 msap_log_section "Snapshot and bridge"
 if ! msap_snapshot_exists "$MSAP_INSTRUMENTED_SNAPSHOT"; then

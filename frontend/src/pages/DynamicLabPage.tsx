@@ -6,6 +6,7 @@ import {
   captureDynamicHostAgentScreenshot,
   createAgentRun,
   createAssessmentPlan,
+  executeAdaptiveAssessment,
   executeAssessmentPlan,
   getAgentRun,
   getAgentRunAssessmentSummary,
@@ -13,7 +14,9 @@ import {
   getDynamicHostAgentStatus,
   installDynamicAuditApk,
   listAgentRunArtifacts,
+  listAgentRunDecisions,
   listAgentRunEvidence,
+  listAgentRunHypotheses,
   listAgentRuns,
   listAgentRunSteps,
   listAgentRuntimes,
@@ -27,6 +30,8 @@ import {
   validateAssessmentPlan,
 } from "../api/msap";
 import type {
+  AgentActionDecision,
+  AgentHypothesis,
   AgentRun,
   AgentRunArtifact,
   AgentRuntime,
@@ -86,6 +91,7 @@ type PackageAction =
 
 type AgentRuntimeType = "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
 type AgentTargetType = "VERIFIED_APK" | "INSTALLED_PACKAGE";
+type AssessmentExecutionMode = "ADAPTIVE_AGENT" | "SEQUENTIAL_PLAN";
 
 export function DynamicLabPage() {
   const [searchParams] = useSearchParams();
@@ -106,6 +112,10 @@ export function DynamicLabPage() {
   const [agentSteps, setAgentSteps] = useState<AgentRunStep[]>([]);
   const [agentArtifacts, setAgentArtifacts] = useState<AgentRunArtifact[]>([]);
   const [agentEvidence, setAgentEvidence] = useState<Evidence[]>([]);
+  const [agentDecisions, setAgentDecisions] = useState<AgentActionDecision[]>([]);
+  const [agentHypotheses, setAgentHypotheses] = useState<AgentHypothesis[]>([]);
+  const [assessmentExecutionMode, setAssessmentExecutionMode] =
+    useState<AssessmentExecutionMode>("ADAPTIVE_AGENT");
   const [selectedAgentRuntime, setSelectedAgentRuntime] =
     useState<AgentRuntimeType>("INTERNAL_CONTROLLER");
   const [selectedObjective, setSelectedObjective] =
@@ -163,11 +173,17 @@ export function DynamicLabPage() {
       const latestRun = runData[0] || null;
       setAgentRun(latestRun);
       if (latestRun) {
-        const [stepData, artifactData, evidenceData, summaryData] = await Promise.all([
+        const [stepData, artifactData, evidenceData, decisionData, hypothesisData, summaryData] = await Promise.all([
           listAgentRunSteps(latestRun.id),
           listAgentRunArtifacts(latestRun.id),
           latestRun.objective === "ASSESSMENT_PLAN_EXECUTION"
             ? listAgentRunEvidence(latestRun.id)
+            : Promise.resolve([]),
+          latestRun.execution_mode === "ADAPTIVE_AGENT"
+            ? listAgentRunDecisions(latestRun.id)
+            : Promise.resolve([]),
+          latestRun.execution_mode === "ADAPTIVE_AGENT"
+            ? listAgentRunHypotheses(latestRun.id)
             : Promise.resolve([]),
           latestRun.objective === "ASSESSMENT_PLAN_EXECUTION" &&
           ["SUCCEEDED", "FAILED", "TIMEOUT"].includes(latestRun.status)
@@ -177,11 +193,15 @@ export function DynamicLabPage() {
         setAgentSteps(stepData);
         setAgentArtifacts(artifactData);
         setAgentEvidence(evidenceData);
+        setAgentDecisions(decisionData);
+        setAgentHypotheses(hypothesisData);
         setAssessmentSummary(summaryData);
       } else {
         setAgentSteps([]);
         setAgentArtifacts([]);
         setAgentEvidence([]);
+        setAgentDecisions([]);
+        setAgentHypotheses([]);
         setAssessmentSummary(null);
       }
       setSelectedAuditId((current) => {
@@ -226,15 +246,23 @@ export function DynamicLabPage() {
           setAgentSteps([]);
           setAgentArtifacts([]);
           setAgentEvidence([]);
+          setAgentDecisions([]);
+          setAgentHypotheses([]);
           setAssessmentSummary(null);
           return;
         }
         const isAssessment = displayedRun.objective === "ASSESSMENT_PLAN_EXECUTION";
         const terminal = ["SUCCEEDED", "FAILED", "TIMEOUT"].includes(displayedRun.status);
-        const [steps, artifacts, evidence, summary] = await Promise.all([
+        const [steps, artifacts, evidence, decisions, hypotheses, summary] = await Promise.all([
           listAgentRunSteps(displayedRun.id),
           listAgentRunArtifacts(displayedRun.id),
           isAssessment ? listAgentRunEvidence(displayedRun.id) : Promise.resolve([]),
+          displayedRun.execution_mode === "ADAPTIVE_AGENT"
+            ? listAgentRunDecisions(displayedRun.id)
+            : Promise.resolve([]),
+          displayedRun.execution_mode === "ADAPTIVE_AGENT"
+            ? listAgentRunHypotheses(displayedRun.id)
+            : Promise.resolve([]),
           isAssessment && terminal
             ? getAgentRunAssessmentSummary(displayedRun.id)
             : Promise.resolve(null),
@@ -243,6 +271,8 @@ export function DynamicLabPage() {
         setAgentSteps(steps);
         setAgentArtifacts(artifacts);
         setAgentEvidence(evidence);
+        setAgentDecisions(decisions);
+        setAgentHypotheses(hypotheses);
         setAssessmentSummary(summary);
       })
       .catch((requestError) => {
@@ -268,7 +298,13 @@ export function DynamicLabPage() {
         listAgentRunSteps(runId),
         listAgentRunArtifacts(runId),
         listAgentRunEvidence(runId),
-      ]).then(async ([run, steps, artifacts, evidence]) => {
+        agentRun.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunDecisions(runId)
+          : Promise.resolve([]),
+        agentRun.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunHypotheses(runId)
+          : Promise.resolve([]),
+      ]).then(async ([run, steps, artifacts, evidence, decisions, hypotheses]) => {
         const terminal = ["SUCCEEDED", "FAILED", "TIMEOUT"].includes(run.status);
         const completedSummary = terminal
           ? await getAgentRunAssessmentSummary(run.id)
@@ -284,6 +320,8 @@ export function DynamicLabPage() {
         setAgentSteps(steps);
         setAgentArtifacts(artifacts);
         setAgentEvidence(evidence);
+        setAgentDecisions(decisions);
+        setAgentHypotheses(hypotheses);
         setAssessmentSummary(completedSummary);
         if (run.assessment_plan) {
           setAssessmentPlan(await getAssessmentPlan(run.assessment_plan));
@@ -737,20 +775,39 @@ export function DynamicLabPage() {
     setError("");
     setNotice("");
     try {
-      const response = await executeAssessmentPlan(assessmentPlan.id);
-      const [steps, artifacts, evidence, plan] = await Promise.all([
+      const response = assessmentExecutionMode === "ADAPTIVE_AGENT"
+        ? await executeAdaptiveAssessment(
+            assessmentPlan.id,
+            plannerProvider || undefined,
+          )
+        : await executeAssessmentPlan(assessmentPlan.id);
+      const [steps, artifacts, evidence, decisions, hypotheses, plan] = await Promise.all([
         listAgentRunSteps(response.run.id),
         listAgentRunArtifacts(response.run.id),
         listAgentRunEvidence(response.run.id),
+        response.run.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunDecisions(response.run.id)
+          : Promise.resolve([]),
+        response.run.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunHypotheses(response.run.id)
+          : Promise.resolve([]),
         getAssessmentPlan(assessmentPlan.id),
       ]);
       setAgentRun(response.run);
       setAgentSteps(steps);
       setAgentArtifacts(artifacts);
       setAgentEvidence(evidence);
+      setAgentDecisions(decisions);
+      setAgentHypotheses(hypotheses);
       setAssessmentSummary(null);
       setAssessmentPlan(plan);
-      setNotice(`Approved plan #${assessmentPlan.id} queued as AgentRun #${response.run.id}.`);
+      setNotice(
+        `Approved strategy #${assessmentPlan.id} queued as ${
+          response.run.execution_mode === "ADAPTIVE_AGENT"
+            ? "an adaptive assessment"
+            : "a sequential assessment"
+        } in AgentRun #${response.run.id}.`,
+      );
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -1065,6 +1122,24 @@ export function DynamicLabPage() {
             </select>
             <small className="planner-field-hint">OpenAI / GPT-5.5 is the production planner; server default follows deployment policy.</small>
           </label>
+          <label>
+            <span>Execution mode</span>
+            <select
+              value={assessmentExecutionMode}
+              onChange={(event) =>
+                setAssessmentExecutionMode(
+                  event.target.value as AssessmentExecutionMode,
+                )
+              }
+              disabled={Boolean(working)}
+            >
+              <option value="ADAPTIVE_AGENT">Adaptive Security Agent</option>
+              <option value="SEQUENTIAL_PLAN">Sequential Approved Plan</option>
+            </select>
+            <small className="planner-field-hint">
+              Adaptive mode chooses one validated experiment at a time inside the approved capability envelope.
+            </small>
+          </label>
           <label className="planner-objective-field">
             <span>Assessment objective</span>
             <textarea
@@ -1116,7 +1191,11 @@ export function DynamicLabPage() {
           ) : null}
           {assessmentPlan?.status === "APPROVED" ? (
             <button className="button button-primary" onClick={() => void handleExecuteAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
-              {working === "planner-execute" ? "Queuing..." : "Execute Assessment"}
+              {working === "planner-execute"
+                ? "Queuing..."
+                : assessmentExecutionMode === "ADAPTIVE_AGENT"
+                  ? "Start Agentic Assessment"
+                  : "Execute Sequential Plan"}
             </button>
           ) : null}
         </div>
@@ -1145,8 +1224,10 @@ export function DynamicLabPage() {
                 steps={agentSteps}
                 artifacts={agentArtifacts}
                 evidence={agentEvidence}
+                decisions={agentDecisions}
+                hypotheses={agentHypotheses}
                 summary={assessmentSummary}
-                canCancel={canOperate && ["QUEUED", "RUNNING"].includes(agentRun.status)}
+                canCancel={canOperate && ["QUEUED", "RUNNING", "PAUSED"].includes(agentRun.status)}
                 cancelling={working === "planner-cancel"}
                 onCancel={() => void handleCancelAssessmentExecution()}
                 canRecommend={
@@ -1634,6 +1715,28 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
           : "Plan generation and approval do not change the emulator. Execution becomes available only after validation, policy checks, and explicit approval."}
       </div>
 
+      {plan.agentic_capability_preview.allowed_capabilities?.length ? (
+        <div className="planner-scope-summary">
+          <div>
+            <span>Approved adaptive capabilities</span>
+            <p className="planner-chip-list">
+              {plan.agentic_capability_preview.allowed_capabilities.map((capability) => (
+                <span key={capability} className="planner-tool-chip mono">{capability}</span>
+              ))}
+            </p>
+          </div>
+          <div>
+            <span>Hypotheses and budget</span>
+            <p>
+              {(plan.agentic_capability_preview.allowed_hypothesis_families || []).join(" · ") || "No assessable hypothesis family"}
+              {` · ${plan.agentic_capability_preview.maximum_decisions ?? 0} decisions`}
+              {` · ${plan.agentic_capability_preview.maximum_tool_calls ?? 0} tool calls`}
+              {` · ${plan.agentic_capability_preview.maximum_run_duration_seconds ?? 0}s maximum`}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {plan.validation_errors.length ? (
         <div className="planner-validation-errors" role="alert">
           <strong>Controlled validation failure</strong>
@@ -1738,6 +1841,8 @@ function AssessmentExecutionResult({
   steps,
   artifacts,
   evidence,
+  decisions,
+  hypotheses,
   summary,
   canCancel,
   cancelling,
@@ -1750,6 +1855,8 @@ function AssessmentExecutionResult({
   steps: AgentRunStep[];
   artifacts: AgentRunArtifact[];
   evidence: Evidence[];
+  decisions: AgentActionDecision[];
+  hypotheses: AgentHypothesis[];
   summary: AssessmentRunSummary | null;
   canCancel: boolean;
   cancelling: boolean;
@@ -1767,7 +1874,10 @@ function AssessmentExecutionResult({
     steps.find((step) => step.status === "PENDING") ||
     steps.at(-1);
   const progress = steps.length ? Math.round((finished / steps.length) * 100) : 0;
-  const terminal = ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED"].includes(run.status);
+  const terminal = ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "PAUSED"].includes(run.status);
+  const latestDecision = decisions.at(-1);
+  const maximumDecisions = Number(run.capability_envelope.maximum_decisions || 0);
+  const maximumToolCalls = Number(run.capability_envelope.maximum_tool_calls || 0);
   return (
     <section id="assessment-results" className="planner-execution-result" aria-label="Approved assessment execution">
       <div className="planner-result-heading">
@@ -1808,11 +1918,13 @@ function AssessmentExecutionResult({
       <div className="execution-progress" aria-label={`Assessment ${progress}% complete`}>
         <div>
           <span>{terminal ? "Final status" : "Current step"}</span>
-          <strong>{currentStep ? `${currentStep.plan_step_identifier || `Step ${currentStep.sequence_number}`}` : "Preparing run"}</strong>
+          <strong>{run.execution_mode === "ADAPTIVE_AGENT"
+            ? latestDecision?.hypothesis_identifier || "Preparing adaptive state"
+            : currentStep ? `${currentStep.plan_step_identifier || `Step ${currentStep.sequence_number}`}` : "Preparing run"}</strong>
         </div>
         <div>
           <span>Current action</span>
-          <strong>{currentStep ? (currentStep.is_control_step ? "Record bounded observation" : evidenceLabel(currentStep.tool_name)) : "Waiting"}</strong>
+          <strong>{latestDecision?.tool_name || (currentStep ? (currentStep.is_control_step ? "Record bounded observation" : evidenceLabel(currentStep.tool_name)) : "Waiting")}</strong>
         </div>
         <div>
           <span>Progress</span>
@@ -1823,8 +1935,16 @@ function AssessmentExecutionResult({
 
       <div className="planner-summary-facts">
         <StatusFact label="Run status" value={run.status} state={run.status === "SUCCEEDED" ? "online" : run.status === "RUNNING" ? "warning" : run.status === "FAILED" ? "offline" : "neutral"} />
+        <StatusFact label="Execution mode" value={run.execution_mode === "ADAPTIVE_AGENT" ? "Adaptive Security Agent" : "Sequential Approved Plan"} />
+        {run.execution_mode === "ADAPTIVE_AGENT" ? (
+          <>
+            <StatusFact label="Provider / model" value={run.decision_provider || "Unavailable"} detail={run.decision_model} />
+            <StatusFact label="Decisions" value={`${run.decision_count} / ${maximumDecisions || "?"}`} />
+            <StatusFact label="Provider calls" value={String(run.model_call_count)} />
+          </>
+        ) : null}
         <StatusFact label="Steps completed" value={`${succeeded} / ${steps.length}`} />
-        <StatusFact label="Tool calls" value={String(run.tool_call_count)} />
+        <StatusFact label="Tool calls" value={run.execution_mode === "ADAPTIVE_AGENT" ? `${run.tool_call_count} / ${maximumToolCalls || "?"}` : String(run.tool_call_count)} />
         <StatusFact label="Artifacts" value={String(artifacts.length)} />
         <StatusFact label="Evidence" value={String(evidence.length)} />
         <StatusFact label="Findings" value={String(summary?.audit_finding_count ?? run.result_summary.finding_count_total ?? 0)} />
@@ -1832,12 +1952,55 @@ function AssessmentExecutionResult({
         <StatusFact label="MASVS compliance" value={summary?.compliance.score === null || summary?.compliance.score === undefined ? "Unavailable" : `${summary.compliance.score}%`} />
         <StatusFact label="Report" value={summary?.report.status || run.result_summary.report?.status || "Pending"} />
         <StatusFact label="Elapsed time" value={formatRunElapsed(run)} />
+        {run.termination_reason ? <StatusFact label="Termination" value={run.termination_reason} /> : null}
       </div>
 
       {run.failure_message ? (
         <p className="agent-failure-message">
           {run.failure_category || "CONTROLLED_FAILURE"}: {run.failure_message}
         </p>
+      ) : null}
+
+      {run.execution_mode === "ADAPTIVE_AGENT" ? (
+        <section className="agent-step-card" aria-label="Adaptive agent activity">
+          <div className="agent-subsection-heading">
+            <h3>Agent activity</h3>
+            <span>{decisions.length} auditable decisions</span>
+          </div>
+          <ol className="agent-step-list planner-execution-timeline">
+            {decisions.map((decision) => {
+              const hypothesis = hypotheses.find(
+                (item) => item.id === decision.hypothesis,
+              );
+              return (
+                <li key={decision.id}>
+                  <span className="agent-step-sequence">{decision.sequence}</span>
+                  <div>
+                    <span className="eyebrow">Hypothesis</span>
+                    <strong>{hypothesis?.title || decision.hypothesis_identifier || decision.decision_type}</strong>
+                    <small><b>Security rationale:</b> {decision.rationale_summary}</small>
+                    {decision.tool_name ? <small><b>Action:</b> <span className="mono">{decision.tool_name}</span></small> : null}
+                    {decision.expected_observation ? <small><b>Expected observation:</b> {decision.expected_observation}</small> : null}
+                    {hypothesis?.oracle_result.safe_summary ? <small><b>Oracle result:</b> {hypothesis.oracle_result.safe_summary}</small> : null}
+                  </div>
+                  <span className={`agent-step-status state-${decision.execution_status.toLowerCase()}`}>
+                    {decision.decision_type === "TOOL_ACTION" ? decision.execution_status : decision.decision_type}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+          <div className="planner-scope-summary">
+            <div>
+              <span>Coverage</span>
+              <p>{Object.entries(run.coverage_state).map(([area, status]) => `${area}: ${status}`).join(" · ")}</p>
+            </div>
+            <div>
+              <span>Security boundary</span>
+              <p>Model chooses one safe experiment. Backend validates policy and budget. Existing gateway executes. Deterministic oracles interpret evidence.</p>
+            </div>
+          </div>
+        </section>
       ) : null}
 
       <ol className="agent-step-list planner-execution-timeline">

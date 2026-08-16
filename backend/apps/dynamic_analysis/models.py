@@ -929,6 +929,10 @@ class AgentRuntime(models.Model):
 
 
 class AgentRun(models.Model):
+    class ExecutionMode(models.TextChoices):
+        SEQUENTIAL_PLAN = "SEQUENTIAL_PLAN", "Sequential approved plan"
+        ADAPTIVE_AGENT = "ADAPTIVE_AGENT", "Adaptive assessment agent"
+
     class Objective(models.TextChoices):
         DEVICE_READINESS_CHECK = (
             "DEVICE_READINESS_CHECK",
@@ -958,6 +962,7 @@ class AgentRun(models.Model):
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
         RUNNING = "RUNNING", "Running"
+        PAUSED = "PAUSED", "Paused for auditor"
         SUCCEEDED = "SUCCEEDED", "Succeeded"
         FAILED = "FAILED", "Failed"
         CANCELLED = "CANCELLED", "Cancelled"
@@ -1007,6 +1012,20 @@ class AgentRun(models.Model):
     approved_plan_hash = models.CharField(max_length=64, blank=True)
     target_package = models.CharField(max_length=255, blank=True)
     execution_contract = models.JSONField(default=dict, blank=True)
+    execution_mode = models.CharField(
+        max_length=32,
+        choices=ExecutionMode.choices,
+        default=ExecutionMode.SEQUENTIAL_PLAN,
+    )
+    capability_envelope = models.JSONField(default=dict, blank=True)
+    capability_envelope_hash = models.CharField(max_length=64, blank=True)
+    decision_provider = models.CharField(max_length=32, blank=True)
+    decision_model = models.CharField(max_length=128, blank=True)
+    decision_count = models.PositiveIntegerField(default=0)
+    model_call_count = models.PositiveIntegerField(default=0)
+    consecutive_failure_count = models.PositiveIntegerField(default=0)
+    coverage_state = models.JSONField(default=dict, blank=True)
+    termination_reason = models.CharField(max_length=64, blank=True)
     objective = models.CharField(max_length=64, choices=Objective.choices)
     objective_input = models.JSONField(default=dict, blank=True)
     status = models.CharField(
@@ -1177,6 +1196,155 @@ class AgentRunArtifact(models.Model):
 
     def __str__(self) -> str:
         return f"{self.artifact_type} artifact for run {self.run_id}"
+
+
+class AgentHypothesis(models.Model):
+    class Family(models.TextChoices):
+        SENSITIVE_LOG_EXPOSURE = "SENSITIVE_LOG_EXPOSURE", "Sensitive log exposure"
+        UI_SENSITIVE_DATA_EXPOSURE = (
+            "UI_SENSITIVE_DATA_EXPOSURE",
+            "UI sensitive data exposure",
+        )
+        RUNTIME_TAMPERING_RESILIENCE = (
+            "RUNTIME_TAMPERING_RESILIENCE",
+            "Runtime tampering resilience",
+        )
+        APPLICATION_RUNTIME_STABILITY = (
+            "APPLICATION_RUNTIME_STABILITY",
+            "Application runtime stability",
+        )
+        EXPLORATORY = "EXPLORATORY", "Exploratory"
+
+    class Status(models.TextChoices):
+        UNTESTED = "UNTESTED", "Untested"
+        ACTIVE = "ACTIVE", "Active"
+        SUPPORTED = "SUPPORTED", "Supported"
+        REJECTED = "REJECTED", "Rejected"
+        INCONCLUSIVE = "INCONCLUSIVE", "Inconclusive"
+        BLOCKED = "BLOCKED", "Blocked"
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="hypotheses",
+    )
+    hypothesis_id = models.CharField(max_length=64)
+    family = models.CharField(max_length=64, choices=Family.choices)
+    title = models.CharField(max_length=200)
+    description = models.TextField()
+    evidence_requirements = models.JSONField(default=list, blank=True)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.UNTESTED,
+    )
+    confidence = models.FloatField(default=0.0)
+    oracle_result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["run", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "hypothesis_id"],
+                name="unique_agent_hypothesis_identifier",
+            ),
+            models.CheckConstraint(
+                condition=Q(confidence__gte=0.0) & Q(confidence__lte=1.0),
+                name="agent_hypothesis_confidence_range",
+            ),
+        ]
+
+
+class AgentActionDecision(models.Model):
+    class DecisionType(models.TextChoices):
+        TOOL_ACTION = "TOOL_ACTION", "Tool action"
+        COMPLETE = "COMPLETE", "Complete"
+        NEEDS_AUDITOR = "NEEDS_AUDITOR", "Needs auditor"
+
+    class CheckStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        PASSED = "PASSED", "Passed"
+        FAILED = "FAILED", "Failed"
+
+    class ExecutionStatus(models.TextChoices):
+        NOT_EXECUTED = "NOT_EXECUTED", "Not executed"
+        RUNNING = "RUNNING", "Running"
+        SUCCEEDED = "SUCCEEDED", "Succeeded"
+        FAILED = "FAILED", "Failed"
+        REJECTED = "REJECTED", "Rejected"
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="action_decisions",
+    )
+    hypothesis = models.ForeignKey(
+        AgentHypothesis,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="decisions",
+    )
+    run_step = models.OneToOneField(
+        AgentRunStep,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="action_decision",
+    )
+    sequence = models.PositiveIntegerField()
+    contract_version = models.CharField(max_length=64)
+    decision_type = models.CharField(max_length=32, choices=DecisionType.choices)
+    tool_name = models.CharField(max_length=128, blank=True)
+    arguments = models.JSONField(default=dict, blank=True)
+    rationale_summary = models.CharField(max_length=1000)
+    expected_observation = models.CharField(max_length=1000, blank=True)
+    evidence_goals = models.JSONField(default=list, blank=True)
+    confidence = models.FloatField(default=0.0)
+    provider = models.CharField(max_length=32)
+    model = models.CharField(max_length=128)
+    provider_metadata = models.JSONField(default=dict, blank=True)
+    decision_input_hash = models.CharField(max_length=64)
+    decision_output_hash = models.CharField(max_length=64)
+    validation_status = models.CharField(
+        max_length=16,
+        choices=CheckStatus.choices,
+        default=CheckStatus.PENDING,
+    )
+    policy_status = models.CharField(
+        max_length=16,
+        choices=CheckStatus.choices,
+        default=CheckStatus.PENDING,
+    )
+    execution_status = models.CharField(
+        max_length=16,
+        choices=ExecutionStatus.choices,
+        default=ExecutionStatus.NOT_EXECUTED,
+    )
+    observation_hash = models.CharField(max_length=64, blank=True)
+    failure_code = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    validated_at = models.DateTimeField(null=True, blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["run", "sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["run", "sequence"],
+                name="unique_agent_action_decision_sequence",
+            ),
+            models.CheckConstraint(
+                condition=Q(sequence__gte=1),
+                name="agent_action_decision_sequence_gte_1",
+            ),
+            models.CheckConstraint(
+                condition=Q(confidence__gte=0.0) & Q(confidence__lte=1.0),
+                name="agent_action_decision_confidence_range",
+            ),
+        ]
 
 
 class AssessmentPlan(models.Model):

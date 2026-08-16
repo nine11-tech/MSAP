@@ -39,7 +39,10 @@ from apps.dynamic_analysis.authentication import (
     IsAgentRunToken,
 )
 from apps.dynamic_analysis.serializers import (
+    AdaptiveAssessmentExecutionSerializer,
     AdaptiveAssessmentRecommendationSerializer,
+    AgentActionDecisionSerializer,
+    AgentHypothesisSerializer,
     AgentRunArtifactSerializer,
     AgentRunCreateSerializer,
     AgentRunSerializer,
@@ -91,6 +94,10 @@ from apps.dynamic_analysis.services.assessment_executor import (
     AssessmentExecutionError,
     AssessmentExecutor,
 )
+from apps.dynamic_analysis.services.assessment_agent import (
+    AssessmentAgent,
+    AssessmentAgentError,
+)
 from apps.dynamic_analysis.services.assessment_results import (
     build_assessment_summary,
 )
@@ -126,6 +133,7 @@ from apps.dynamic_analysis.services.runner_readiness import (
     get_dynamic_runner_readiness,
 )
 from apps.dynamic_analysis.tasks import (
+    execute_adaptive_assessment_run_task,
     execute_assessment_plan_run_task,
     run_dynamic_mvp_job_task,
 )
@@ -582,7 +590,13 @@ class AssessmentPlanViewSet(
     def get_permissions(self):
         permission_classes = (
             [IsMSAPAnalystOrAdmin]
-            if self.action in {"create", "validate_plan", "approve", "execute_plan"}
+            if self.action in {
+                "create",
+                "validate_plan",
+                "approve",
+                "execute_plan",
+                "execute_adaptive",
+            }
             else [IsMSAPViewerOrAbove]
         )
         return [permission() for permission in permission_classes]
@@ -687,6 +701,55 @@ class AssessmentPlanViewSet(
                 "run": AgentRunSerializer(run, context={"request": request}).data,
                 "task_id": getattr(async_result, "id", None),
                 "execution_mode": "celery",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @extend_schema(
+        request=AdaptiveAssessmentExecutionSerializer,
+        responses={202: AgentRunSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="execute-adaptive")
+    def execute_adaptive(self, request, pk=None):
+        serializer = AdaptiveAssessmentExecutionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = self.get_object()
+        try:
+            run = AssessmentAgent().create_run(
+                plan=plan,
+                requested_by=request.user,
+                decision_provider_name=serializer.validated_data.get(
+                    "decision_provider"
+                ),
+            )
+        except (AssessmentAgentError, AssessmentExecutionError) as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        try:
+            async_result = execute_adaptive_assessment_run_task.delay(run.id)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_assessment_enqueue_failed run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            run = AssessmentExecutor.mark_enqueue_failed(run)
+            return Response(
+                {
+                    "code": "ADAPTIVE_ASSESSMENT_ENQUEUE_FAILED",
+                    "detail": "The approved adaptive assessment could not be queued.",
+                    "run": AgentRunSerializer(run, context={"request": request}).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        run.refresh_from_db()
+        return Response(
+            {
+                "run": AgentRunSerializer(run, context={"request": request}).data,
+                "task_id": getattr(async_result, "id", None),
+                "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -801,6 +864,23 @@ class AgentRunViewSet(
             many=True,
         )
         return Response(serializer.data)
+
+    @extend_schema(responses={200: AgentActionDecisionSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="decisions")
+    def decisions(self, request, pk=None):
+        run = self.get_object()
+        return Response(
+            AgentActionDecisionSerializer(
+                run.action_decisions.select_related("hypothesis", "run_step").all(),
+                many=True,
+            ).data
+        )
+
+    @extend_schema(responses={200: AgentHypothesisSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="hypotheses")
+    def hypotheses(self, request, pk=None):
+        run = self.get_object()
+        return Response(AgentHypothesisSerializer(run.hypotheses.all(), many=True).data)
 
     @extend_schema(responses={200: EvidenceSerializer(many=True)})
     @action(detail=True, methods=["get"], url_path="evidence")

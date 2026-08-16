@@ -1,5 +1,7 @@
 import { apiDownload, apiGet, apiPost, apiPostBlob } from "./client";
 import type {
+  AgentActionDecision,
+  AgentHypothesis,
   AgentRun,
   AgentObjective,
   AgentObjectiveInput,
@@ -265,6 +267,10 @@ export const getAgentRunAssessmentSummary = (runId: number) =>
   apiGet<AssessmentRunSummary>(
     `dynamic/agent/runs/${runId}/assessment-summary/`,
   );
+export const listAgentRunDecisions = (runId: number) =>
+  apiGet<AgentActionDecision[]>(`dynamic/agent/runs/${runId}/decisions/`);
+export const listAgentRunHypotheses = (runId: number) =>
+  apiGet<AgentHypothesis[]>(`dynamic/agent/runs/${runId}/hypotheses/`);
 export const recommendNextAssessment = (
   runId: number,
   plannerProvider?: "DETERMINISTIC" | "OPENAI",
@@ -319,3 +325,17 @@ export const executeAssessmentPlan = (planId: number) =>
     { run: AgentRun; task_id: string | null; execution_mode: "celery" },
     Record<string, never>
   >(`dynamic/agent/plans/${planId}/execute/`, {});
+export const executeAdaptiveAssessment = (
+  planId: number,
+  decisionProvider?: "DETERMINISTIC" | "OPENAI",
+) =>
+  apiPost<
+    {
+      run: AgentRun;
+      task_id: string | null;
+      execution_mode: "ADAPTIVE_AGENT";
+    },
+    { decision_provider?: "DETERMINISTIC" | "OPENAI" }
+  >(`dynamic/agent/plans/${planId}/execute-adaptive/`, {
+    ...(decisionProvider ? { decision_provider: decisionProvider } : {}),
+  });

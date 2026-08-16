@@ -13,10 +13,19 @@ from django.utils import timezone
 from apps.api.roles import user_role
 from apps.apk_files.models import APKFile
 from apps.dynamic_analysis.models import (
+    AgentActionDecision,
     AgentRun,
     AgentRunStep,
     AssessmentPlan,
     DynamicDevice,
+)
+from apps.dynamic_analysis.services.agent_action_contract import (
+    decision_hash,
+    persisted_decision_payload,
+)
+from apps.dynamic_analysis.services.agent_capability_envelope import (
+    CapabilityEnvelopeError,
+    validate_capability_envelope,
 )
 from apps.dynamic_analysis.services.agent_controller import (
     AgentController,
@@ -72,9 +81,10 @@ def execute_run_tool_call(
     run_id: int,
     tool_name: str,
     arguments,
+    action_decision_id: int | None = None,
     tool_executor=execute_agent_tool,
 ) -> dict:
-    """Claim and execute the next exact tool in a deterministic run plan."""
+    """Execute one exact fixed-plan step or one validated adaptive decision."""
 
     with transaction.atomic():
         run = (
@@ -87,91 +97,104 @@ def execute_run_tool_call(
                 code="RUN_NOT_RUNNING",
                 http_status=409,
             )
-        if tool_name not in TOOL_MANIFEST or not run.steps.filter(
-            tool_name=tool_name
-        ).exists():
-            raise AgentGatewayRequestError(
-                "The requested tool is not allowed for this objective.",
-                code="TOOL_NOT_ALLOWED",
+        if run.execution_mode == AgentRun.ExecutionMode.ADAPTIVE_AGENT:
+            expected_step, expected_arguments = _authorize_adaptive_call(
+                run=run,
+                action_decision_id=action_decision_id,
+                tool_name=tool_name,
+                arguments=arguments,
             )
-        steps = list(run.steps.select_for_update().order_by("sequence_number"))
-        terminal_step_statuses = {
-            AgentRunStep.Status.SUCCEEDED,
-            AgentRunStep.Status.SKIPPED,
-        }
-        if run.assessment_plan_id:
-            terminal_step_statuses.update({
-                AgentRunStep.Status.FAILED,
-                AgentRunStep.Status.TIMEOUT,
-                AgentRunStep.Status.CANCELLED,
-            })
-        expected_step = next(
-            (
-                step
-                for step in steps
-                if step.status not in terminal_step_statuses
-            ),
-            None,
-        )
-        if expected_step is None:
-            raise AgentGatewayRequestError(
-                "The deterministic tool sequence is already complete.",
-                code="TOOL_SEQUENCE_COMPLETE",
-            )
-        if tool_name != expected_step.tool_name:
-            raise AgentGatewayRequestError(
-                "The requested tool is out of sequence for this objective.",
-                code="TOOL_OUT_OF_SEQUENCE",
-            )
-        if run.assessment_plan_id:
-            try:
-                contract = validate_approved_execution_contract(run.execution_contract)
-                approved_call = approved_tool_call_for_run_step(run, expected_step)
-            except AssessmentExecutionContractError:
-                raise AgentGatewayRequestError(
-                    "The approved execution contract failed its integrity check.",
-                    code="APPROVED_PLAN_INTEGRITY_FAILED",
-                    http_status=409,
-                ) from None
-            plan = run.assessment_plan
-            if (
-                plan is None
-                or plan.status != AssessmentPlan.Status.EXECUTING
-                or contract["plan_hash"] != plan.plan_hash
-                or contract["approved_plan"] != plan.normalized_plan
-                or run.approved_plan_hash != plan.plan_hash
-                or run.audit_id != plan.audit_id
-                or run.target_package != plan.target_package
-                or user_role(run.requested_by) not in {"ADMIN", "ANALYST"}
-                or not APKFile.objects.filter(
-                    audit_id=run.audit_id,
-                    package_name=run.target_package,
-                ).exists()
-            ):
-                raise AgentGatewayRequestError(
-                    "The approved plan is no longer authorized for execution.",
-                    code="APPROVED_PLAN_AUTHORIZATION_FAILED",
-                    http_status=403,
-                )
-            if (
-                approved_call["name"] != expected_step.tool_name
-                or approved_call["arguments"] != expected_step.input_summary
-            ):
-                raise AgentGatewayRequestError(
-                    "The materialized tool call does not match the approved plan.",
-                    code="APPROVED_TOOL_CALL_MISMATCH",
-                )
-            expected_arguments = approved_call["arguments"]
         else:
-            completed_outputs = {
-                step.tool_name: step.output_summary
-                for step in steps
-                if step.status == AgentRunStep.Status.SUCCEEDED
+            if action_decision_id is not None:
+                raise AgentGatewayRequestError(
+                    "Sequential execution does not accept an adaptive decision.",
+                    code="AGENT_DECISION_NOT_APPLICABLE",
+                )
+            if tool_name not in TOOL_MANIFEST or not run.steps.filter(
+                tool_name=tool_name
+            ).exists():
+                raise AgentGatewayRequestError(
+                    "The requested tool is not allowed for this objective.",
+                    code="TOOL_NOT_ALLOWED",
+                )
+            steps = list(run.steps.select_for_update().order_by("sequence_number"))
+            terminal_step_statuses = {
+                AgentRunStep.Status.SUCCEEDED,
+                AgentRunStep.Status.SKIPPED,
             }
-            expected_arguments = resolve_runtime_arguments(
-                expected_step.input_summary,
-                completed_outputs,
+            if run.assessment_plan_id:
+                terminal_step_statuses.update({
+                    AgentRunStep.Status.FAILED,
+                    AgentRunStep.Status.TIMEOUT,
+                    AgentRunStep.Status.CANCELLED,
+                })
+            expected_step = next(
+                (
+                    step
+                    for step in steps
+                    if step.status not in terminal_step_statuses
+                ),
+                None,
             )
+            if expected_step is None:
+                raise AgentGatewayRequestError(
+                    "The deterministic tool sequence is already complete.",
+                    code="TOOL_SEQUENCE_COMPLETE",
+                )
+            if tool_name != expected_step.tool_name:
+                raise AgentGatewayRequestError(
+                    "The requested tool is out of sequence for this objective.",
+                    code="TOOL_OUT_OF_SEQUENCE",
+                )
+            if run.assessment_plan_id:
+                try:
+                    contract = validate_approved_execution_contract(run.execution_contract)
+                    approved_call = approved_tool_call_for_run_step(run, expected_step)
+                except AssessmentExecutionContractError:
+                    raise AgentGatewayRequestError(
+                        "The approved execution contract failed its integrity check.",
+                        code="APPROVED_PLAN_INTEGRITY_FAILED",
+                        http_status=409,
+                    ) from None
+                plan = run.assessment_plan
+                if (
+                    plan is None
+                    or plan.status != AssessmentPlan.Status.EXECUTING
+                    or contract["plan_hash"] != plan.plan_hash
+                    or contract["approved_plan"] != plan.normalized_plan
+                    or run.approved_plan_hash != plan.plan_hash
+                    or run.audit_id != plan.audit_id
+                    or run.target_package != plan.target_package
+                    or user_role(run.requested_by) not in {"ADMIN", "ANALYST"}
+                    or not APKFile.objects.filter(
+                        audit_id=run.audit_id,
+                        package_name=run.target_package,
+                    ).exists()
+                ):
+                    raise AgentGatewayRequestError(
+                        "The approved plan is no longer authorized for execution.",
+                        code="APPROVED_PLAN_AUTHORIZATION_FAILED",
+                        http_status=403,
+                    )
+                if (
+                    approved_call["name"] != expected_step.tool_name
+                    or approved_call["arguments"] != expected_step.input_summary
+                ):
+                    raise AgentGatewayRequestError(
+                        "The materialized tool call does not match the approved plan.",
+                        code="APPROVED_TOOL_CALL_MISMATCH",
+                    )
+                expected_arguments = approved_call["arguments"]
+            else:
+                completed_outputs = {
+                    step.tool_name: step.output_summary
+                    for step in steps
+                    if step.status == AgentRunStep.Status.SUCCEEDED
+                }
+                expected_arguments = resolve_runtime_arguments(
+                    expected_step.input_summary,
+                    completed_outputs,
+                )
         if arguments != expected_arguments:
             raise AgentGatewayRequestError(
                 "The requested tool arguments do not match the objective contract.",
@@ -187,6 +210,12 @@ def execute_run_tool_call(
         expected_step.input_summary = expected_arguments
         expected_step.started_at = timezone.now()
         expected_step.save(update_fields=["input_summary", "status", "started_at"])
+        if action_decision_id is not None:
+            AgentActionDecision.objects.filter(
+                pk=action_decision_id,
+                run=run,
+                execution_status=AgentActionDecision.ExecutionStatus.NOT_EXECUTED,
+            ).update(execution_status=AgentActionDecision.ExecutionStatus.RUNNING)
         step_id = expected_step.pk
 
     attempt = 0
@@ -283,6 +312,16 @@ def execute_run_tool_call(
                 "duration_seconds",
             ]
         )
+        if action_decision_id is not None:
+            AgentActionDecision.objects.filter(
+                pk=action_decision_id,
+                run=run,
+                run_step=step,
+                execution_status=AgentActionDecision.ExecutionStatus.RUNNING,
+            ).update(
+                execution_status=AgentActionDecision.ExecutionStatus.SUCCEEDED,
+                executed_at=timezone.now(),
+            )
         AgentController._record_tool_artifact(run, step, output)
         if tool_name == "get_device_status" and output.get("serial"):
             run.device = DynamicDevice.objects.filter(serial=output["serial"]).first()
@@ -348,6 +387,105 @@ def execute_run_tool_call(
         }
 
 
+def _authorize_adaptive_call(
+    *,
+    run: AgentRun,
+    action_decision_id: int | None,
+    tool_name: str,
+    arguments,
+) -> tuple[AgentRunStep, dict]:
+    if not isinstance(action_decision_id, int) or action_decision_id < 1:
+        raise AgentGatewayRequestError(
+            "Adaptive execution requires a persisted validated action decision.",
+            code="AGENT_DECISION_REQUIRED",
+        )
+    decision = (
+        AgentActionDecision.objects.select_for_update()
+        .filter(pk=action_decision_id, run=run)
+        .first()
+    )
+    if decision is None:
+        code = (
+            "AGENT_DECISION_CROSS_RUN"
+            if AgentActionDecision.objects.filter(pk=action_decision_id).exists()
+            else "AGENT_DECISION_NOT_FOUND"
+        )
+        raise AgentGatewayRequestError(
+            "The action decision does not belong to this AgentRun.",
+            code=code,
+            http_status=403,
+        )
+    try:
+        contract = validate_approved_execution_contract(run.execution_contract)
+        envelope = validate_capability_envelope(run.capability_envelope, run=run)
+    except (AssessmentExecutionContractError, CapabilityEnvelopeError):
+        raise AgentGatewayRequestError(
+            "The adaptive execution authorization snapshot failed its integrity check.",
+            code="AGENT_EXECUTION_INTEGRITY_FAILED",
+            http_status=409,
+        ) from None
+    plan = run.assessment_plan
+    if (
+        plan is None
+        or plan.status != AssessmentPlan.Status.EXECUTING
+        or contract["plan_hash"] != plan.plan_hash
+        or contract["approved_plan"] != plan.normalized_plan
+        or run.approved_plan_hash != plan.plan_hash
+        or envelope["approved_plan_hash"] != plan.plan_hash
+        or run.audit_id != plan.audit_id
+        or run.target_package != plan.target_package
+        or user_role(run.requested_by) not in {"ADMIN", "ANALYST"}
+        or not APKFile.objects.filter(
+            audit_id=run.audit_id,
+            package_name=run.target_package,
+        ).exists()
+    ):
+        raise AgentGatewayRequestError(
+            "The adaptive run is no longer authorized for execution.",
+            code="AGENT_EXECUTION_AUTHORIZATION_FAILED",
+            http_status=403,
+        )
+    if (
+        decision.decision_type != AgentActionDecision.DecisionType.TOOL_ACTION
+        or decision.validation_status != AgentActionDecision.CheckStatus.PASSED
+        or decision.policy_status != AgentActionDecision.CheckStatus.PASSED
+        or decision.execution_status != AgentActionDecision.ExecutionStatus.NOT_EXECUTED
+        or decision.sequence != run.decision_count
+        or decision.tool_name != tool_name
+        or decision.arguments != arguments
+        or tool_name not in envelope["allowed_capabilities"]
+        or tool_name not in TOOL_MANIFEST
+    ):
+        raise AgentGatewayRequestError(
+            "The adaptive tool call does not match its validated decision.",
+            code="AGENT_DECISION_AUTHORIZATION_FAILED",
+            http_status=403,
+        )
+    if decision.decision_output_hash != decision_hash(
+        persisted_decision_payload(decision)
+    ):
+        raise AgentGatewayRequestError(
+            "The action decision failed its integrity check.",
+            code="AGENT_DECISION_HASH_MISMATCH",
+            http_status=409,
+        )
+    step = decision.run_step
+    if (
+        step is None
+        or step.run_id != run.id
+        or step.sequence_number != decision.sequence
+        or step.tool_name != decision.tool_name
+        or step.input_summary != decision.arguments
+        or step.status != AgentRunStep.Status.PENDING
+    ):
+        raise AgentGatewayRequestError(
+            "The adaptive run step does not exactly match its action decision.",
+            code="AGENT_DECISION_STEP_MISMATCH",
+            http_status=409,
+        )
+    return step, decision.arguments
+
+
 def _record_tool_failure(*, run_id: int, step_id: int, error: AgentToolError) -> None:
     with transaction.atomic():
         run = (
@@ -371,6 +509,15 @@ def _record_tool_failure(*, run_id: int, step_id: int, error: AgentToolError) ->
                 "finished_at",
                 "duration_seconds",
             ]
+        )
+        AgentActionDecision.objects.filter(
+            run=run,
+            run_step=step,
+            execution_status=AgentActionDecision.ExecutionStatus.RUNNING,
+        ).update(
+            execution_status=AgentActionDecision.ExecutionStatus.FAILED,
+            failure_code=error.code[:64],
+            executed_at=timezone.now(),
         )
         if run.assessment_plan_id:
             security_logger.warning(
@@ -398,6 +545,19 @@ def _claim_tool_attempt(run_id: int, step_id: int) -> None:
         run = AgentRun.objects.select_for_update().get(pk=run_id)
         step = AgentRunStep.objects.select_for_update().get(pk=step_id, run=run)
         limit = settings.MSAP_ASSESSMENT_EXECUTION_MAX_TOOL_CALLS
+        if run.execution_mode == AgentRun.ExecutionMode.ADAPTIVE_AGENT:
+            try:
+                envelope = validate_capability_envelope(
+                    run.capability_envelope,
+                    run=run,
+                )
+            except CapabilityEnvelopeError:
+                raise AgentGatewayExecutionError(
+                    "The adaptive capability envelope failed its integrity check.",
+                    code="AGENT_CAPABILITY_ENVELOPE_HASH_MISMATCH",
+                    http_status=409,
+                ) from None
+            limit = envelope["maximum_tool_calls"]
         if run.assessment_plan_id and run.tool_call_count >= limit:
             error = AgentToolError(
                 "The approved assessment exceeded its tool-call limit.",

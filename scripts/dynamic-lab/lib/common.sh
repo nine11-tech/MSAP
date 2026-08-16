@@ -71,6 +71,7 @@ msap_load_env() {
   export MSAP_MOUNT_PROBE_DIR="${MSAP_MOUNT_PROBE_DIR:-/data/local/tmp/msap-mount-probe}"
   export MSAP_TRUST_PROBE_PACKAGE="${MSAP_TRUST_PROBE_PACKAGE:-tech.nine11.msap.trustprobe}"
   export MSAP_TRUST_PROBE_ACTIVITY="${MSAP_TRUST_PROBE_ACTIVITY:-$MSAP_TRUST_PROBE_PACKAGE/.MainActivity}"
+  export MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES="${MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES:-}"
 }
 
 msap_log_section() {
@@ -236,12 +237,60 @@ msap_windows_gateway_ip() {
 }
 
 msap_count_third_party_packages() {
+  msap_list_third_party_packages |
+    awk '
+      NF { count++ }
+      END { print count + 0 }
+    '
+}
+
+msap_list_third_party_packages() {
   msap_adb shell pm list packages -3 2>/dev/null |
     msap_trim_cr |
     awk '
-      /^package:/ { count++ }
-      END { print count + 0 }
+      /^package:/ {
+        sub(/^package:/, "")
+        print
+      }
     '
+}
+
+msap_preflight_allowed_third_party_packages() {
+  printf '%s\n' "$MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES" |
+    sed 's/,/ /g' |
+    awk '{ for (field_index = 1; field_index <= NF; field_index++) print $field_index }'
+}
+
+msap_verify_preflight_third_party_packages() {
+  local allowed_packages
+  local installed_packages
+  local package_name
+  local unexpected_packages=""
+  local total_count
+  local unexpected_count
+
+  allowed_packages="$(msap_preflight_allowed_third_party_packages)"
+  while IFS= read -r package_name; do
+    [[ -z "$package_name" ]] && continue
+    [[ "$package_name" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$ ]] ||
+      msap_fail "Invalid package in MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES"
+  done <<<"$allowed_packages"
+
+  installed_packages="$(msap_list_third_party_packages)"
+  while IFS= read -r package_name; do
+    [[ -z "$package_name" ]] && continue
+    if ! grep -Fqx -- "$package_name" <<<"$allowed_packages"; then
+      unexpected_packages+="${package_name}"$'\n'
+    fi
+  done <<<"$installed_packages"
+
+  total_count="$(awk 'NF { count++ } END { print count + 0 }' <<<"$installed_packages")"
+  unexpected_count="$(awk 'NF { count++ } END { print count + 0 }' <<<"$unexpected_packages")"
+  if [[ "$unexpected_count" != "0" ]]; then
+    printf '%s' "$unexpected_packages" | sed 's/^/package:/' >&2
+    msap_fail "Unexpected third-party packages found: $unexpected_count of $total_count"
+  fi
+  msap_log "Third-party packages: total=$total_count allowed=$total_count unexpected=0"
 }
 
 msap_snapshot_list() {

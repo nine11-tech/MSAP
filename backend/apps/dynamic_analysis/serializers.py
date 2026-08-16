@@ -6,6 +6,8 @@ from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.storage.models import ObjectStorageReference
 from apps.dynamic_analysis.models import (
+    AgentActionDecision,
+    AgentHypothesis,
     AgentRun,
     AgentRunArtifact,
     AgentRuntime,
@@ -89,6 +91,23 @@ class AdaptiveAssessmentRecommendationSerializer(serializers.Serializer):
         if not isinstance(data, dict):
             raise serializers.ValidationError("Request body must be a JSON object.")
         unexpected = sorted(set(data) - {"planner_provider"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+
+class AdaptiveAssessmentExecutionSerializer(serializers.Serializer):
+    decision_provider = serializers.ChoiceField(
+        choices=AssessmentPlan.PlannerProvider.choices,
+        required=False,
+    )
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"decision_provider"})
         if unexpected:
             raise serializers.ValidationError(
                 {key: "This field is not permitted." for key in unexpected}
@@ -484,6 +503,16 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "assessment_plan",
             "approved_plan_hash",
             "target_package",
+            "execution_mode",
+            "capability_envelope",
+            "capability_envelope_hash",
+            "decision_provider",
+            "decision_model",
+            "decision_count",
+            "model_call_count",
+            "consecutive_failure_count",
+            "coverage_state",
+            "termination_reason",
             "objective",
             "status",
             "requested_by",
@@ -499,6 +528,67 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "cancelled_by",
             "created_at",
             "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentHypothesisSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AgentHypothesis
+        fields = [
+            "id",
+            "run",
+            "hypothesis_id",
+            "family",
+            "title",
+            "description",
+            "evidence_requirements",
+            "status",
+            "confidence",
+            "oracle_result",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class AgentActionDecisionSerializer(serializers.ModelSerializer):
+    hypothesis_identifier = serializers.CharField(
+        source="hypothesis.hypothesis_id",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = AgentActionDecision
+        fields = [
+            "id",
+            "run",
+            "sequence",
+            "contract_version",
+            "hypothesis",
+            "hypothesis_identifier",
+            "run_step",
+            "decision_type",
+            "tool_name",
+            "arguments",
+            "rationale_summary",
+            "expected_observation",
+            "evidence_goals",
+            "confidence",
+            "provider",
+            "model",
+            "provider_metadata",
+            "decision_input_hash",
+            "decision_output_hash",
+            "validation_status",
+            "policy_status",
+            "execution_status",
+            "observation_hash",
+            "failure_code",
+            "created_at",
+            "validated_at",
+            "executed_at",
         ]
         read_only_fields = fields
 
@@ -603,6 +693,36 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+    agentic_capability_preview = serializers.SerializerMethodField()
+
+    @staticmethod
+    def get_agentic_capability_preview(plan):
+        if plan.status not in {
+            AssessmentPlan.Status.APPROVED,
+            AssessmentPlan.Status.EXECUTING,
+            AssessmentPlan.Status.COMPLETED,
+        }:
+            return {}
+        try:
+            from apps.dynamic_analysis.services.agent_capability_envelope import (
+                build_capability_envelope,
+            )
+
+            envelope = build_capability_envelope(plan)
+        except Exception:
+            return {}
+        return {
+            "contract_version": envelope["contract_version"],
+            "allowed_capabilities": envelope["allowed_capabilities"],
+            "allowed_hypothesis_families": envelope["allowed_hypothesis_families"],
+            "maximum_decisions": envelope["maximum_decisions"],
+            "maximum_tool_calls": envelope["maximum_tool_calls"],
+            "maximum_run_duration_seconds": envelope["maximum_run_duration_seconds"],
+            "maximum_provider_calls": envelope["maximum_model_provider_calls"],
+            "additional_approval_capabilities": envelope[
+                "additional_approval_capabilities"
+            ],
+        }
 
     class Meta:
         model = AssessmentPlan
@@ -627,6 +747,7 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
             "validation_errors",
             "planner_input_hash",
             "plan_hash",
+            "agentic_capability_preview",
             "created_by",
             "created_by_username",
             "approved_by",
