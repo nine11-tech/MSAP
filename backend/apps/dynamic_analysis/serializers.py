@@ -26,6 +26,9 @@ from apps.dynamic_analysis.models import (
     DynamicSessionEvent,
     DynamicSessionStage,
 )
+from apps.dynamic_analysis.services.assessment_planner import (
+    OPENAI_MODEL_PROFILE_CHOICES,
+)
 
 
 ANDROID_PACKAGE_NAME_RE = re.compile(
@@ -44,6 +47,11 @@ class AssessmentPlanCreateSerializer(serializers.Serializer):
         choices=AssessmentPlan.PlannerProvider.choices,
         required=False,
     )
+    model_profile = serializers.ChoiceField(
+        choices=OPENAI_MODEL_PROFILE_CHOICES,
+        required=False,
+        default="ECONOMY",
+    )
 
     def to_internal_value(self, data):
         if not isinstance(data, dict):
@@ -56,6 +64,7 @@ class AssessmentPlanCreateSerializer(serializers.Serializer):
                 "objective",
                 "scope",
                 "planner_provider",
+                "model_profile",
             }
         )
         if unexpected:
@@ -463,6 +472,10 @@ class AgentRuntimeSerializer(serializers.ModelSerializer):
 
 
 class AgentRunSerializer(serializers.ModelSerializer):
+    adaptive_retryable = serializers.SerializerMethodField()
+    adaptive_retry_block_reason = serializers.SerializerMethodField()
+    pre_execution_failure = serializers.SerializerMethodField()
+    plan_approval_preserved = serializers.SerializerMethodField()
     requested_by_username = serializers.CharField(
         source="requested_by.username",
         read_only=True,
@@ -488,6 +501,35 @@ class AgentRunSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_null=True,
     )
+
+    def _adaptive_retryability(self, run):
+        request = self.context.get("request")
+        requested_by = getattr(request, "user", None)
+        cache_key = (run.pk, getattr(requested_by, "pk", None))
+        cache = getattr(self, "_adaptive_retryability_cache", {})
+        if cache_key not in cache:
+            from apps.dynamic_analysis.services.agent_retry import (
+                adaptive_retryability,
+            )
+
+            cache[cache_key] = adaptive_retryability(
+                run,
+                requested_by=requested_by,
+            )
+            self._adaptive_retryability_cache = cache
+        return cache[cache_key]
+
+    def get_adaptive_retryable(self, run):
+        return self._adaptive_retryability(run).retryable
+
+    def get_adaptive_retry_block_reason(self, run):
+        return self._adaptive_retryability(run).reason
+
+    def get_pre_execution_failure(self, run):
+        return self._adaptive_retryability(run).pre_execution_failure
+
+    def get_plan_approval_preserved(self, run):
+        return self._adaptive_retryability(run).plan_approval_preserved
 
     class Meta:
         model = AgentRun
@@ -523,6 +565,10 @@ class AgentRunSerializer(serializers.ModelSerializer):
             "result_summary",
             "failure_category",
             "failure_message",
+            "pre_execution_failure",
+            "plan_approval_preserved",
+            "adaptive_retryable",
+            "adaptive_retry_block_reason",
             "tool_call_count",
             "cancellation_requested_at",
             "cancelled_by",
@@ -697,32 +743,39 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
 
     @staticmethod
     def get_agentic_capability_preview(plan):
-        if plan.status not in {
-            AssessmentPlan.Status.APPROVED,
-            AssessmentPlan.Status.EXECUTING,
-            AssessmentPlan.Status.COMPLETED,
-        }:
-            return {}
         try:
             from apps.dynamic_analysis.services.agent_capability_envelope import (
                 build_capability_envelope,
+                build_capability_preview,
             )
 
-            envelope = build_capability_envelope(plan)
+            if plan.status in {
+                AssessmentPlan.Status.APPROVED,
+                AssessmentPlan.Status.EXECUTING,
+                AssessmentPlan.Status.COMPLETED,
+            }:
+                envelope = build_capability_envelope(plan)
+                return {
+                    "contract_version": envelope["contract_version"],
+                    "allowed_capabilities": envelope["allowed_capabilities"],
+                    "allowed_hypothesis_families": envelope[
+                        "allowed_hypothesis_families"
+                    ],
+                    "maximum_decisions": envelope["maximum_decisions"],
+                    "maximum_tool_calls": envelope["maximum_tool_calls"],
+                    "maximum_run_duration_seconds": envelope[
+                        "maximum_run_duration_seconds"
+                    ],
+                    "maximum_provider_calls": envelope[
+                        "maximum_model_provider_calls"
+                    ],
+                    "additional_approval_capabilities": envelope[
+                        "additional_approval_capabilities"
+                    ],
+                }
+            return build_capability_preview(plan)
         except Exception:
             return {}
-        return {
-            "contract_version": envelope["contract_version"],
-            "allowed_capabilities": envelope["allowed_capabilities"],
-            "allowed_hypothesis_families": envelope["allowed_hypothesis_families"],
-            "maximum_decisions": envelope["maximum_decisions"],
-            "maximum_tool_calls": envelope["maximum_tool_calls"],
-            "maximum_run_duration_seconds": envelope["maximum_run_duration_seconds"],
-            "maximum_provider_calls": envelope["maximum_model_provider_calls"],
-            "additional_approval_capabilities": envelope[
-                "additional_approval_capabilities"
-            ],
-        }
 
     class Meta:
         model = AssessmentPlan

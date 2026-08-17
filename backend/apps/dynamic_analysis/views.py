@@ -610,7 +610,8 @@ class AssessmentPlanViewSet(
         serializer.is_valid(raise_exception=True)
         try:
             provider = configured_planner_provider(
-                serializer.validated_data.get("planner_provider")
+                serializer.validated_data.get("planner_provider"),
+                serializer.validated_data.get("model_profile"),
             )
             plan = AssessmentPlannerService(provider).generate(
                 audit=serializer.validated_data["audit"],
@@ -765,6 +766,8 @@ class AgentRunViewSet(
         "device",
         "runtime",
         "requested_by",
+        "assessment_plan",
+        "assessment_plan__approved_by",
     ).all()
     serializer_class = AgentRunSerializer
     permission_classes = [IsMSAPViewerOrAbove]
@@ -778,6 +781,7 @@ class AgentRunViewSet(
         elif self.action in {
             "create",
             "cancel_execution",
+            "retry_adaptive",
             "recommend_next_assessment",
         }:
             permission_classes = [IsMSAPAnalystOrAdmin]
@@ -908,6 +912,63 @@ class AgentRunViewSet(
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(build_assessment_summary(run))
+
+    @extend_schema(request=StrictEmptySerializer, responses={202: AgentRunSerializer})
+    @action(detail=True, methods=["post"], url_path="retry-adaptive")
+    def retry_adaptive(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        source_run = self.get_object()
+        if source_run.assessment_plan is None:
+            return Response(
+                {
+                    "code": "ADAPTIVE_RETRY_PLAN_MISSING",
+                    "detail": "The failed run has no approved assessment plan.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            run = AssessmentAgent().create_run(
+                plan=source_run.assessment_plan,
+                requested_by=request.user,
+                decision_provider_name=source_run.decision_provider,
+                retry_of_run=source_run,
+            )
+        except (AssessmentAgentError, AssessmentExecutionError) as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        try:
+            async_result = execute_adaptive_assessment_run_task.delay(run.id)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_assessment_retry_enqueue_failed run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            run = AssessmentExecutor.mark_enqueue_failed(run)
+            return Response(
+                {
+                    "code": "ADAPTIVE_ASSESSMENT_ENQUEUE_FAILED",
+                    "detail": "The approved adaptive assessment retry could not be queued.",
+                    "run": AgentRunSerializer(
+                        run,
+                        context={"request": request},
+                    ).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        run.refresh_from_db()
+        return Response(
+            {
+                "run": AgentRunSerializer(run, context={"request": request}).data,
+                "task_id": getattr(async_result, "id", None),
+                "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
+                "retry_of_agent_run_id": source_run.id,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
     @extend_schema(
         request=AdaptiveAssessmentRecommendationSerializer,

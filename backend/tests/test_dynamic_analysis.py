@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from urllib import error as urllib_error
 
 import pytest
+from jsonschema import Draft202012Validator
 from django.contrib.auth.models import Group
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -89,6 +90,7 @@ from apps.dynamic_analysis.services.agent_decision_provider import (
     build_agent_state_context,
 )
 from apps.dynamic_analysis.services.agent_oracles import evaluate_run_oracles
+from apps.dynamic_analysis.services.agent_retry import adaptive_retryability
 from apps.dynamic_analysis.services.assessment_agent import AssessmentAgent
 from apps.dynamic_analysis.services.container_runtime import (
     ContainerRuntimeTimeout,
@@ -149,6 +151,10 @@ from apps.dynamic_analysis.services.assessment_executor import (
     AssessmentExecutionError,
     AssessmentExecutor,
     OBSERVATION_CONTRACT_VERSION,
+)
+from apps.dynamic_analysis.services.openai_schema_compatibility import (
+    OpenAISchemaCompatibilityError,
+    validate_openai_structured_output_schema,
 )
 from apps.dynamic_analysis.services.job_control import recover_stale_dynamic_jobs
 from apps.dynamic_analysis.services.local_scripts import (
@@ -3283,6 +3289,85 @@ def test_frida_run_js_bounds_logcat_and_returns_structured_success():
     assert result["logcat"]["line_count"] == 100
 
 
+def test_frida_run_js_preserves_negative_probe_observation_as_successful_execution():
+    runtime = _make_frida_runtime()
+    execution = {
+        "success": True,
+        "events": [
+            {"type": "script_start", "success": True, "pid": 26273},
+            {
+                "type": "ui_modification",
+                "success": False,
+                "error": "No focused Activity instance was found",
+            },
+            {"type": "script_loaded", "success": True, "pid": 26273},
+            {"type": "script_completion", "success": True, "pid": 26273},
+        ],
+        "pid": 26273,
+        "architecture": "x64",
+        "script_started": True,
+        "script_loaded": True,
+        "script_completed": True,
+        "duration_seconds": 1.0,
+        "started_at": timezone.now().isoformat(),
+        "finished_at": timezone.now().isoformat(),
+        "cleanup_state": "DETACHED",
+    }
+    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(runtime, "_client_version", return_value="17.16.4"), patch.object(
+        runtime, "_run_script", return_value=execution
+    ):
+        result = runtime.run_js(
+            package_name="owasp.sat.agoat",
+            mode="attach",
+            source='send({type:"ui_modification",success:false});',
+            timeout_seconds=10,
+            capture_logcat=False,
+            capture_screenshot=False,
+        )
+
+    assert result["status"] == "PASS"
+    assert result["error_count"] == 0
+    assert result["events"][1]["type"] == "ui_modification"
+    assert result["events"][1]["success"] is False
+
+
+def test_frida_run_js_rejects_script_error_event():
+    runtime = _make_frida_runtime()
+    execution = {
+        "success": True,
+        "events": [
+            {"type": "script_start", "success": True, "pid": 26273},
+            {"type": "script_error", "success": False, "error": "bounded failure"},
+            {"type": "script_loaded", "success": True, "pid": 26273},
+            {"type": "script_completion", "success": True, "pid": 26273},
+        ],
+        "pid": 26273,
+        "architecture": "x64",
+        "script_started": True,
+        "script_loaded": True,
+        "script_completed": True,
+        "duration_seconds": 1.0,
+        "started_at": timezone.now().isoformat(),
+        "finished_at": timezone.now().isoformat(),
+        "cleanup_state": "DETACHED",
+    }
+    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+        runtime, "_endpoint", return_value="172.20.0.1:27043"
+    ), patch.object(runtime, "_run_script", return_value=execution), pytest.raises(
+        FridaRuntimeError, match="emitted an error event"
+    ):
+        runtime.run_js(
+            package_name="owasp.sat.agoat",
+            mode="attach",
+            source='throw new Error("bounded failure");',
+            timeout_seconds=10,
+            capture_logcat=False,
+            capture_screenshot=False,
+        )
+
+
 @pytest.mark.django_db
 def test_frida_tool_validation_rejects_invalid_package_script_and_timeout(
     django_user_model,
@@ -4053,6 +4138,116 @@ def test_openai_planner_uses_responses_strict_schema_without_provider_tools():
     }
 
 
+def test_openai_schema_preflight_rejects_root_union_and_unique_items_locally():
+    bad_root_union = {
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+    bad_unique_items = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "string"},
+                "uniqueItems": True,
+            }
+        },
+        "required": ["items"],
+        "additionalProperties": False,
+    }
+    bad_typeless_const = {
+        "type": "object",
+        "properties": {"decision_type": {"const": "TOOL_ACTION"}},
+        "required": ["decision_type"],
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(OpenAISchemaCompatibilityError, match="Root unions"):
+        validate_openai_structured_output_schema(
+            bad_root_union,
+            schema_name="test_bad_root",
+        )
+    with pytest.raises(OpenAISchemaCompatibilityError, match="uniqueItems"):
+        validate_openai_structured_output_schema(
+            bad_unique_items,
+            schema_name="test_bad_unique_items",
+        )
+    with pytest.raises(OpenAISchemaCompatibilityError, match="declare a type"):
+        validate_openai_structured_output_schema(
+            bad_typeless_const,
+            schema_name="test_bad_typeless_const",
+        )
+
+
+@override_settings(
+    MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY="test-only-not-a-real-key",
+    MSAP_ASSESSMENT_PLANNER_MAX_RETRIES=0,
+)
+def test_openai_schema_preflight_failure_sends_no_provider_request():
+    opener = Mock()
+    provider = OpenAIPlannerProvider(opener=opener, sleeper=Mock())
+    bad_schema = {
+        "anyOf": [
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        ]
+    }
+
+    with pytest.raises(PlannerProviderError) as exc:
+        provider.generate_structured(
+            {},
+            system_instructions="Return bounded JSON.",
+            output_schema=bad_schema,
+            schema_name="test_bad_root",
+            max_context_bytes=1024,
+            max_output_bytes=1024,
+            request_kind="local_preflight_test",
+        )
+
+    assert exc.value.code == "PROVIDER_SCHEMA_LOCAL_REJECTED"
+    assert str(exc.value) == (
+        "AI schema is not compatible with the provider. No request was sent."
+    )
+    assert provider.last_metadata["provider_error_type"] == "schema_compatibility"
+    assert provider.last_metadata["provider_request_sent"] is False
+    opener.assert_not_called()
+
+
+def test_openai_schema_preflight_accepts_current_planner_and_action_schemas():
+    planner_input = _openai_test_planner_input()
+    action_state = _adaptive_decision_state(
+        observations=[],
+        hypotheses=[
+            _adaptive_hypothesis(
+                "ui_sensitive_data_exposure",
+                AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE,
+            )
+        ],
+        allowed=["get_device_status", "dump_ui"],
+    )
+
+    validate_openai_structured_output_schema(
+        build_planner_output_schema(planner_input),
+        schema_name="msap_assessment_plan",
+    )
+    validate_openai_structured_output_schema(
+        build_action_decision_schema(action_state),
+        schema_name="msap_agent_action_decision",
+    )
+
+
 @pytest.mark.parametrize(
     ("transport_error", "expected_code"),
     [
@@ -4540,14 +4735,31 @@ def test_plan_api_can_select_openai_provider_without_exposing_configuration(
 
     assert response.status_code == 201
     assert response.json()["planner_provider"] == "OPENAI"
-    assert response.json()["planner_model"] == "gpt-5.5"
+    assert response.json()["planner_model"] == "gpt-5.6-luna"
     assert response.json()["policy_status"] == "PASSED"
     assert response.json()["normalized_plan"]["contract_version"] == (
         ASSESSMENT_PLAN_CONTRACT_VERSION
     )
+    assert response.json()["agentic_capability_preview"]["allowed_capabilities"]
     assert "api_key" not in json.dumps(response.json()).lower()
     run_agent.assert_not_called()
     gateway_call.assert_not_called()
+
+    with patch.object(OpenAIPlannerProvider, "generate", return_value=generated):
+        balanced = analyst_client.post(
+            "/api/dynamic/agent/plans/",
+            {
+                "audit": audit.id,
+                "target_package": apk.package_name,
+                "objective": objective,
+                "scope": scope,
+                "planner_provider": "OPENAI",
+                "model_profile": "BALANCED",
+            },
+            format="json",
+        )
+    assert balanced.status_code == 201
+    assert balanced.json()["planner_model"] == "gpt-5.6-terra"
 
     invalid = analyst_client.post(
         "/api/dynamic/agent/plans/",
@@ -4561,6 +4773,24 @@ def test_plan_api_can_select_openai_provider_without_exposing_configuration(
         format="json",
     )
     assert invalid.status_code == 400
+
+    for unsafe_model_selection in (
+        {"model_profile": "UNRESTRICTED"},
+        {"model": "browser-supplied-model"},
+    ):
+        rejected = analyst_client.post(
+            "/api/dynamic/agent/plans/",
+            {
+                "audit": audit.id,
+                "target_package": apk.package_name,
+                "objective": objective,
+                "scope": scope,
+                "planner_provider": "OPENAI",
+                **unsafe_model_selection,
+            },
+            format="json",
+        )
+        assert rejected.status_code == 400
 
 
 @pytest.mark.django_db
@@ -6178,14 +6408,96 @@ def test_openai_action_schema_uses_supported_structured_output_keywords():
 
     assert schema["type"] == "object"
     assert schema["additionalProperties"] is False
+    assert "anyOf" not in schema
     assert '"uniqueItems"' not in json.dumps(schema, sort_keys=True)
-    dump_arguments = next(
+    dump_variant = next(
         item
-        for item in schema["properties"]["arguments"]["anyOf"]
-        if "package_name" in item.get("properties", {})
+        for item in schema["properties"]["decision"]["anyOf"]
+        if item["properties"]["tool_name"].get("const") == "dump_ui"
     )
+    dump_arguments = dump_variant["properties"]["arguments"]
     assert dump_arguments["properties"]["package_name"]["const"] == (
         "owasp.sat.agoat"
+    )
+
+
+def test_openai_action_schema_couples_decision_type_to_hypothesis_and_tool_payload():
+    hypothesis_id = "ui_sensitive_data_exposure"
+    state = _adaptive_decision_state(
+        observations=[],
+        hypotheses=[
+            _adaptive_hypothesis(
+                hypothesis_id,
+                AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE,
+            )
+        ],
+        allowed=["get_device_status", "dump_ui"],
+    )
+    validator = Draft202012Validator(build_action_decision_schema(state))
+    tool_decision = {
+        "contract_version": ACTION_DECISION_VERSION,
+        "decision_type": "TOOL_ACTION",
+        "hypothesis_id": hypothesis_id,
+        "tool_name": "get_device_status",
+        "arguments": {},
+        "rationale_summary": "Establish bounded device readiness.",
+        "expected_observation": "Managed emulator readiness.",
+        "evidence_goal": ["tool_output"],
+        "confidence": 0.9,
+    }
+
+    assert not list(validator.iter_errors({"decision": tool_decision}))
+    assert list(
+        validator.iter_errors(
+            {"decision": {**tool_decision, "hypothesis_id": None}}
+        )
+    )
+    assert not list(
+        validator.iter_errors(
+            {"decision": {
+                **tool_decision,
+                "decision_type": "COMPLETE",
+                "hypothesis_id": None,
+                "tool_name": "",
+                "arguments": {},
+                "expected_observation": "",
+                "evidence_goal": [],
+            }}
+        )
+    )
+    assert list(
+        validator.iter_errors(
+            {"decision": {
+                **tool_decision,
+                "decision_type": "COMPLETE",
+                "hypothesis_id": None,
+            }}
+        )
+    )
+    assert not list(
+        validator.iter_errors(
+            {"decision": {
+                **tool_decision,
+                "decision_type": "NEEDS_AUDITOR",
+                "tool_name": "",
+                "arguments": {},
+                "expected_observation": "",
+                "evidence_goal": [],
+            }}
+        )
+    )
+    assert list(
+        validator.iter_errors(
+            {"decision": {
+                **tool_decision,
+                "decision_type": "NEEDS_AUDITOR",
+                "hypothesis_id": None,
+                "tool_name": "",
+                "arguments": {},
+                "expected_observation": "",
+                "evidence_goal": [],
+            }}
+        )
     )
 
 
@@ -6202,12 +6514,16 @@ def test_openai_action_schema_encodes_existing_argument_policy_invariants():
     )
 
     schema = build_action_decision_schema(state)
-    variants = schema["properties"]["arguments"]["anyOf"]
+    variants = schema["properties"]["decision"]["anyOf"]
     list_arguments = next(
-        item for item in variants if "include_system" in item.get("properties", {})
+        item["properties"]["arguments"]
+        for item in variants
+        if item["properties"]["tool_name"].get("const") == "list_packages"
     )
     frida_arguments = next(
-        item for item in variants if "source" in item.get("properties", {})
+        item["properties"]["arguments"]
+        for item in variants
+        if item["properties"]["tool_name"].get("const") == "frida_run_js"
     )
 
     assert list_arguments["properties"]["include_system"]["const"] is False
@@ -6652,6 +6968,79 @@ def test_gateway_rejects_mutated_replayed_and_cross_run_adaptive_decisions(
     assert getattr(cross_run.value, "code", "") == "AGENT_DECISION_CROSS_RUN"
 
 
+@override_settings(
+    MSAP_AGENT_DECISION_MODEL="gpt-5.6-luna",
+    MSAP_AGENT_DECISION_REASONING_EFFORT="low",
+    MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS=1800,
+    MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY="test-only-not-a-real-key",
+    MSAP_ASSESSMENT_PLANNER_MAX_RETRIES=0,
+)
+def test_openai_agent_uses_root_object_envelope_and_unwraps_decision():
+    state = _adaptive_decision_state(
+        observations=[],
+        hypotheses=[
+            _adaptive_hypothesis(
+                "ui_sensitive_data_exposure",
+                AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE,
+            )
+        ],
+        allowed=["get_device_status", "dump_ui"],
+    )
+    state["TRUSTED_CONTROL"]["capability_envelope"].update(
+        {
+            "objective": "Assess bounded behavior.",
+            "scope": "Authorized package only.",
+        }
+    )
+    decision = _tool_decision(
+        "ui_sensitive_data_exposure",
+        "get_device_status",
+        {},
+    )
+    opener = Mock(
+        return_value=BytesIO(
+            _openai_response_bytes(
+                {"decision": decision},
+                usage={"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            )
+        )
+    )
+
+    provider = OpenAIAgentDecisionProvider(opener=opener, sleeper=Mock())
+    assert provider.next_action(state) == decision
+
+    payload = json.loads(opener.call_args.args[0].data.decode("utf-8"))
+    schema = payload["text"]["format"]["schema"]
+    assert schema["type"] == "object"
+    assert "anyOf" not in schema
+    assert schema["required"] == ["decision"]
+    assert schema["additionalProperties"] is False
+    variants = schema["properties"]["decision"]["anyOf"]
+    assert {item["properties"]["decision_type"]["const"] for item in variants} == {
+        "TOOL_ACTION",
+        "COMPLETE",
+        "NEEDS_AUDITOR",
+    }
+    assert all(item["type"] == "object" for item in variants)
+    assert all(item["additionalProperties"] is False for item in variants)
+    assert all(set(item["required"]) == set(item["properties"]) for item in variants)
+    tool_variants = [
+        item
+        for item in variants
+        if item["properties"]["decision_type"]["const"] == "TOOL_ACTION"
+    ]
+    assert {item["properties"]["tool_name"]["const"] for item in tool_variants} == {
+        "get_device_status",
+        "dump_ui",
+    }
+    assert all("anyOf" not in item["properties"]["arguments"] for item in tool_variants)
+
+
+@override_settings(
+    MSAP_AGENT_DECISION_MODEL="gpt-5.6-luna",
+    MSAP_AGENT_DECISION_REASONING_EFFORT="low",
+    MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS=1800,
+)
 def test_openai_agent_429_fails_closed_without_deterministic_fallback():
     error = urllib_error.HTTPError(
         "https://api.openai.com/v1/responses",
@@ -6688,6 +7077,11 @@ def test_openai_agent_429_fails_closed_without_deterministic_fallback():
     assert exc.value.code == "PLANNER_PROVIDER_RATE_LIMITED"
     assert provider.last_metadata["provider_status"] == "failed"
     assert opener.call_count == 1
+    payload = json.loads(opener.call_args.args[0].data.decode("utf-8"))
+    assert payload["model"] == "gpt-5.6-luna"
+    assert payload["reasoning"] == {"effort": "low"}
+    assert payload["max_output_tokens"] == 1800
+    assert payload["text"]["format"]["strict"] is True
 
 
 @pytest.mark.django_db
@@ -6741,6 +7135,261 @@ def test_adaptive_execution_api_requires_approval_and_accepts_no_tool_payload(
     )
     assert blocked.status_code == 409
     assert blocked.json()["code"] == "ASSESSMENT_PLAN_NOT_EXECUTABLE"
+
+
+def _failed_adaptive_preexecution_run(django_user_model, suffix):
+    user, audit, apk, plan = _approved_execution_plan(
+        django_user_model,
+        f"retry-{suffix}",
+    )
+    gateway = Mock()
+    agent = AssessmentAgent(
+        decision_provider=DeterministicAdaptiveDecisionProvider(),
+        gateway_executor=gateway,
+    )
+    run = agent.create_run(plan=plan, requested_by=user)
+    run = agent._start_run(run.id)
+    run.model_call_count = 1
+    run.save(update_fields=["model_call_count", "updated_at"])
+    run = agent._finish(
+        run,
+        status=AgentRun.Status.FAILED,
+        termination_reason="PROVIDER_FAILURE",
+        message="AI schema is not compatible with the provider. No request was sent.",
+        provider_failure={"code": "PROVIDER_SCHEMA_LOCAL_REJECTED"},
+    )
+    plan.refresh_from_db()
+    return user, audit, apk, plan, run, gateway
+
+
+@pytest.mark.django_db
+def test_preexecution_provider_failure_preserves_approval_and_is_retryable(
+    django_user_model,
+):
+    user, _audit, _apk, plan, run, gateway = _failed_adaptive_preexecution_run(
+        django_user_model,
+        "allowed",
+    )
+    approved_by_id = plan.approved_by_id
+    approved_at = plan.approved_at
+
+    assert run.failure_category == AgentRun.FailureCategory.AI_PROVIDER_FAILURE
+    assert run.tool_call_count == 0
+    assert run.action_decisions.count() == 0
+    assert run.steps.count() == 0
+    assert run.evidence_records.count() == 0
+    assert run.artifacts.count() == 0
+    assert plan.status == AssessmentPlan.Status.APPROVED
+    assert adaptive_retryability(run, requested_by=user).retryable is True
+    gateway.assert_not_called()
+
+    # Legacy safely failed plans such as Plan #15 can be restored only by the
+    # explicit retry transition; approval identity and timestamp stay intact.
+    plan.status = AssessmentPlan.Status.FAILED
+    plan.save(update_fields=["status", "updated_at"])
+    assert adaptive_retryability(run, requested_by=user).retryable is True
+    retry = AssessmentAgent(
+        decision_provider=DeterministicAdaptiveDecisionProvider(),
+        gateway_executor=gateway,
+    ).create_run(plan=plan, requested_by=user, retry_of_run=run)
+
+    plan.refresh_from_db()
+    assert retry.id != run.id
+    assert retry.objective_input["retry_of_agent_run_id"] == run.id
+    assert retry.status == AgentRun.Status.QUEUED
+    assert retry.tool_call_count == 0
+    assert retry.steps.count() == 0
+    assert AgentRun.objects.filter(assessment_plan=plan).count() == 2
+    assert plan.status == AssessmentPlan.Status.EXECUTING
+    assert plan.approved_by_id == approved_by_id
+    assert plan.approved_at == approved_at
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_adaptive_retry_preserves_tighter_approved_limits_across_config_drift(
+    django_user_model,
+):
+    with override_settings(
+        MSAP_AGENT_MAX_DECISIONS=2,
+        MSAP_AGENT_MAX_TOOL_CALLS=2,
+        MSAP_AGENT_MAX_PROVIDER_CALLS=2,
+    ):
+        user, _audit, _apk, plan, run, gateway = _failed_adaptive_preexecution_run(
+            django_user_model,
+            "tighter-approved-limits",
+        )
+    approved_envelope = run.capability_envelope
+    approved_envelope_hash = run.capability_envelope_hash
+
+    assert adaptive_retryability(run, requested_by=user).retryable is True
+    retry = AssessmentAgent(
+        decision_provider=DeterministicAdaptiveDecisionProvider(),
+        gateway_executor=gateway,
+    ).create_run(plan=plan, requested_by=user, retry_of_run=run)
+
+    assert retry.capability_envelope == approved_envelope
+    assert retry.capability_envelope_hash == approved_envelope_hash
+    assert retry.capability_envelope["maximum_decisions"] == 2
+    assert retry.capability_envelope["maximum_tool_calls"] == 2
+    assert retry.capability_envelope["maximum_model_provider_calls"] == 2
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_adaptive_retry_narrows_approved_limits_to_current_policy(
+    django_user_model,
+):
+    user, _audit, _apk, plan, run, gateway = _failed_adaptive_preexecution_run(
+        django_user_model,
+        "limits-now-too-large",
+    )
+
+    with override_settings(
+        MSAP_AGENT_MAX_DECISIONS=2,
+        MSAP_AGENT_MAX_TOOL_CALLS=2,
+        MSAP_AGENT_MAX_PROVIDER_CALLS=2,
+    ):
+        retryability = adaptive_retryability(run, requested_by=user)
+        retry = AssessmentAgent(
+            decision_provider=DeterministicAdaptiveDecisionProvider(),
+            gateway_executor=gateway,
+        ).create_run(plan=plan, requested_by=user, retry_of_run=run)
+
+    assert retryability.retryable is True
+    assert retry.capability_envelope["maximum_decisions"] == 2
+    assert retry.capability_envelope["maximum_tool_calls"] == 2
+    assert retry.capability_envelope["maximum_model_provider_calls"] == 2
+    assert retry.capability_envelope_hash != run.capability_envelope_hash
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+@override_settings(
+    MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY="test-only-not-a-real-key",
+    MSAP_ASSESSMENT_PLANNER_MAX_RETRIES=0,
+)
+def test_adaptive_local_schema_rejection_uses_zero_provider_and_gateway_calls(
+    django_user_model,
+):
+    user, _audit, _apk, plan = _approved_execution_plan(
+        django_user_model,
+        "retry-local-schema",
+    )
+    opener = Mock()
+    gateway = Mock()
+    provider = OpenAIAgentDecisionProvider(opener=opener, sleeper=Mock())
+    agent = AssessmentAgent(decision_provider=provider, gateway_executor=gateway)
+    run = agent.create_run(plan=plan, requested_by=user)
+    bad_root_union = {
+        "anyOf": [
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+            {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        ]
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.agent_decision_provider.build_action_decision_schema",
+        return_value=bad_root_union,
+    ):
+        run = agent.execute(run.id)
+
+    plan.refresh_from_db()
+    assert run.status == AgentRun.Status.FAILED
+    assert run.termination_reason == "PROVIDER_FAILURE"
+    assert run.failure_category == AgentRun.FailureCategory.AI_PROVIDER_FAILURE
+    assert run.result_summary["provider_failure"]["code"] == (
+        "PROVIDER_SCHEMA_LOCAL_REJECTED"
+    )
+    assert run.model_call_count == 0
+    assert run.tool_call_count == 0
+    assert plan.status == AssessmentPlan.Status.APPROVED
+    opener.assert_not_called()
+    gateway.assert_not_called()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "blocker",
+    ["gateway", "evidence", "artifact", "plan_hash", "approval", "policy"],
+)
+def test_adaptive_retry_is_denied_after_execution_or_integrity_change(
+    django_user_model,
+    blocker,
+):
+    user, audit, _apk, plan, run, _gateway = _failed_adaptive_preexecution_run(
+        django_user_model,
+        blocker,
+    )
+    if blocker == "gateway":
+        run.tool_call_count = 1
+        run.save(update_fields=["tool_call_count", "updated_at"])
+    elif blocker == "evidence":
+        Evidence.objects.create(
+            audit=audit,
+            agent_run=run,
+            evidence_type="tool_output",
+            source="retry-block-test",
+        )
+    elif blocker == "artifact":
+        AgentRunArtifact.objects.create(
+            run=run,
+            artifact_type=AgentRunArtifact.ArtifactType.JSON_RESULT,
+            name="retry-block.json",
+            content_type="application/json",
+        )
+    elif blocker == "plan_hash":
+        run.approved_plan_hash = "0" * 64
+        run.save(update_fields=["approved_plan_hash", "updated_at"])
+    elif blocker == "approval":
+        plan.approved_by = None
+        plan.approved_at = None
+        plan.save(update_fields=["approved_by", "approved_at", "updated_at"])
+    elif blocker == "policy":
+        plan.policy_status = AssessmentPlan.PolicyStatus.FAILED
+        plan.save(update_fields=["policy_status", "updated_at"])
+
+    assert adaptive_retryability(run, requested_by=user).retryable is False
+
+
+@pytest.mark.django_db
+def test_adaptive_retry_api_is_role_gated_and_creates_no_gateway_action(
+    django_user_model,
+    analyst_client,
+    viewer_client,
+):
+    _user, _audit, _apk, plan, run, _gateway = _failed_adaptive_preexecution_run(
+        django_user_model,
+        "api",
+    )
+    retry_url = f"/api/dynamic/agent/runs/{run.id}/retry-adaptive/"
+    viewer_detail = viewer_client.get(f"/api/dynamic/agent/runs/{run.id}/")
+
+    assert viewer_detail.status_code == 200
+    assert viewer_detail.json()["pre_execution_failure"] is True
+    assert viewer_detail.json()["adaptive_retryable"] is False
+    assert viewer_client.post(retry_url, {}, format="json").status_code == 403
+
+    with patch(
+        "apps.dynamic_analysis.views.execute_adaptive_assessment_run_task.delay",
+        return_value=Mock(id="adaptive-retry-task"),
+    ) as enqueue:
+        response = analyst_client.post(retry_url, {}, format="json")
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["retry_of_agent_run_id"] == run.id
+    retry = AgentRun.objects.get(pk=payload["run"]["id"])
+    assert retry.assessment_plan_id == plan.id
+    assert retry.objective_input["retry_of_agent_run_id"] == run.id
+    assert retry.tool_call_count == 0
+    assert retry.steps.count() == 0
+    assert retry.action_decisions.count() == 0
+    enqueue.assert_called_once_with(retry.id)
+
+    repeated = analyst_client.post(retry_url, {}, format="json")
+    assert repeated.status_code == 409
+    assert repeated.json()["code"] == "ADAPTIVE_RETRY_ALREADY_USED"
 
 
 @pytest.mark.django_db
@@ -6825,6 +7474,7 @@ def test_invalid_provider_decision_fails_closed_without_gateway_or_finding(
     assert run.action_decisions.get().failure_code == "AGENT_DECISION_TOOL_UNKNOWN"
     gateway.assert_not_called()
     assert not Finding.objects.filter(audit=audit, evidence__agent_run=run).exists()
+    assert adaptive_retryability(run, requested_by=user).retryable is True
 
 
 @pytest.mark.django_db

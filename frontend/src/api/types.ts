@@ -826,6 +826,16 @@ export interface AgentRunResultSummary {
   compliance?: { standard?: string; score?: number | null };
   report?: { id?: number; type?: string; status?: string };
   post_processing?: Record<string, unknown>;
+  provider_failure?: {
+    code?: string;
+    provider_http_status?: number;
+    provider_error_type?: string;
+    provider_error_code?: string;
+    provider_error_param?: string;
+  };
+  pre_execution_failure?: boolean;
+  no_device_action_performed?: boolean;
+  plan_approval_preserved?: boolean;
 }
 
 export interface AssessmentRunSummary {
@@ -961,6 +971,10 @@ export interface AgentRun {
   result_summary: AgentRunResultSummary;
   failure_category: string;
   failure_message: string;
+  pre_execution_failure: boolean;
+  plan_approval_preserved: boolean;
+  adaptive_retryable: boolean;
+  adaptive_retry_block_reason: string;
   tool_call_count: number;
   cancellation_requested_at: string | null;
   cancelled_by: number | null;
@@ -1162,7 +1176,9 @@ export interface AssessmentPlan {
     retry_count?: number;
     latency_ms?: number;
     input_tokens?: number;
+    cached_input_tokens?: number;
     output_tokens?: number;
+    reasoning_tokens?: number;
     total_tokens?: number;
   };
   validation_errors: string[];

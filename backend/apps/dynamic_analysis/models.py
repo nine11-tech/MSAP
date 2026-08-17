@@ -974,6 +974,8 @@ class AgentRun(models.Model):
             "Host agent unavailable",
         )
         RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE", "Runtime unavailable"
+        AI_PROVIDER_FAILURE = "AI_PROVIDER_FAILURE", "AI provider failure"
+        AI_DECISION_REJECTED = "AI_DECISION_REJECTED", "AI decision rejected"
         TOOL_EXECUTION_FAILED = (
             "TOOL_EXECUTION_FAILED",
             "Tool execution failed",
@@ -1002,12 +1004,12 @@ class AgentRun(models.Model):
         blank=True,
         related_name="runs",
     )
-    assessment_plan = models.OneToOneField(
+    assessment_plan = models.ForeignKey(
         "dynamic_analysis.AssessmentPlan",
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="execution_run",
+        related_name="execution_runs",
     )
     approved_plan_hash = models.CharField(max_length=64, blank=True)
     target_package = models.CharField(max_length=255, blank=True)

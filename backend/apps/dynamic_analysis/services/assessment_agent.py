@@ -6,6 +6,7 @@ import logging
 from time import monotonic
 from typing import Any, Callable
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -26,6 +27,7 @@ from apps.dynamic_analysis.services.agent_action_contract import (
 from apps.dynamic_analysis.services.agent_capability_envelope import (
     CapabilityEnvelopeError,
     build_capability_envelope,
+    rebuild_capability_envelope_for_retry,
     validate_capability_envelope,
 )
 from apps.dynamic_analysis.services.agent_decision_provider import (
@@ -41,6 +43,10 @@ from apps.dynamic_analysis.services.agent_oracles import (
     evaluate_run_oracles,
     initial_coverage_state,
     initialize_hypotheses,
+)
+from apps.dynamic_analysis.services.agent_retry import (
+    adaptive_retryability,
+    is_pre_execution_provider_failure,
 )
 from apps.dynamic_analysis.services.agent_tools import TOOL_MANIFEST
 from apps.dynamic_analysis.services.assessment_execution_contract import (
@@ -85,21 +91,73 @@ class AssessmentAgent:
         plan: AssessmentPlan,
         requested_by,
         decision_provider_name: str | None = None,
+        retry_of_run: AgentRun | None = None,
     ) -> AgentRun:
         if user_role(requested_by) not in {"ADMIN", "ANALYST"}:
             raise AssessmentExecutionPermissionError()
+        resolved_provider_name = (
+            decision_provider_name or settings.MSAP_AGENT_DECISION_PROVIDER
+        ).upper()
         provider = self.decision_provider or configured_agent_decision_provider(
-            decision_provider_name
+            resolved_provider_name,
+            model=(
+                plan.planner_model
+                if resolved_provider_name == AssessmentPlan.PlannerProvider.OPENAI
+                and plan.planner_provider == AssessmentPlan.PlannerProvider.OPENAI
+                else None
+            ),
         )
         try:
             with transaction.atomic():
                 persisted = AssessmentPlan.objects.select_for_update().get(pk=plan.pk)
+                retry_source = None
+                if retry_of_run is not None:
+                    retry_source = (
+                        AgentRun.objects.select_for_update()
+                        .get(pk=retry_of_run.pk)
+                    )
+                    if retry_source.assessment_plan_id != persisted.id:
+                        raise AssessmentAgentError(
+                            "The failed run does not belong to this assessment plan.",
+                            code="ADAPTIVE_RETRY_PLAN_MISMATCH",
+                        )
+                    retryability = adaptive_retryability(
+                        retry_source,
+                        requested_by=requested_by,
+                    )
+                    if not retryability.retryable:
+                        raise AssessmentAgentError(
+                            "This adaptive assessment run is not safe to retry.",
+                            code=retryability.reason,
+                        )
+                    if (
+                        provider.name != retry_source.decision_provider
+                        or provider.model != retry_source.decision_model
+                    ):
+                        raise AssessmentAgentError(
+                            "The adaptive retry provider configuration changed.",
+                            code="ADAPTIVE_RETRY_PROVIDER_CHANGED",
+                        )
+                    if persisted.status == AssessmentPlan.Status.FAILED:
+                        persisted.status = AssessmentPlan.Status.APPROVED
+                        persisted.save(update_fields=["status", "updated_at"])
+                        persisted.steps.update(
+                            status=AssessmentPlanStep.Status.APPROVED,
+                            updated_at=timezone.now(),
+                        )
                 contract = build_approved_execution_contract(persisted)
                 AssessmentExecutor._validate_live_authorization(
                     persisted,
                     contract["approved_plan"],
                 )
-                envelope = build_capability_envelope(persisted)
+                envelope = (
+                    rebuild_capability_envelope_for_retry(
+                        persisted,
+                        approved_envelope=retry_source.capability_envelope,
+                    )
+                    if retry_source is not None
+                    else build_capability_envelope(persisted)
+                )
                 runtime = AssessmentExecutor._select_runtime(
                     AgentRuntime.RuntimeType.INTERNAL_CONTROLLER
                 )
@@ -116,7 +174,10 @@ class AssessmentAgent:
                         code="AGENT_RUNTIME_CAPABILITY_MISMATCH",
                         http_status=503,
                     )
-                if AgentRun.objects.filter(assessment_plan=persisted).exists():
+                if (
+                    retry_source is None
+                    and AgentRun.objects.filter(assessment_plan=persisted).exists()
+                ):
                     raise AssessmentAgentError(
                         "This approved assessment plan already has an execution run.",
                         code="ASSESSMENT_PLAN_ALREADY_EXECUTED",
@@ -139,6 +200,11 @@ class AssessmentAgent:
                         "approved_plan_hash": persisted.plan_hash,
                         "capability_envelope_hash": envelope["envelope_hash"],
                         "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
+                        **(
+                            {"retry_of_agent_run_id": retry_source.id}
+                            if retry_source is not None
+                            else {}
+                        ),
                     },
                     requested_by=requested_by,
                 )
@@ -151,6 +217,12 @@ class AssessmentAgent:
             raise AssessmentAgentError(
                 "The approved assessment plan no longer exists.",
                 code="ASSESSMENT_PLAN_NOT_FOUND",
+                http_status=404,
+            ) from None
+        except AgentRun.DoesNotExist:
+            raise AssessmentAgentError(
+                "The failed adaptive assessment run no longer exists.",
+                code="ADAPTIVE_RETRY_RUN_NOT_FOUND",
                 http_status=404,
             ) from None
         except (AssessmentExecutionContractError, CapabilityEnvelopeError) as exc:
@@ -184,7 +256,8 @@ class AssessmentAgent:
         if run.status == AgentRun.Status.CANCELLED:
             return run
         provider = self.decision_provider or configured_agent_decision_provider(
-            run.decision_provider
+            run.decision_provider,
+            model=run.decision_model,
         )
         if provider.name != run.decision_provider or provider.model != run.decision_model:
             return self._finish(
@@ -241,6 +314,12 @@ class AssessmentAgent:
                     decision_input_hash=state_hash,
                 )
             except PlannerProviderError as exc:
+                if (
+                    exc.code == "PROVIDER_SCHEMA_LOCAL_REJECTED"
+                    and provider.last_metadata.get("provider_request_sent") is False
+                ):
+                    run.model_call_count = max(0, run.model_call_count - 1)
+                    run.save(update_fields=["model_call_count", "updated_at"])
                 return self._finish(
                     run,
                     status=AgentRun.Status.FAILED,
@@ -484,6 +563,14 @@ class AssessmentAgent:
             run.failure_category = (
                 AgentRun.FailureCategory.TIMEOUT
                 if status == AgentRun.Status.TIMEOUT
+                else AgentRun.FailureCategory.AI_PROVIDER_FAILURE
+                if termination_reason == "PROVIDER_FAILURE"
+                and run.tool_call_count == 0
+                and not run.steps.exists()
+                else AgentRun.FailureCategory.AI_DECISION_REJECTED
+                if termination_reason == "DECISION_SECURITY_REJECTED"
+                and run.tool_call_count == 0
+                and not run.steps.exists()
                 else AgentRun.FailureCategory.TOOL_EXECUTION_FAILED
             )
         run.failure_message = message[:500]
@@ -505,10 +592,16 @@ class AssessmentAgent:
         )
         if status == AgentRun.Status.PAUSED:
             return run
+        pre_execution_failure = is_pre_execution_provider_failure(run)
         plan_status = {
             AgentRun.Status.SUCCEEDED: AssessmentPlan.Status.COMPLETED,
             AgentRun.Status.CANCELLED: AssessmentPlan.Status.CANCELLED,
-        }.get(status, AssessmentPlan.Status.FAILED)
+        }.get(
+            status,
+            AssessmentPlan.Status.APPROVED
+            if pre_execution_failure
+            else AssessmentPlan.Status.FAILED,
+        )
         AssessmentPlan.objects.filter(pk=run.assessment_plan_id).update(
             status=plan_status,
             updated_at=now,
@@ -516,6 +609,8 @@ class AssessmentAgent:
         step_status = (
             AssessmentPlanStep.Status.COMPLETED
             if status == AgentRun.Status.SUCCEEDED
+            else AssessmentPlanStep.Status.APPROVED
+            if pre_execution_failure
             else AssessmentPlanStep.Status.CANCELLED
             if status == AgentRun.Status.CANCELLED
             else AssessmentPlanStep.Status.FAILED
@@ -586,6 +681,15 @@ class AssessmentAgent:
             "coverage": run.coverage_state,
             "termination_reason": run.termination_reason,
             "provider_failure": provider_failure or {},
+            "pre_execution_failure": is_pre_execution_provider_failure(run),
+            "no_device_action_performed": bool(
+                run.tool_call_count == 0 and not run.steps.exists()
+            ),
+            "plan_approval_preserved": bool(
+                run.assessment_plan is not None
+                and run.assessment_plan.approved_by_id is not None
+                and run.assessment_plan.approved_at is not None
+            ),
             "observations_are_untrusted_data": True,
             "findings_authority": "DETERMINISTIC_BACKEND_ONLY",
         }

@@ -286,6 +286,16 @@ export const cancelAssessmentExecution = (runId: number) =>
     `dynamic/agent/runs/${runId}/cancel/`,
     {},
   );
+export const retryAdaptiveAssessment = (runId: number) =>
+  apiPost<
+    {
+      run: AgentRun;
+      task_id: string | null;
+      execution_mode: "ADAPTIVE_AGENT";
+      retry_of_agent_run_id: number;
+    },
+    Record<string, never>
+  >(`dynamic/agent/runs/${runId}/retry-adaptive/`, {});
 
 export const listAssessmentPlans = (auditId?: number) =>
   apiGet<AssessmentPlan[]>(
@@ -299,6 +309,7 @@ export const createAssessmentPlan = (data: {
   objective: string;
   scope: string;
   planner_provider?: "DETERMINISTIC" | "OPENAI";
+  model_profile?: "ECONOMY" | "BALANCED" | "ADVANCED";
 }) =>
   apiPost<
     AssessmentPlan,
@@ -308,6 +319,7 @@ export const createAssessmentPlan = (data: {
       objective: string;
       scope: string;
       planner_provider?: "DETERMINISTIC" | "OPENAI";
+      model_profile?: "ECONOMY" | "BALANCED" | "ADVANCED";
     }
   >("dynamic/agent/plans/", data);
 export const validateAssessmentPlan = (planId: number) =>

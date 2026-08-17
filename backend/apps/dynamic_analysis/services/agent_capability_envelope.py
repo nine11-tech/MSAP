@@ -14,6 +14,7 @@ from apps.dynamic_analysis.services.agent_tools import (
 )
 from apps.dynamic_analysis.services.assessment_execution_contract import (
     build_approved_execution_contract,
+    validate_persisted_plan_contract,
 )
 
 
@@ -69,6 +70,19 @@ ENVELOPE_FIELDS = {
     "envelope_hash",
 }
 
+RETRY_PRESERVED_LIMIT_FIELDS = frozenset(
+    {
+        "maximum_decisions",
+        "maximum_tool_calls",
+        "maximum_run_duration_seconds",
+        "maximum_consecutive_failures",
+        "maximum_artifacts",
+        "maximum_evidence_records",
+        "maximum_observation_bytes",
+        "maximum_model_provider_calls",
+    }
+)
+
 
 class CapabilityEnvelopeError(RuntimeError):
     def __init__(self, message: str, *, code: str):
@@ -76,9 +90,103 @@ class CapabilityEnvelopeError(RuntimeError):
         self.code = code
 
 
+def build_capability_preview(plan: AssessmentPlan) -> dict[str, Any]:
+    """Describe the backend-owned adaptive boundary without making it executable."""
+
+    if (
+        plan.validation_status != AssessmentPlan.ValidationStatus.PASSED
+        or plan.policy_status != AssessmentPlan.PolicyStatus.PASSED
+        or not isinstance(plan.normalized_plan, dict)
+    ):
+        return {}
+    steps = plan.normalized_plan.get("steps")
+    if not isinstance(steps, list):
+        return {}
+    strategy_capabilities = {
+        tool.get("name")
+        for step in steps
+        if isinstance(step, dict)
+        for tool in step.get("tools", [])
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+    }
+    allowed_capabilities = sorted(
+        strategy_capabilities & AGENTIC_SAFE_CAPABILITIES & set(TOOL_MANIFEST)
+    )
+    return {
+        "contract_version": CAPABILITY_ENVELOPE_VERSION,
+        "allowed_capabilities": allowed_capabilities,
+        "allowed_hypothesis_families": _hypothesis_families(
+            allowed_capabilities
+        ),
+        "maximum_decisions": settings.MSAP_AGENT_MAX_DECISIONS,
+        "maximum_tool_calls": settings.MSAP_AGENT_MAX_TOOL_CALLS,
+        "maximum_run_duration_seconds": settings.MSAP_AGENT_MAX_DURATION_SECONDS,
+        "maximum_provider_calls": settings.MSAP_AGENT_MAX_PROVIDER_CALLS,
+        "additional_approval_capabilities": sorted(
+            strategy_capabilities & ADDITIONAL_APPROVAL_CAPABILITIES
+        ),
+    }
+
+
 def build_capability_envelope(plan: AssessmentPlan) -> dict[str, Any]:
     contract = build_approved_execution_contract(plan)
     canonical = contract["approved_plan"]
+    return _build_capability_envelope(plan, canonical)
+
+
+def rebuild_capability_envelope_for_retry(
+    plan: AssessmentPlan,
+    *,
+    approved_envelope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Rebuild an approved envelope without granting a new approval.
+
+    A safely failed legacy run may have left its plan in FAILED. The original
+    approver and approval timestamp remain mandatory; this helper only
+    reconstructs and hashes the envelope for retry eligibility.
+    """
+
+    if (
+        plan.validation_status != AssessmentPlan.ValidationStatus.PASSED
+        or plan.policy_status != AssessmentPlan.PolicyStatus.PASSED
+        or plan.approved_by_id is None
+        or plan.approved_at is None
+        or plan.status not in {
+            AssessmentPlan.Status.APPROVED,
+            AssessmentPlan.Status.FAILED,
+        }
+    ):
+        raise CapabilityEnvelopeError(
+            "The assessment plan does not retain an approved retry boundary.",
+            code="AGENT_RETRY_APPROVAL_INVALID",
+        )
+    canonical = validate_persisted_plan_contract(plan)
+    rebuilt = _build_capability_envelope(plan, canonical)
+    if approved_envelope is None:
+        return rebuilt
+
+    approved = validate_capability_envelope(approved_envelope)
+    for field in RETRY_PRESERVED_LIMIT_FIELDS:
+        approved_limit = approved[field]
+        current_limit = rebuilt[field]
+        if (
+            isinstance(approved_limit, bool)
+            or not isinstance(approved_limit, int)
+            or approved_limit < 1
+        ):
+            raise CapabilityEnvelopeError(
+                "The approved retry limits are invalid.",
+                code="AGENT_RETRY_ENVELOPE_LIMIT_INVALID",
+            )
+        rebuilt[field] = min(approved_limit, current_limit)
+    rebuilt["envelope_hash"] = _envelope_hash(rebuilt)
+    return rebuilt
+
+
+def _build_capability_envelope(
+    plan: AssessmentPlan,
+    canonical: dict[str, Any],
+) -> dict[str, Any]:
     strategy_capabilities = {
         tool["name"]
         for step in canonical["steps"]
@@ -91,21 +199,6 @@ def build_capability_envelope(plan: AssessmentPlan) -> dict[str, Any]:
         raise CapabilityEnvelopeError(
             "The approved strategy contains no adaptive-safe capabilities.",
             code="AGENT_CAPABILITY_ENVELOPE_EMPTY",
-        )
-
-    hypothesis_families: list[str] = []
-    if {"start_logcat", "get_logcat_excerpt"} <= set(allowed_capabilities):
-        hypothesis_families.extend(
-            [
-                AgentHypothesis.Family.SENSITIVE_LOG_EXPOSURE,
-                AgentHypothesis.Family.APPLICATION_RUNTIME_STABILITY,
-            ]
-        )
-    if "dump_ui" in allowed_capabilities:
-        hypothesis_families.append(AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE)
-    if {"frida_status", "frida_run_js"} <= set(allowed_capabilities):
-        hypothesis_families.append(
-            AgentHypothesis.Family.RUNTIME_TAMPERING_RESILIENCE
         )
 
     envelope: dict[str, Any] = {
@@ -137,10 +230,29 @@ def build_capability_envelope(plan: AssessmentPlan) -> dict[str, Any]:
             settings.MSAP_ASSESSMENT_EXECUTION_MAX_OBSERVATION_BYTES
         ),
         "maximum_model_provider_calls": settings.MSAP_AGENT_MAX_PROVIDER_CALLS,
-        "allowed_hypothesis_families": sorted(set(hypothesis_families)),
+        "allowed_hypothesis_families": _hypothesis_families(
+            allowed_capabilities
+        ),
     }
     envelope["envelope_hash"] = _envelope_hash(envelope)
     return envelope
+
+
+def _hypothesis_families(allowed_capabilities: list[str]) -> list[str]:
+    allowed = set(allowed_capabilities)
+    families: list[str] = []
+    if {"start_logcat", "get_logcat_excerpt"} <= allowed:
+        families.extend(
+            [
+                AgentHypothesis.Family.SENSITIVE_LOG_EXPOSURE,
+                AgentHypothesis.Family.APPLICATION_RUNTIME_STABILITY,
+            ]
+        )
+    if "dump_ui" in allowed:
+        families.append(AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE)
+    if {"frida_status", "frida_run_js"} <= allowed:
+        families.append(AgentHypothesis.Family.RUNTIME_TAMPERING_RESILIENCE)
+    return sorted(set(families))
 
 
 def validate_capability_envelope(

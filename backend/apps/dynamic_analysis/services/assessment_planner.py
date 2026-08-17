@@ -37,6 +37,11 @@ from apps.dynamic_analysis.services.assessment_execution_contract import (
     AssessmentExecutionContractError,
     validate_persisted_plan_contract,
 )
+from apps.dynamic_analysis.services.openai_schema_compatibility import (
+    LOCAL_SCHEMA_REJECTION_MESSAGE,
+    OpenAISchemaCompatibilityError,
+    validate_openai_structured_output_schema,
+)
 from apps.dynamic_analysis.services.assessment_plan_contract import (
     EVIDENCE_TYPES,
     MAX_EVIDENCE_REQUIREMENTS,
@@ -65,6 +70,27 @@ MAX_PROVIDER_ERROR_BYTES = 16 * 1024
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 RETRYABLE_PROVIDER_STATUS_CODES = {429, 500, 502, 503, 504}
 SAFE_PROVIDER_ERROR_VALUE_RE = re.compile(r"^[A-Za-z0-9._/-]{1,128}$")
+OPENAI_MODEL_PROFILES = {
+    "ECONOMY": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "low",
+        "planner_max_output_tokens": 3000,
+        "decision_max_output_tokens": 1800,
+    },
+    "BALANCED": {
+        "model": "gpt-5.6-terra",
+        "reasoning_effort": "low",
+        "planner_max_output_tokens": 3000,
+        "decision_max_output_tokens": 1800,
+    },
+    "ADVANCED": {
+        "model": "gpt-5.5",
+        "reasoning_effort": "low",
+        "planner_max_output_tokens": 3000,
+        "decision_max_output_tokens": 1800,
+    },
+}
+OPENAI_MODEL_PROFILE_CHOICES = tuple(OPENAI_MODEL_PROFILES)
 CONTEXT_SECRET_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
@@ -173,8 +199,7 @@ def _planner_tool_schema() -> dict[str, Any]:
         # Strict Structured Outputs requires object properties to be required.
         # This provider-facing schema is intentionally no looser than the real
         # gateway schema; backend policy validation still uses the original.
-        if properties:
-            argument_schema["required"] = list(properties)
+        argument_schema["required"] = list(properties)
         variants.append(
             {
                 "type": "object",
@@ -380,14 +405,46 @@ class DeterministicPlannerProvider(PlannerProvider):
 class OpenAIPlannerProvider(PlannerProvider):
     name = AssessmentPlan.PlannerProvider.OPENAI
 
-    def __init__(self, *, opener=None, sleeper=None):
-        self.model = settings.MSAP_ASSESSMENT_PLANNER_MODEL
+    def __init__(
+        self,
+        *,
+        opener=None,
+        sleeper=None,
+        model: str | None = None,
+        reasoning_effort: str | None = None,
+        max_output_tokens: int | None = None,
+    ):
+        self.model = model or settings.MSAP_ASSESSMENT_PLANNER_MODEL
         if not isinstance(self.model, str) or re.fullmatch(
             r"[A-Za-z0-9._-]{1,128}", self.model
         ) is None:
             raise PlannerProviderError(
                 "The configured planner model identifier is invalid.",
                 code="PLANNER_MODEL_INVALID",
+                http_status=503,
+            )
+        self.reasoning_effort = (
+            reasoning_effort or settings.MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT
+        )
+        if self.reasoning_effort not in {"none", "low", "medium", "high", "xhigh"}:
+            raise PlannerProviderError(
+                "The configured planner reasoning effort is invalid.",
+                code="PLANNER_REASONING_EFFORT_INVALID",
+                http_status=503,
+            )
+        self.max_output_tokens = (
+            max_output_tokens
+            if max_output_tokens is not None
+            else settings.MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS
+        )
+        if (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+            or not 512 <= self.max_output_tokens <= 16000
+        ):
+            raise PlannerProviderError(
+                "The configured planner output limit is invalid.",
+                code="PLANNER_OUTPUT_LIMIT_INVALID",
                 http_status=503,
             )
         self._opener = opener or urllib_request.urlopen
@@ -417,6 +474,32 @@ class OpenAIPlannerProvider(PlannerProvider):
         request_kind: str,
     ) -> dict[str, Any]:
         """Use the single backend Responses API transport for strict JSON output."""
+
+        started = monotonic()
+        try:
+            validate_openai_structured_output_schema(
+                output_schema,
+                schema_name=schema_name,
+            )
+        except OpenAISchemaCompatibilityError as exc:
+            self._record_result(
+                success=False,
+                retry_count=0,
+                started=started,
+                failure_code="PROVIDER_SCHEMA_LOCAL_REJECTED",
+            )
+            self.last_metadata["provider_error_type"] = "schema_compatibility"
+            self.last_metadata["provider_request_sent"] = False
+            logger.warning(
+                "openai_schema_preflight_rejected schema_name=%s reason=%s",
+                schema_name,
+                exc.reason,
+            )
+            raise PlannerProviderError(
+                LOCAL_SCHEMA_REJECTION_MESSAGE,
+                code="PROVIDER_SCHEMA_LOCAL_REJECTED",
+                http_status=503,
+            ) from None
 
         api_key = settings.MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY
         if not api_key:
@@ -465,8 +548,8 @@ class OpenAIPlannerProvider(PlannerProvider):
                     ],
                 },
             ],
-            "reasoning": {"effort": settings.MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT},
-            "max_output_tokens": settings.MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS,
+            "reasoning": {"effort": self.reasoning_effort},
+            "max_output_tokens": self.max_output_tokens,
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -486,7 +569,6 @@ class OpenAIPlannerProvider(PlannerProvider):
             },
             method="POST",
         )
-        started = monotonic()
         max_retries = settings.MSAP_ASSESSMENT_PLANNER_MAX_RETRIES
         logger.info(
             "assessment_planner_invocation provider=%s model=%s request_kind=%s",
@@ -1187,13 +1269,28 @@ class AssessmentPlannerService:
         return plan
 
 
-def configured_planner_provider(provider_name: str | None = None) -> PlannerProvider:
+def configured_planner_provider(
+    provider_name: str | None = None,
+    model_profile: str | None = None,
+) -> PlannerProvider:
     provider_name = (
         provider_name or settings.MSAP_ASSESSMENT_PLANNER_PROVIDER
     ).upper()
     if provider_name == AssessmentPlan.PlannerProvider.DETERMINISTIC:
         return DeterministicPlannerProvider()
     if provider_name == AssessmentPlan.PlannerProvider.OPENAI:
+        if model_profile is not None:
+            profile = OPENAI_MODEL_PROFILES.get(model_profile)
+            if profile is None:
+                raise PlannerProviderError(
+                    "The selected AI model profile is unsupported.",
+                    code="PLANNER_MODEL_PROFILE_UNSUPPORTED",
+                )
+            return OpenAIPlannerProvider(
+                model=profile["model"],
+                reasoning_effort=profile["reasoning_effort"],
+                max_output_tokens=profile["planner_max_output_tokens"],
+            )
         return OpenAIPlannerProvider()
     raise PlannerProviderError(
         "The configured assessment planner provider is unsupported.",
