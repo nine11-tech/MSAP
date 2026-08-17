@@ -25,8 +25,7 @@ import {
   listAudits,
   listDynamicHostAgentPackages,
   runDynamicHostAgentPackageAction,
-  recommendNextAssessment,
-  syncDynamicHostAgent,
+  retryAdaptiveAssessment,
   validateAssessmentPlan,
 } from "../api/msap";
 import type {
@@ -61,9 +60,7 @@ import { useSystemStatus } from "../status/SystemStatusContext";
 type WorkingAction =
   | ""
   | "refresh"
-  | "sync"
   | "screenshot"
-  | "packages"
   | "install"
   | "launch-package"
   | "force-stop"
@@ -80,7 +77,7 @@ type WorkingAction =
   | "planner-validate"
   | "planner-approve"
   | "planner-execute"
-  | "planner-recommend"
+  | "planner-retry"
   | "planner-cancel";
 
 type PackageAction =
@@ -92,6 +89,102 @@ type PackageAction =
 type AgentRuntimeType = "INTERNAL_CONTROLLER" | "CONTAINER_SANDBOX";
 type AgentTargetType = "VERIFIED_APK" | "INSTALLED_PACKAGE";
 type AssessmentExecutionMode = "ADAPTIVE_AGENT" | "SEQUENTIAL_PLAN";
+type AssessmentPresetId =
+  | "STANDARD"
+  | "RUNTIME"
+  | "UI_SENSITIVE_DATA"
+  | "LOGGING_RUNTIME"
+  | "CUSTOM";
+type AIModelProfile = "ECONOMY" | "BALANCED" | "ADVANCED";
+type AuditorStage = "TARGET" | "PLAN" | "APPROVE" | "ASSESS" | "RESULTS";
+
+const ASSESSMENT_PRESETS: Array<{
+  id: AssessmentPresetId;
+  name: string;
+  description: string;
+  objective: string;
+  scope: string;
+  recommended?: boolean;
+}> = [
+  {
+    id: "STANDARD",
+    name: "Standard Dynamic Assessment",
+    description: "A small, evidence-led assessment across runtime, UI, logs, and approved instrumentation.",
+    recommended: true,
+    objective:
+      "Perform a bounded adaptive runtime security assessment of the authorized application. Establish application state, test a small number of useful runtime security hypotheses using only approved capabilities, collect evidence, and stop once meaningful evidence has been gathered.",
+    scope:
+      "Assess only the selected audit-authorized application on the managed emulator. Use only the approved MSAP capability envelope. Prioritize a minimal evidence-driven sequence. Do not access unrelated applications, host resources, credentials, arbitrary files, shells, or unrestricted commands.",
+  },
+  {
+    id: "RUNTIME",
+    name: "Runtime & Instrumentation",
+    description: "Prioritize runtime readiness and controlled built-in instrumentation evidence.",
+    objective:
+      "Perform a bounded runtime and instrumentation assessment of the authorized application using only approved built-in capabilities and deterministic evidence evaluation.",
+    scope:
+      "Assess only the selected audit-authorized application on the managed emulator. Collect bounded runtime and approved instrumentation evidence. Do not use arbitrary scripts, shells, host resources, credentials, or unrelated applications.",
+  },
+  {
+    id: "UI_SENSITIVE_DATA",
+    name: "UI & Sensitive Data",
+    description: "Inspect bounded interface state and evidence relevant to visible data exposure.",
+    objective:
+      "Assess the authorized application interface for bounded, evidence-supported indicators of sensitive data exposure without assigning model-generated findings or severity.",
+    scope:
+      "Assess only the selected audit-authorized application. Use approved UI, screenshot, and application-state capabilities on the managed emulator. Do not access unrelated applications, credentials, arbitrary files, or host resources.",
+  },
+  {
+    id: "LOGGING_RUNTIME",
+    name: "Logging & Runtime Behavior",
+    description: "Collect a short target-correlated runtime and logging evidence window.",
+    objective:
+      "Assess bounded logging and runtime behavior of the authorized application and preserve evidence for deterministic oracle evaluation.",
+    scope:
+      "Assess only the selected audit-authorized application. Use run-scoped bounded logging and runtime capabilities on the managed emulator. Do not collect unrelated application data, credentials, arbitrary files, shells, or host resources.",
+  },
+  {
+    id: "CUSTOM",
+    name: "Custom",
+    description: "Review and edit a bounded objective and scope for a specialized audit goal.",
+    objective: "",
+    scope: "",
+  },
+];
+
+const AI_MODEL_PROFILES: Array<{
+  id: AIModelProfile;
+  name: string;
+  model: string;
+  description: string;
+}> = [
+  {
+    id: "ECONOMY",
+    name: "Economy",
+    model: "GPT-5.6 Luna",
+    description: "Recommended · lowest normal assessment cost",
+  },
+  {
+    id: "BALANCED",
+    name: "Balanced",
+    model: "GPT-5.6 Terra",
+    description: "Optional quality and cost balance",
+  },
+  {
+    id: "ADVANCED",
+    name: "Advanced / Legacy",
+    model: "GPT-5.5",
+    description: "Comparison and compatibility testing",
+  },
+];
+
+const WORKFLOW_STAGES: AuditorStage[] = [
+  "TARGET",
+  "PLAN",
+  "APPROVE",
+  "ASSESS",
+  "RESULTS",
+];
 
 export function DynamicLabPage() {
   const [searchParams] = useSearchParams();
@@ -132,16 +225,25 @@ export function DynamicLabPage() {
   const [fridaMode, setFridaMode] = useState<"attach" | "spawn">("attach");
   const [fridaTimeout, setFridaTimeout] = useState(12);
   const [assessmentPlan, setAssessmentPlan] = useState<AssessmentPlan | null>(null);
+  const [startingFreshAssessment, setStartingFreshAssessment] = useState(false);
   const [assessmentSummary, setAssessmentSummary] =
     useState<AssessmentRunSummary | null>(null);
   const [plannerPackageName, setPlannerPackageName] = useState("");
   const [plannerProvider, setPlannerProvider] = useState<
     "" | "DETERMINISTIC" | "OPENAI"
   >("");
-  const [plannerObjective, setPlannerObjective] = useState("");
-  const [plannerScope, setPlannerScope] = useState("");
+  const standardPreset = ASSESSMENT_PRESETS[0];
+  const [assessmentPreset, setAssessmentPreset] =
+    useState<AssessmentPresetId>("STANDARD");
+  const [aiModelProfile, setAiModelProfile] =
+    useState<AIModelProfile>("ECONOMY");
+  const [plannerObjective, setPlannerObjective] = useState(
+    standardPreset.objective,
+  );
+  const [plannerScope, setPlannerScope] = useState(standardPreset.scope);
   const [screenshotUrl, setScreenshotUrl] = useState("");
   const screenshotUrlRef = useRef("");
+  const startingFreshAssessmentRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<WorkingAction>("");
   const [error, setError] = useState("");
@@ -239,7 +341,7 @@ export function DynamicLabPage() {
         const latestOperatorRun = runsForAudit[0] || null;
         const displayedRun = latestAssessmentRun || latestOperatorRun;
         const displayedPlan = plansForAudit[0] || null;
-        if (!active) return;
+        if (!active || startingFreshAssessmentRef.current) return;
         setAssessmentPlan(displayedPlan);
         setAgentRun(displayedRun);
         if (!displayedRun) {
@@ -267,7 +369,7 @@ export function DynamicLabPage() {
             ? getAgentRunAssessmentSummary(displayedRun.id)
             : Promise.resolve(null),
         ]);
-        if (!active) return;
+        if (!active || startingFreshAssessmentRef.current) return;
         setAgentSteps(steps);
         setAgentArtifacts(artifacts);
         setAgentEvidence(evidence);
@@ -420,6 +522,57 @@ export function DynamicLabPage() {
   const targetForeground = Boolean(
     selectedTargetPackage && device?.focused_app?.includes(selectedTargetPackage),
   );
+  const selectedAudit = audits.find((audit) => audit.id === selectedAuditId);
+  const matchingAssessmentRun =
+    agentRun?.objective === "ASSESSMENT_PLAN_EXECUTION" &&
+    assessmentPlan &&
+    agentRun.assessment_plan === assessmentPlan.id
+      ? agentRun
+      : null;
+  const auditorStage: AuditorStage = (() => {
+    if (startingFreshAssessment) return "TARGET";
+    if (!assessmentPlan) return "TARGET";
+    if (
+      matchingAssessmentRun &&
+      ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "PAUSED"].includes(
+        matchingAssessmentRun.status,
+      )
+    ) {
+      return "RESULTS";
+    }
+    if (
+      matchingAssessmentRun ||
+      ["APPROVED", "EXECUTING"].includes(assessmentPlan.status)
+    ) {
+      return "ASSESS";
+    }
+    if (assessmentPlan.status === "VALIDATED") return "APPROVE";
+    return "PLAN";
+  })();
+
+  function applyAssessmentPreset(presetId: AssessmentPresetId) {
+    setAssessmentPreset(presetId);
+    const preset = ASSESSMENT_PRESETS.find((item) => item.id === presetId);
+    if (preset && presetId !== "CUSTOM") {
+      setPlannerObjective(preset.objective);
+      setPlannerScope(preset.scope);
+    }
+  }
+
+  function handleStartNewAssessment() {
+    startingFreshAssessmentRef.current = true;
+    setStartingFreshAssessment(true);
+    setAssessmentPlan(null);
+    setAgentRun(null);
+    setAgentSteps([]);
+    setAgentArtifacts([]);
+    setAgentEvidence([]);
+    setAgentDecisions([]);
+    setAgentHypotheses([]);
+    setAssessmentSummary(null);
+    setNotice("Ready to configure a new assessment for this authorized target.");
+    setError("");
+  }
 
   async function handleRefresh() {
     setWorking("refresh");
@@ -432,21 +585,6 @@ export function DynamicLabPage() {
       ]);
       setAgentStatus(hostData);
       setNotice("Device and service status refreshed.");
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setWorking("");
-    }
-  }
-
-  async function handleSync() {
-    setWorking("sync");
-    setError("");
-    setNotice("");
-    try {
-      const result = await syncDynamicHostAgent();
-      setAgentStatus(result);
-      setNotice("Device inventory synchronized.");
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -483,19 +621,6 @@ export function DynamicLabPage() {
           ? `${result.count} packages loaded (bounded result).`
           : `${result.count} packages loaded.`,
       );
-    }
-  }
-
-  async function handleRefreshPackages() {
-    setWorking("packages");
-    setError("");
-    setNotice("");
-    try {
-      await refreshPackages();
-    } catch (requestError) {
-      setError(errorMessage(requestError));
-    } finally {
-      setWorking("");
     }
   }
 
@@ -726,12 +851,15 @@ export function DynamicLabPage() {
         target_package: plannerPackageName,
         objective: plannerObjective.trim(),
         scope: plannerScope.trim(),
+        model_profile: aiModelProfile,
         ...(plannerProvider ? { planner_provider: plannerProvider } : {}),
       });
+      startingFreshAssessmentRef.current = false;
+      setStartingFreshAssessment(false);
       setAssessmentPlan(plan);
       setNotice(`Assessment plan #${plan.id} generated. No tools were executed.`);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(assessmentFailureMessage(requestError, "planning"));
     } finally {
       setWorking("");
     }
@@ -745,9 +873,9 @@ export function DynamicLabPage() {
     try {
       const plan = await validateAssessmentPlan(assessmentPlan.id);
       setAssessmentPlan(plan);
-      setNotice(`Assessment plan #${plan.id} validated. No tools were executed.`);
+      setNotice(`Assessment plan #${plan.id} passed review and is ready for approval.`);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(assessmentFailureMessage(requestError, "policy"));
     } finally {
       setWorking("");
     }
@@ -761,9 +889,9 @@ export function DynamicLabPage() {
     try {
       const plan = await approveAssessmentPlan(assessmentPlan.id);
       setAssessmentPlan(plan);
-      setNotice(`Assessment plan #${plan.id} approved. Approval did not start execution.`);
+      setNotice(`Assessment plan #${plan.id} approved. Start remains a separate auditor action.`);
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(assessmentFailureMessage(requestError, "approval"));
     } finally {
       setWorking("");
     }
@@ -809,7 +937,7 @@ export function DynamicLabPage() {
         } in AgentRun #${response.run.id}.`,
       );
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(assessmentFailureMessage(requestError, "execution"));
     } finally {
       setWorking("");
     }
@@ -833,29 +961,34 @@ export function DynamicLabPage() {
     }
   }
 
-  async function handleRecommendNextAssessment() {
-    if (
-      !agentRun ||
-      agentRun.objective !== "ASSESSMENT_PLAN_EXECUTION" ||
-      !["SUCCEEDED", "FAILED", "TIMEOUT"].includes(agentRun.status)
-    ) {
-      return;
-    }
-    setWorking("planner-recommend");
+  async function handleRetryAdaptiveAssessment() {
+    if (!agentRun?.adaptive_retryable || !agentRun.assessment_plan) return;
+    setWorking("planner-retry");
     setError("");
     setNotice("");
     try {
-      const plan = await recommendNextAssessment(
-        agentRun.id,
-        plannerProvider || undefined,
-      );
+      const response = await retryAdaptiveAssessment(agentRun.id);
+      const [steps, artifacts, evidence, decisions, hypotheses, plan] = await Promise.all([
+        listAgentRunSteps(response.run.id),
+        listAgentRunArtifacts(response.run.id),
+        listAgentRunEvidence(response.run.id),
+        listAgentRunDecisions(response.run.id),
+        listAgentRunHypotheses(response.run.id),
+        getAssessmentPlan(agentRun.assessment_plan),
+      ]);
+      setAgentRun(response.run);
+      setAgentSteps(steps);
+      setAgentArtifacts(artifacts);
+      setAgentEvidence(evidence);
+      setAgentDecisions(decisions);
+      setAgentHypotheses(hypotheses);
+      setAssessmentSummary(null);
       setAssessmentPlan(plan);
       setNotice(
-        `Adaptive recommendation #${plan.id} generated and policy-checked. ` +
-          "It cannot execute until you validate and explicitly approve it.",
+        `Approved plan #${plan.id} queued safely as AgentRun #${response.run.id}.`,
       );
     } catch (requestError) {
-      setError(errorMessage(requestError));
+      setError(assessmentFailureMessage(requestError, "execution"));
     } finally {
       setWorking("");
     }
@@ -881,115 +1014,50 @@ export function DynamicLabPage() {
       ) : null}
 
       <nav className="assessment-workflow" aria-label="Assessment workflow">
-        {[
-          "Target",
-          "Generate AI plan",
-          "Validate",
-          "Approve",
-          "Execute",
-          "Review evidence",
-          "Report",
-        ].map((label, index) => (
-          <span key={label}>
-            <b>{index + 1}</b>
-            {label}
-          </span>
-        ))}
+        {WORKFLOW_STAGES.map((stage, index) => {
+          const currentIndex = WORKFLOW_STAGES.indexOf(auditorStage);
+          return (
+            <span
+              key={stage}
+              className={
+                index < currentIndex
+                  ? "is-complete"
+                  : index === currentIndex
+                    ? "is-current"
+                    : "is-future"
+              }
+              aria-current={index === currentIndex ? "step" : undefined}
+            >
+              <b>{index < currentIndex ? "✓" : index + 1}</b>
+              {stage.charAt(0) + stage.slice(1).toLowerCase()}
+            </span>
+          );
+        })}
       </nav>
 
-      <Card className="dynamic-mvp-section device-status-card">
-        <SectionHeader
-          title="Device Status"
-          description="Managed Android environment available to this assessment."
-          actions={
-            <div className="dynamic-mvp-actions">
-              <button
-                className="button button-secondary"
-                onClick={() => void handleRefresh()}
-                disabled={Boolean(working)}
-              >
-                {working === "refresh" ? "Refreshing..." : "Refresh"}
-              </button>
-              <button
-                className="button button-primary"
-                onClick={() => void handleSync()}
-                disabled={!canOperate || Boolean(working)}
-              >
-                {working === "sync" ? "Syncing..." : "Sync Device"}
-              </button>
-            </div>
-          }
-        />
-
-        <div className="dynamic-device-facts device-status-facts">
-          <StatusFact
-            label="Device status"
-            value={emulatorOnline ? "Ready" : "Unavailable"}
-            detail={device?.state || agentStatus?.detail || undefined}
-            state={emulatorOnline ? "online" : "offline"}
-          />
-          <StatusFact label="Emulator serial" value={device?.serial || "Unavailable"} />
-          <StatusFact
-            label="Android version"
-            value={device?.android_version || "Unavailable"}
-          />
-          <StatusFact
-            label="API"
-            value={device?.api_level === null || device?.api_level === undefined
-              ? "Unavailable"
-              : String(device.api_level)}
-          />
-          <StatusFact label="ABI" value={device?.abi || "Unavailable"} />
-          <StatusFact
-            label="Root"
-            value={
-              device?.root_uid === null || device?.root_uid === undefined
-                ? "Unavailable"
-                : `UID ${device.root_uid}`
-            }
-            state={device?.root_uid === 0 ? "online" : "neutral"}
-          />
-          <StatusFact
-            label="SELinux"
-            value={device?.selinux || "Unavailable"}
-            state={
-              device?.selinux?.toLowerCase() === "enforcing"
-                ? "online"
-                : "neutral"
+      {auditorStage === "TARGET" ? (
+        <Card className="dynamic-mvp-section auditor-stage-card target-stage-card">
+          <SectionHeader
+            title="Configure Security Assessment"
+            description="Choose an audit-authorized target and a bounded assessment preset."
+            actions={
+              <span className={`lab-readiness ${emulatorOnline ? "is-ready" : "is-unavailable"}`}>
+                <i aria-hidden="true" />
+                Android lab {emulatorOnline ? "ready" : "unavailable"}
+              </span>
             }
           />
-          <StatusFact
-            label="Host agent"
-            value={agentStatus?.connected ? "Online" : "Offline"}
-            detail={agentStatus?.agent?.version ? `v${agentStatus.agent.version}` : undefined}
-            state={agentStatus?.connected ? "online" : "offline"}
-          />
-          <StatusFact
-            label="Last synchronization"
-            value={formatDate(agentStatus?.last_sync_at)}
-          />
-        </div>
-        <div className="device-service-strip" aria-label="Operational services">
-          <ServiceIndicator label="Object storage" component={minio} />
-          <ServiceIndicator label="Assessment worker" component={celery} />
-        </div>
-      </Card>
 
-      <Card className="dynamic-mvp-section target-application-card">
-        <SectionHeader
-          title="Target Application"
-          description="Select an audit-authorized APK, then use the managed emulator controls as needed."
-        />
-        <div className="target-application-layout">
-          <div className="target-application-controls">
-            <div className="dynamic-apk-controls">
+          <div className="auditor-target-grid">
+            <div className="auditor-target-selectors">
               <label>
-                Audit
+                <span>Audit</span>
                 <select
                   value={selectedAuditId}
                   onChange={(event) =>
                     setSelectedAuditId(event.target.value ? Number(event.target.value) : "")
                   }
+                  disabled={Boolean(working)}
                 >
                   <option value="">Select audit</option>
                   {audits.map((audit) => (
@@ -998,255 +1066,305 @@ export function DynamicLabPage() {
                 </select>
               </label>
               <label>
-                Authorized APK
+                <span>Target application</span>
                 <select
                   value={selectedApkId}
                   onChange={(event) =>
                     setSelectedApkId(event.target.value ? Number(event.target.value) : "")
                   }
-                  disabled={!selectedAuditId}
+                  disabled={!selectedAuditId || Boolean(working)}
                 >
-                  <option value="">Select verified APK</option>
+                  <option value="">Select authorized target</option>
                   {verifiedApks.map((apk) => (
                     <option key={apk.id} value={apk.id}>
-                      {apk.package_name || `APK #${apk.id}`}{apk.version_name ? ` · ${apk.version_name}` : ""}
+                      {applicationDisplayName(apk.package_name)} · {apk.package_name}
                     </option>
                   ))}
                 </select>
               </label>
-              <label>
-                Installed package
-                <input
-                  value={packageName}
-                  onChange={(event) => setPackageName(event.target.value)}
-                  list="dynamic-installed-packages"
-                  placeholder="Search installed packages"
-                  autoComplete="off"
-                />
-                <datalist id="dynamic-installed-packages">
-                  {packages.map((item) => <option key={item} value={item} />)}
-                </datalist>
-              </label>
             </div>
 
-            <div className="target-status-strip">
-              <StatusFact label="APK version" value={selectedApk?.version_name || installResult?.package_metadata.version_name || "Unavailable"} />
-              <StatusFact label="Installation" value={targetInstalled || installResult?.success ? "Installed" : "Not detected"} state={targetInstalled || installResult?.success ? "online" : "neutral"} />
-              <StatusFact label="Foreground" value={targetForeground ? "Active" : "Not active"} state={targetForeground ? "online" : "neutral"} />
-            </div>
-
-            <div className="dynamic-apk-actions">
-              <button className="button button-primary" onClick={() => void handleInstall()} disabled={!canOperate || !selectedAuditId || !selectedApkId || !emulatorOnline || Boolean(working)}>
-                {working === "install" ? "Installing..." : "Install APK"}
-              </button>
-              <button className="button button-secondary" onClick={() => void handlePackageAction("launch-package")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>
-                {working === "launch-package" ? "Launching..." : "Launch"}
-              </button>
-              <button className="button button-secondary" onClick={() => void handlePackageAction("force-stop")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>
-                {working === "force-stop" ? "Stopping..." : "Force Stop"}
-              </button>
-              <button className="button button-secondary" onClick={() => void handlePackageAction("clear-data")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>
-                {working === "clear-data" ? "Clearing..." : "Clear Data"}
-              </button>
-              <button className="button button-danger" onClick={() => void handlePackageAction("uninstall")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>
-                {working === "uninstall" ? "Uninstalling..." : "Uninstall"}
-              </button>
-              <button className="button button-secondary" onClick={() => void handleRefreshPackages()} disabled={!agentStatus?.connected || !emulatorOnline || Boolean(working)}>
-                {working === "packages" ? "Refreshing..." : "Refresh Packages"}
-              </button>
-              <button className="button button-secondary" onClick={() => void handleScreenshot()} disabled={!canOperate || !agentStatus?.connected || !emulatorOnline || Boolean(working)}>
-                {working === "screenshot" ? "Capturing..." : "Capture Screenshot"}
-              </button>
-            </div>
-            {!canOperate ? <p className="muted dynamic-role-note">Viewer access is read-only.</p> : null}
-            {selectedAuditId && !verifiedApks.length ? <p className="muted dynamic-role-note">No verified APK is available for the selected audit.</p> : null}
+            <section className="authorized-target-card" aria-label="Authorized target summary">
+              <div className="authorized-target-icon" aria-hidden="true">AG</div>
+              <div>
+                <span className="eyebrow">Authorized application</span>
+                <h3>{applicationDisplayName(plannerPackageName || selectedTargetPackage)}</h3>
+                <p className="mono">{plannerPackageName || selectedTargetPackage || "No target selected"}</p>
+              </div>
+              <dl>
+                <div><dt>Version</dt><dd>{selectedApk?.version_name || installResult?.package_metadata.version_name || "Unavailable"}</dd></div>
+                <div><dt>Installation</dt><dd className={targetInstalled ? "state-text-ready" : ""}>{targetInstalled ? "Installed" : "Not detected"}</dd></div>
+                <div><dt>App state</dt><dd className={targetForeground ? "state-text-ready" : ""}>{targetForeground ? "Foreground" : "Not active"}</dd></div>
+                <div><dt>Device</dt><dd className={emulatorOnline ? "state-text-ready" : "state-text-failed"}>{emulatorOnline ? `Ready · Android ${device?.android_version || ""}` : "Unavailable"}</dd></div>
+                <div><dt>Audit</dt><dd>{selectedAudit?.name || "Not selected"}</dd></div>
+              </dl>
+            </section>
           </div>
 
-          <section className="target-screenshot" aria-label="Latest emulator screenshot">
-            <div className="target-screenshot-heading">
+          <section className="assessment-preset-section" aria-labelledby="assessment-type-title">
+            <div className="auditor-section-heading">
               <div>
-                <span className="eyebrow">Latest capture</span>
-                <h3>Emulator screenshot</h3>
+                <span className="eyebrow">Assessment type</span>
+                <h3 id="assessment-type-title">What should the agent assess?</h3>
               </div>
-              {screenshotUrl ? <span className="target-capture-ready">Captured</span> : null}
+              <span>Safe objective and scope templates</span>
             </div>
-            <div className={`dynamic-screenshot-panel${screenshotUrl ? " has-capture" : ""}`}>
-              {screenshotUrl ? (
-                <img src={screenshotUrl} alt="Latest Android emulator screenshot" />
-              ) : (
-                <div className="screenshot-empty-state">
-                  <strong>No screenshot captured</strong>
-                  <span>Use Capture Screenshot to preview the current device state.</span>
-                </div>
-              )}
+            <div className="assessment-preset-grid">
+              {ASSESSMENT_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  className={`assessment-preset${assessmentPreset === preset.id ? " is-selected" : ""}`}
+                  aria-pressed={assessmentPreset === preset.id}
+                  onClick={() => applyAssessmentPreset(preset.id)}
+                  disabled={Boolean(working)}
+                >
+                  <span>{preset.name}</span>
+                  {preset.recommended ? <b>Recommended</b> : null}
+                  <small>{preset.description}</small>
+                </button>
+              ))}
             </div>
           </section>
-        </div>
-      </Card>
 
-      <Card className="dynamic-mvp-section assessment-planner-card primary-assessment-card">
-        <SectionHeader
-          title="AI Dynamic Assessment"
-          description="Generate a bounded plan, review its controls, approve it, and execute only the approved version."
-          actions={<span className="planner-only-badge">AUDITOR CONTROLLED</span>}
-        />
+          <details className="auditor-disclosure customize-assessment">
+            <summary>Customize Assessment</summary>
+            <div className="custom-assessment-fields">
+              <label>
+                <span>Objective</span>
+                <textarea
+                  value={plannerObjective}
+                  onChange={(event) => {
+                    setPlannerObjective(event.target.value);
+                    setAssessmentPreset("CUSTOM");
+                  }}
+                  maxLength={500}
+                  rows={4}
+                  disabled={Boolean(working)}
+                />
+              </label>
+              <label>
+                <span>Authorized scope</span>
+                <textarea
+                  value={plannerScope}
+                  onChange={(event) => {
+                    setPlannerScope(event.target.value);
+                    setAssessmentPreset("CUSTOM");
+                  }}
+                  maxLength={2000}
+                  rows={4}
+                  disabled={Boolean(working)}
+                />
+              </label>
+            </div>
+          </details>
 
-        <div className="planner-controls">
-          <label>
-            <span>Target application</span>
-            <select
-              value={plannerPackageName}
-              onChange={(event) => setPlannerPackageName(event.target.value)}
-              disabled={!selectedAuditId || Boolean(working)}
+          <details className="auditor-disclosure advanced-ai-settings">
+            <summary>Advanced AI Settings</summary>
+            <div className="advanced-ai-grid">
+              <label>
+                <span>AI profile</span>
+                <select
+                  value={aiModelProfile}
+                  onChange={(event) => setAiModelProfile(event.target.value as AIModelProfile)}
+                  disabled={Boolean(working)}
+                >
+                  {AI_MODEL_PROFILES.map((profile) => (
+                    <option key={profile.id} value={profile.id}>
+                      {profile.name} · {profile.model}
+                    </option>
+                  ))}
+                </select>
+                <small>{AI_MODEL_PROFILES.find((profile) => profile.id === aiModelProfile)?.description}</small>
+              </label>
+              <label>
+                <span>Provider policy</span>
+                <select
+                  value={plannerProvider}
+                  onChange={(event) => setPlannerProvider(event.target.value as "" | "DETERMINISTIC" | "OPENAI")}
+                  disabled={Boolean(working)}
+                >
+                  <option value="">Server default</option>
+                  <option value="OPENAI">OpenAI</option>
+                  <option value="DETERMINISTIC">Deterministic reference</option>
+                </select>
+                <small>No arbitrary model IDs or provider endpoints are accepted.</small>
+              </label>
+              <label>
+                <span>Execution mode</span>
+                <select
+                  value={assessmentExecutionMode}
+                  onChange={(event) => setAssessmentExecutionMode(event.target.value as AssessmentExecutionMode)}
+                  disabled={Boolean(working)}
+                >
+                  <option value="ADAPTIVE_AGENT">Adaptive Security Agent</option>
+                  <option value="SEQUENTIAL_PLAN">Sequential Approved Plan</option>
+                </select>
+                <small>Reasoning is low and budgets remain backend-owned.</small>
+              </label>
+            </div>
+          </details>
+
+          <div className="auditor-primary-action">
+            <div>
+              <strong>{AI_MODEL_PROFILES.find((profile) => profile.id === aiModelProfile)?.name} · {AI_MODEL_PROFILES.find((profile) => profile.id === aiModelProfile)?.model}</strong>
+              <span>Plan generation only. No Android action runs before approval.</span>
+            </div>
+            <button
+              className="button button-primary button-prominent"
+              onClick={() => void handleGenerateAssessmentPlan()}
+              disabled={!canOperate || !selectedAuditId || !plannerPackageName || !plannerObjective.trim() || !plannerScope.trim() || Boolean(working)}
             >
-              <option value="">Select verified audit package</option>
-              {authorizedPlannerPackages.map((target) => (
-                <option key={target} value={target}>{target}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Planner provider</span>
-            <select
-              value={plannerProvider}
-              onChange={(event) =>
-                setPlannerProvider(
-                  event.target.value as "" | "DETERMINISTIC" | "OPENAI",
-                )
-              }
-              disabled={Boolean(working)}
-            >
-              <option value="">Server default</option>
-              <option value="OPENAI">OpenAI / GPT-5.5 · Production</option>
-              <option value="DETERMINISTIC">Deterministic reference</option>
-            </select>
-            <small className="planner-field-hint">OpenAI / GPT-5.5 is the production planner; server default follows deployment policy.</small>
-          </label>
-          <label>
-            <span>Execution mode</span>
-            <select
-              value={assessmentExecutionMode}
-              onChange={(event) =>
-                setAssessmentExecutionMode(
-                  event.target.value as AssessmentExecutionMode,
-                )
-              }
-              disabled={Boolean(working)}
-            >
-              <option value="ADAPTIVE_AGENT">Adaptive Security Agent</option>
-              <option value="SEQUENTIAL_PLAN">Sequential Approved Plan</option>
-            </select>
-            <small className="planner-field-hint">
-              Adaptive mode chooses one validated experiment at a time inside the approved capability envelope.
-            </small>
-          </label>
-          <label className="planner-objective-field">
-            <span>Assessment objective</span>
-            <textarea
-              value={plannerObjective}
-              onChange={(event) => setPlannerObjective(event.target.value)}
-              maxLength={500}
-              rows={4}
-              placeholder="Perform a bounded runtime security assessment of the authorized AndroGoat application. Identify useful runtime evidence related to insecure behaviors without making autonomous vulnerability verdicts."
-              disabled={Boolean(working)}
-            />
-          </label>
-          <label className="planner-scope-field">
-            <span>Scope</span>
-            <textarea
-              value={plannerScope}
-              onChange={(event) => setPlannerScope(event.target.value)}
-              maxLength={2000}
-              rows={4}
-              placeholder="Use the authorized emulator and approved runtime capabilities. Capture evidence, screenshots, UI hierarchy, logs and controlled instrumentation results. Do not access unrelated applications or host resources."
-              disabled={Boolean(working)}
-            />
-          </label>
-        </div>
-
-        <div className="planner-actions">
-          <button
-            className="button button-primary"
-            onClick={() => void handleGenerateAssessmentPlan()}
-            disabled={
-              !canOperate ||
-              !selectedAuditId ||
-              !plannerPackageName ||
-              !plannerObjective.trim() ||
-              !plannerScope.trim() ||
-              Boolean(working)
-            }
-          >
-            {working === "planner-generate" ? "Generating..." : "Generate Assessment Plan"}
-          </button>
-          {assessmentPlan?.status === "GENERATED" ? (
-            <button className="button button-secondary" onClick={() => void handleValidateAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
-              {working === "planner-validate" ? "Validating..." : "Validate Plan"}
+              {working === "planner-generate" ? "Generating AI Assessment…" : "Generate AI Assessment"}
             </button>
-          ) : null}
-          {assessmentPlan?.status === "VALIDATED" ? (
-            <button className="button button-secondary" onClick={() => void handleApproveAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
-              {working === "planner-approve" ? "Approving..." : "Approve Plan"}
-            </button>
-          ) : null}
-          {assessmentPlan?.status === "APPROVED" ? (
-            <button className="button button-primary" onClick={() => void handleExecuteAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
-              {working === "planner-execute"
-                ? "Queuing..."
-                : assessmentExecutionMode === "ADAPTIVE_AGENT"
-                  ? "Start Agentic Assessment"
-                  : "Execute Sequential Plan"}
-            </button>
-          ) : null}
-        </div>
-
-        {!canOperate ? (
-          <p className="muted dynamic-role-note">
-            Viewer access is read-only; plan generation, validation, and approval
-            require Analyst or Admin.
-          </p>
-        ) : null}
-        {selectedAuditId && authorizedPlannerPackages.length === 0 ? (
-          <p className="muted dynamic-role-note">
-            The selected audit has no verified package with an authorized package name.
-          </p>
-        ) : null}
-
-        {assessmentPlan ? (
-          <>
-            <AssessmentPlanResult plan={assessmentPlan} />
-            {agentRun &&
-            agentRun.objective === "ASSESSMENT_PLAN_EXECUTION" &&
-            (agentRun.assessment_plan === assessmentPlan.id ||
-              assessmentPlan.source_run === agentRun.id) ? (
-              <AssessmentExecutionResult
-                run={agentRun}
-                steps={agentSteps}
-                artifacts={agentArtifacts}
-                evidence={agentEvidence}
-                decisions={agentDecisions}
-                hypotheses={agentHypotheses}
-                summary={assessmentSummary}
-                canCancel={canOperate && ["QUEUED", "RUNNING", "PAUSED"].includes(agentRun.status)}
-                cancelling={working === "planner-cancel"}
-                onCancel={() => void handleCancelAssessmentExecution()}
-                canRecommend={
-                  canOperate &&
-                  ["SUCCEEDED", "FAILED", "TIMEOUT"].includes(agentRun.status) &&
-                  assessmentPlan.source_run !== agentRun.id
-                }
-                recommending={working === "planner-recommend"}
-                onRecommend={() => void handleRecommendNextAssessment()}
-              />
-            ) : null}
-          </>
-        ) : (
-          <div className="planner-empty-result">
-            <strong>No assessment plan yet</strong>
-            <span>Select an authorized target, describe the assessment, and generate a plan for review.</span>
           </div>
-        )}
-      </Card>
+
+          <details className="auditor-disclosure manual-controls">
+            <summary>Manual Controls</summary>
+            <div className="manual-control-toolbar">
+              <button className="button button-secondary" onClick={() => void handleInstall()} disabled={!canOperate || !selectedAuditId || !selectedApkId || !emulatorOnline || Boolean(working)}>Install</button>
+              <button className="button button-secondary" onClick={() => void handlePackageAction("launch-package")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>Launch</button>
+              <button className="button button-secondary" onClick={() => void handlePackageAction("force-stop")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>Force Stop</button>
+              <button className="button button-secondary" onClick={() => void handlePackageAction("clear-data")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>Clear Data</button>
+              <button className="button button-danger" onClick={() => void handlePackageAction("uninstall")} disabled={!canOperate || !packageName.trim() || !emulatorOnline || Boolean(working)}>Uninstall</button>
+              <button className="button button-secondary" onClick={() => void handleScreenshot()} disabled={!canOperate || !agentStatus?.connected || !emulatorOnline || Boolean(working)}>Screenshot</button>
+              <button className="button button-secondary" onClick={() => void handleRefresh()} disabled={Boolean(working)}>Refresh Lab</button>
+            </div>
+            {screenshotUrl ? <img className="manual-screenshot-preview" src={screenshotUrl} alt="Latest managed emulator screenshot" /> : null}
+            <div className="device-service-strip" aria-label="Operational services">
+              <ServiceIndicator label="Object storage" component={minio} />
+              <ServiceIndicator label="Assessment worker" component={celery} />
+              <span className="service-indicator">Host agent: {agentStatus?.connected ? "Online" : "Offline"}</span>
+            </div>
+          </details>
+
+          {!canOperate ? <p className="muted dynamic-role-note">Viewer access is read-only.</p> : null}
+          {selectedAuditId && !verifiedApks.length ? <p className="muted dynamic-role-note">No verified target is authorized for this audit.</p> : null}
+        </Card>
+      ) : null}
+
+      {auditorStage === "PLAN" && assessmentPlan ? (
+        <Card className="dynamic-mvp-section auditor-stage-card plan-stage-card">
+          <SectionHeader
+            title="AI Assessment Plan"
+            description={`Generated by ${modelDisplayName(assessmentPlan.planner_model)} for ${applicationDisplayName(assessmentPlan.target_package)}.`}
+            actions={<span className="planner-only-badge">PLAN ONLY · NO EXECUTION</span>}
+          />
+          <AssessmentPlanResult plan={assessmentPlan} />
+          <div className="auditor-stage-actions">
+            <button className="button button-secondary" onClick={handleStartNewAssessment} disabled={Boolean(working)}>Start New Assessment</button>
+            {assessmentPlan.status === "GENERATED" ? (
+              <button className="button button-primary button-prominent" onClick={() => void handleValidateAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
+                {working === "planner-validate" ? "Checking Assessment…" : "Review & Continue"}
+              </button>
+            ) : null}
+          </div>
+        </Card>
+      ) : null}
+
+      {auditorStage === "APPROVE" && assessmentPlan ? (
+        <Card className="dynamic-mvp-section auditor-stage-card approval-stage-card">
+          <SectionHeader
+            title="Assessment Ready for Approval"
+            description="Review the immutable execution boundary, then make an explicit auditor decision."
+            actions={<span className="planner-only-badge">AUDITOR APPROVAL REQUIRED</span>}
+          />
+          <div className="approval-hero">
+            <div>
+              <span className="eyebrow">Target</span>
+              <h3>{applicationDisplayName(assessmentPlan.target_package)}</h3>
+              <p className="mono">{assessmentPlan.target_package}</p>
+            </div>
+            <div>
+              <span className="eyebrow">AI</span>
+              <h3>{modelDisplayName(assessmentPlan.planner_model)}</h3>
+              <p>Low reasoning · strict structured output</p>
+            </div>
+            <div>
+              <span className="eyebrow">Execution mode</span>
+              <h3>{assessmentExecutionMode === "ADAPTIVE_AGENT" ? "Adaptive Security Agent" : "Sequential Approved Plan"}</h3>
+              <p>Starts only after a second explicit action</p>
+            </div>
+          </div>
+          <div className="approval-boundary-grid">
+            <StatusFact label="Capabilities" value={`${assessmentPlan.agentic_capability_preview.allowed_capabilities?.length || 0} approved safe capabilities`} />
+            <StatusFact label="Decisions" value={String(assessmentPlan.agentic_capability_preview.maximum_decisions || "Bounded")} />
+            <StatusFact label="Tool actions" value={String(assessmentPlan.agentic_capability_preview.maximum_tool_calls || "Bounded")} />
+            <StatusFact label="Deadline" value={assessmentPlan.agentic_capability_preview.maximum_run_duration_seconds ? `${Math.ceil(assessmentPlan.agentic_capability_preview.maximum_run_duration_seconds / 60)} minutes` : "Bounded"} />
+            <StatusFact label="Destructive actions" value={assessmentPlan.agentic_capability_preview.additional_approval_capabilities?.length ? "Additional approval required" : "Not permitted"} state={assessmentPlan.agentic_capability_preview.additional_approval_capabilities?.length ? "warning" : "online"} />
+          </div>
+          <section className="approval-security-areas">
+            <span>Security areas</span>
+            <div>
+              {(assessmentPlan.agentic_capability_preview.allowed_hypothesis_families || []).map((family) => (
+                <span key={family}>{hypothesisFamilyLabel(family)}</span>
+              ))}
+            </div>
+          </section>
+          <div className="security-check-list" aria-label="Backend security checks">
+            <span>✓ Target authorization</span>
+            <span>✓ Capability policy</span>
+            <span>✓ Argument validation</span>
+            <span>✓ Resource bounds</span>
+          </div>
+          <div className="auditor-stage-actions">
+            <button className="button button-secondary" onClick={handleStartNewAssessment} disabled={Boolean(working)}>Cancel Review</button>
+            <button className="button button-primary button-prominent" onClick={() => void handleApproveAssessmentPlan()} disabled={!canOperate || Boolean(working)}>
+              {working === "planner-approve" ? "Approving Assessment…" : "Approve Assessment"}
+            </button>
+          </div>
+        </Card>
+      ) : null}
+
+      {(auditorStage === "ASSESS" || auditorStage === "RESULTS") && assessmentPlan ? (
+        <Card className="dynamic-mvp-section auditor-stage-card assessment-stage-card">
+          {!matchingAssessmentRun ? (
+            <div className="assessment-start-state">
+              <span className="assessment-start-icon" aria-hidden="true">✓</span>
+              <span className="eyebrow">Approval recorded</span>
+              <h2>Start the AI Security Agent</h2>
+              <p>
+                {applicationDisplayName(assessmentPlan.target_package)} is approved for a bounded {assessmentExecutionMode === "ADAPTIVE_AGENT" ? "adaptive" : "sequential"} assessment. Starting creates a separate auditable AgentRun.
+              </p>
+              <div className="assessment-start-facts">
+                <span>{modelDisplayName(assessmentPlan.planner_model)}</span>
+                <span>{assessmentPlan.agentic_capability_preview.maximum_decisions || "Bounded"} decisions max</span>
+                <span>{assessmentPlan.agentic_capability_preview.maximum_tool_calls || "Bounded"} actions max</span>
+              </div>
+              <div className="auditor-stage-actions">
+                <button className="button button-secondary" onClick={handleStartNewAssessment} disabled={Boolean(working)}>New Assessment</button>
+                <button className="button button-primary button-prominent" onClick={() => void handleExecuteAssessmentPlan()} disabled={!canOperate || assessmentPlan.status !== "APPROVED" || Boolean(working)}>
+                  {working === "planner-execute" ? "Starting Security Assessment…" : "Start Security Assessment"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <AssessmentExecutionResult
+              run={matchingAssessmentRun}
+              steps={agentSteps}
+              artifacts={agentArtifacts}
+              evidence={agentEvidence}
+              decisions={agentDecisions}
+              hypotheses={agentHypotheses}
+              summary={assessmentSummary}
+              canCancel={canOperate && ["QUEUED", "RUNNING", "PAUSED"].includes(matchingAssessmentRun.status)}
+              canRetry={canOperate && matchingAssessmentRun.adaptive_retryable}
+              cancelling={working === "planner-cancel"}
+              retrying={working === "planner-retry"}
+              onCancel={() => void handleCancelAssessmentExecution()}
+              onRetry={() => void handleRetryAdaptiveAssessment()}
+            />
+          )}
+          {auditorStage === "RESULTS" ? (
+            <div className="auditor-stage-actions results-next-actions">
+              <button className="button button-secondary" onClick={handleStartNewAssessment}>New Assessment</button>
+              {assessmentSummary?.report.status === "READY" ? (
+                <Link className="button button-primary" to={`/audits/${assessmentSummary.audit_id}/report`}>View Assessment Report</Link>
+              ) : null}
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
       <details className="advanced-operator-panel">
         <summary>
@@ -1679,63 +1797,56 @@ export function DynamicLabPage() {
 }
 
 function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
+  const evidenceTypes = Array.from(
+    new Set(plan.steps.flatMap((step) => step.evidence_requirements)),
+  );
+  const capabilityCalls = plan.steps.reduce(
+    (total, step) => total + step.required_tools.length,
+    0,
+  );
+  const hypothesisFamilies =
+    plan.agentic_capability_preview.allowed_hypothesis_families || [];
   return (
     <section className="planner-result" aria-label="Latest AI assessment plan">
       <div className="planner-result-heading">
         <div>
-          <span className="eyebrow">Current assessment</span>
-          <h3>Plan #{plan.id} · {plan.target_package}</h3>
+          <span className="eyebrow">Bounded assessment strategy</span>
+          <h3>{plan.steps.length} security experiments for {applicationDisplayName(plan.target_package)}</h3>
         </div>
         <span className={`planner-state planner-state-${plan.status.toLowerCase()}`}>
-          {plan.status}
+          {plan.validation_status === "PASSED" && plan.policy_status === "PASSED"
+            ? "Security checks passed"
+            : plan.status}
         </span>
       </div>
 
-      <AssessmentLifecycle plan={plan} />
-
-      <div className="planner-summary-facts">
-        <StatusFact label="Provider / model" value={plan.planner_provider} detail={plan.planner_model} />
-        <StatusFact
-          label="Plan type"
-          value={plan.plan_kind === "ADAPTIVE" ? "Adaptive recommendation" : "Initial assessment"}
-          detail={plan.plan_kind === "ADAPTIVE" ? `Cycle ${plan.adaptive_cycle} of 2` : undefined}
-        />
-        <StatusFact label="Validation" value={plan.validation_status} state={plan.validation_status === "PASSED" ? "online" : "warning"} />
-        <StatusFact label="Policy" value={plan.policy_status} state={plan.policy_status === "PASSED" ? "online" : "warning"} />
-        <StatusFact label="Approval" value={plan.approved_at ? "Approved" : "Required"} state={plan.approved_at ? "online" : "warning"} />
-        <StatusFact label="Steps" value={String(plan.steps.length)} />
-        <StatusFact label="Plan hash" value={plan.plan_hash ? `${plan.plan_hash.slice(0, 16)}…` : "Unavailable"} />
-        <StatusFact label="Created" value={formatDate(plan.created_at)} />
+      <div className="plan-auditor-summary">
+        <div><strong>{plan.steps.length}</strong><span>Experiments</span></div>
+        <div><strong>{hypothesisFamilies.length}</strong><span>Security hypotheses</span></div>
+        <div><strong>{capabilityCalls}</strong><span>Estimated capability calls</span></div>
+        <div><strong>{evidenceTypes.length}</strong><span>Evidence types</span></div>
       </div>
 
-      <div className="planner-no-execution-note">
-        <strong>{plan.plan_kind === "ADAPTIVE" ? "AI-generated recommendation." : "Auditor approval boundary."}</strong>{" "}
-        {plan.plan_kind === "ADAPTIVE"
-          ? `Recommended from AgentRun #${plan.source_run ?? "Unavailable"}. A new validation and explicit approval are required before execution.`
-          : "Plan generation and approval do not change the emulator. Execution becomes available only after validation, policy checks, and explicit approval."}
+      <div className="plan-evidence-summary">
+        <span>Expected evidence</span>
+        <p>{evidenceTypes.length ? evidenceTypes.map(evidenceLabel).join(" · ") : "Bounded tool observations"}</p>
       </div>
 
-      {plan.agentic_capability_preview.allowed_capabilities?.length ? (
-        <div className="planner-scope-summary">
-          <div>
-            <span>Approved adaptive capabilities</span>
-            <p className="planner-chip-list">
-              {plan.agentic_capability_preview.allowed_capabilities.map((capability) => (
-                <span key={capability} className="planner-tool-chip mono">{capability}</span>
-              ))}
-            </p>
-          </div>
-          <div>
-            <span>Hypotheses and budget</span>
-            <p>
-              {(plan.agentic_capability_preview.allowed_hypothesis_families || []).join(" · ") || "No assessable hypothesis family"}
-              {` · ${plan.agentic_capability_preview.maximum_decisions ?? 0} decisions`}
-              {` · ${plan.agentic_capability_preview.maximum_tool_calls ?? 0} tool calls`}
-              {` · ${plan.agentic_capability_preview.maximum_run_duration_seconds ?? 0}s maximum`}
-            </p>
-          </div>
+      <div className="plan-security-areas">
+        <span>Security checks</span>
+        <div>
+          {hypothesisFamilies.length ? hypothesisFamilies.map((family) => (
+            <span key={family}>{hypothesisFamilyLabel(family)}</span>
+          )) : <span>Runtime evidence collection</span>}
         </div>
-      ) : null}
+      </div>
+
+      <div className="security-check-list" aria-label="Plan validation summary">
+        <span>✓ Target authorization</span>
+        <span>✓ Capability policy</span>
+        <span>✓ Argument validation</span>
+        <span>✓ Resource bounds</span>
+      </div>
 
       {plan.validation_errors.length ? (
         <div className="planner-validation-errors" role="alert">
@@ -1749,8 +1860,16 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
       ) : null}
 
       <details className="plan-details-disclosure">
-        <summary>View Plan Details</summary>
+        <summary>View Technical Plan</summary>
         <div className="plan-details-content">
+          <div className="technical-plan-facts">
+            <StatusFact label="Plan ID" value={`#${plan.id}`} />
+            <StatusFact label="Provider / model" value={plan.planner_provider} detail={plan.planner_model} />
+            <StatusFact label="Validation" value={plan.validation_status} />
+            <StatusFact label="Policy" value={plan.policy_status} />
+            <StatusFact label="Plan hash" value={plan.plan_hash ? `${plan.plan_hash.slice(0, 16)}…` : "Unavailable"} />
+            <StatusFact label="Created" value={formatDate(plan.created_at)} />
+          </div>
           <div className="planner-scope-summary">
             <div>
               <span>Assessment objective</span>
@@ -1803,37 +1922,14 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
               </li>
             ))}
           </ol>
+          <details className="planner-tool-arguments">
+            <summary>Provider metadata</summary>
+            <pre>{JSON.stringify(plan.provider_metadata, null, 2)}</pre>
+          </details>
         </div>
       </details>
     </section>
   );
-}
-
-function AssessmentLifecycle({ plan }: { plan: AssessmentPlan }) {
-  const stages = ["Generated", "Validated", "Approved", "Executing", "Completed"];
-  const currentIndex = assessmentLifecycleIndex(plan);
-  const failed = ["REJECTED", "FAILED", "CANCELLED"].includes(plan.status);
-  return (
-    <ol className="assessment-lifecycle" aria-label="Assessment lifecycle">
-      {stages.map((stage, index) => (
-        <li
-          key={stage}
-          className={failed && index === currentIndex ? "is-failed" : index < currentIndex ? "is-complete" : index === currentIndex ? "is-current" : ""}
-        >
-          <span>{index < currentIndex ? "✓" : index + 1}</span>
-          {stage}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function assessmentLifecycleIndex(plan: AssessmentPlan): number {
-  if (plan.status === "COMPLETED") return 4;
-  if (plan.status === "EXECUTING") return 3;
-  if (plan.status === "APPROVED") return 2;
-  if (plan.status === "VALIDATED" || plan.validation_status === "PASSED") return 1;
-  return 0;
 }
 
 function AssessmentExecutionResult({
@@ -1845,11 +1941,11 @@ function AssessmentExecutionResult({
   hypotheses,
   summary,
   canCancel,
+  canRetry,
   cancelling,
+  retrying,
   onCancel,
-  canRecommend,
-  recommending,
-  onRecommend,
+  onRetry,
 }: {
   run: AgentRun;
   steps: AgentRunStep[];
@@ -1859,235 +1955,247 @@ function AssessmentExecutionResult({
   hypotheses: AgentHypothesis[];
   summary: AssessmentRunSummary | null;
   canCancel: boolean;
+  canRetry: boolean;
   cancelling: boolean;
+  retrying: boolean;
   onCancel: () => void;
-  canRecommend: boolean;
-  recommending: boolean;
-  onRecommend: () => void;
+  onRetry: () => void;
 }) {
-  const succeeded = steps.filter((step) => step.status === "SUCCEEDED").length;
-  const finished = steps.filter((step) =>
-    ["SUCCEEDED", "FAILED", "SKIPPED", "TIMEOUT", "CANCELLED"].includes(step.status),
-  ).length;
-  const currentStep =
-    steps.find((step) => step.status === "RUNNING") ||
-    steps.find((step) => step.status === "PENDING") ||
-    steps.at(-1);
-  const progress = steps.length ? Math.round((finished / steps.length) * 100) : 0;
   const terminal = ["SUCCEEDED", "FAILED", "TIMEOUT", "CANCELLED", "PAUSED"].includes(run.status);
-  const latestDecision = decisions.at(-1);
+  const completed = run.status === "SUCCEEDED";
   const maximumDecisions = Number(run.capability_envelope.maximum_decisions || 0);
   const maximumToolCalls = Number(run.capability_envelope.maximum_tool_calls || 0);
+  const coverageEntries = Object.entries(run.coverage_state);
+  const assessableCoverage = coverageEntries.filter(
+    ([, status]) => !status.startsWith("NOT_ASSESSABLE"),
+  );
+  const assessedCoverage = assessableCoverage.filter(
+    ([, status]) => status !== "NOT_STARTED",
+  ).length;
+  const coveragePercent = assessableCoverage.length
+    ? Math.round((assessedCoverage / assessableCoverage.length) * 100)
+    : 0;
+  const screenshotArtifacts = artifacts.filter(
+    (artifact) => artifact.artifact_type === "SCREENSHOT" && artifact.download_url,
+  );
+  const evidenceGroups = groupEvidence(evidence);
   return (
-    <section id="assessment-results" className="planner-execution-result" aria-label="Approved assessment execution">
-      <div className="planner-result-heading">
+    <section id="assessment-results" className="planner-execution-result ai-agent-workspace" aria-label="AI Security Agent assessment">
+      <div className="ai-agent-header">
         <div>
-          <span className="eyebrow">Assessment execution</span>
-          <h3>AgentRun #{run.id} · {run.target_package}</h3>
+          <span className="eyebrow">{terminal ? "Assessment results" : "Live adaptive assessment"}</span>
+          <h2>{terminal ? (completed ? "Assessment completed" : "Assessment stopped") : "AI Security Agent"}</h2>
+          <p>{terminal ? (completed ? "Completed for" : "Stopped for") : "Assessing"} <strong>{applicationDisplayName(run.target_package)}</strong> <span className="mono">{run.target_package}</span></p>
         </div>
         <div className="planner-execution-heading-actions">
           <span className={`agent-run-state state-${run.status.toLowerCase()}`}>
-            {run.status}
+            {agentStatusLabel(run.status)}
           </span>
           {canCancel ? (
             <button className="button button-secondary" onClick={onCancel} disabled={cancelling}>
-              {cancelling ? "Cancelling..." : "Cancel Run"}
+              {cancelling ? "Cancelling…" : "Cancel Assessment"}
             </button>
           ) : null}
-          {summary?.report.status === "READY" ? (
-            <Link className="button button-secondary" to={`/audits/${summary.audit_id}/report`}>
-              View Assessment Report
-            </Link>
-          ) : null}
-          {terminal && (evidence.length || artifacts.length) ? (
-            <a className="button button-secondary" href="#assessment-evidence">
-              View Evidence
-            </a>
-          ) : null}
-          {canRecommend ? (
-            <span className="adaptive-action">
-              <button className="button button-primary" onClick={onRecommend} disabled={recommending}>
-                {recommending ? "Recommending..." : "Recommend Next Assessment"}
-              </button>
-              <small>Requires new auditor approval</small>
-            </span>
-          ) : null}
         </div>
       </div>
 
-      <div className="execution-progress" aria-label={`Assessment ${progress}% complete`}>
-        <div>
-          <span>{terminal ? "Final status" : "Current step"}</span>
-          <strong>{run.execution_mode === "ADAPTIVE_AGENT"
-            ? latestDecision?.hypothesis_identifier || "Preparing adaptive state"
-            : currentStep ? `${currentStep.plan_step_identifier || `Step ${currentStep.sequence_number}`}` : "Preparing run"}</strong>
-        </div>
-        <div>
-          <span>Current action</span>
-          <strong>{latestDecision?.tool_name || (currentStep ? (currentStep.is_control_step ? "Record bounded observation" : evidenceLabel(currentStep.tool_name)) : "Waiting")}</strong>
-        </div>
-        <div>
-          <span>Progress</span>
-          <strong>{finished} / {steps.length} steps · {progress}%</strong>
-        </div>
-        <progress max="100" value={progress}>{progress}%</progress>
-      </div>
-
-      <div className="planner-summary-facts">
-        <StatusFact label="Run status" value={run.status} state={run.status === "SUCCEEDED" ? "online" : run.status === "RUNNING" ? "warning" : run.status === "FAILED" ? "offline" : "neutral"} />
-        <StatusFact label="Execution mode" value={run.execution_mode === "ADAPTIVE_AGENT" ? "Adaptive Security Agent" : "Sequential Approved Plan"} />
-        {run.execution_mode === "ADAPTIVE_AGENT" ? (
-          <>
-            <StatusFact label="Provider / model" value={run.decision_provider || "Unavailable"} detail={run.decision_model} />
-            <StatusFact label="Decisions" value={`${run.decision_count} / ${maximumDecisions || "?"}`} />
-            <StatusFact label="Provider calls" value={String(run.model_call_count)} />
-          </>
-        ) : null}
-        <StatusFact label="Steps completed" value={`${succeeded} / ${steps.length}`} />
-        <StatusFact label="Tool calls" value={run.execution_mode === "ADAPTIVE_AGENT" ? `${run.tool_call_count} / ${maximumToolCalls || "?"}` : String(run.tool_call_count)} />
-        <StatusFact label="Artifacts" value={String(artifacts.length)} />
-        <StatusFact label="Evidence" value={String(evidence.length)} />
-        <StatusFact label="Findings" value={String(summary?.audit_finding_count ?? run.result_summary.finding_count_total ?? 0)} />
-        <StatusFact label="Risk score" value={summary?.risk.score === null || summary?.risk.score === undefined ? "Unavailable" : `${summary.risk.score}/100`} detail={summary?.risk.severity} />
-        <StatusFact label="MASVS compliance" value={summary?.compliance.score === null || summary?.compliance.score === undefined ? "Unavailable" : `${summary.compliance.score}%`} />
-        <StatusFact label="Report" value={summary?.report.status || run.result_summary.report?.status || "Pending"} />
-        <StatusFact label="Elapsed time" value={formatRunElapsed(run)} />
-        {run.termination_reason ? <StatusFact label="Termination" value={run.termination_reason} /> : null}
+      <div className="agent-live-metrics" aria-label="Assessment progress">
+        <div><span>Decisions</span><strong>{run.decision_count} / {maximumDecisions || "?"}</strong></div>
+        <div><span>Actions</span><strong>{run.tool_call_count} / {maximumToolCalls || "?"}</strong></div>
+        <div><span>Evidence</span><strong>{evidence.length}</strong></div>
+        <div><span>Artifacts</span><strong>{artifacts.length}</strong></div>
+        <div><span>Elapsed</span><strong>{formatRunElapsedCompact(run)}</strong></div>
+        <div><span>Coverage</span><strong>{coveragePercent}%</strong></div>
       </div>
 
       {run.failure_message ? (
-        <p className="agent-failure-message">
-          {run.failure_category || "CONTROLLED_FAILURE"}: {run.failure_message}
-        </p>
+        <div className="agent-failure-message" role="alert">
+          <strong>{agentFailureMessage(run)}</strong>
+          {run.pre_execution_failure ? (
+            <>
+              <p>No device action performed.</p>
+              <dl className="pre-execution-failure-facts">
+                <div><dt>Provider / model</dt><dd>{run.decision_provider} / {run.decision_model}</dd></div>
+                <div><dt>Safe failure category</dt><dd>{providerFailureLabel(run)}</dd></div>
+                <div><dt>Approved plan</dt><dd>{run.plan_approval_preserved ? "Approval preserved" : "Approval unavailable"}</dd></div>
+              </dl>
+              {canRetry ? (
+                <button className="button button-primary" onClick={onRetry} disabled={retrying}>
+                  {retrying ? "Retrying Adaptive Assessment…" : "Retry Adaptive Assessment"}
+                </button>
+              ) : null}
+              <details className="pre-execution-failure-details"><summary>Advanced details</summary><p>{providerFailureLabel(run)}: {run.result_summary.provider_failure?.code || run.termination_reason}</p></details>
+            </>
+          ) : (
+            <details><summary>Technical details</summary><p>{run.failure_category || "CONTROLLED_FAILURE"}: {run.failure_message}</p></details>
+          )}
+        </div>
       ) : null}
 
       {run.execution_mode === "ADAPTIVE_AGENT" ? (
-        <section className="agent-step-card" aria-label="Adaptive agent activity">
-          <div className="agent-subsection-heading">
-            <h3>Agent activity</h3>
-            <span>{decisions.length} auditable decisions</span>
+        <section className="agent-activity-section" aria-label="Adaptive agent activity">
+          <div className="auditor-section-heading">
+            <div><span className="eyebrow">Live activity</span><h3>Agent activity</h3></div>
+            <span>{decisions.length} persisted decisions</span>
           </div>
-          <ol className="agent-step-list planner-execution-timeline">
-            {decisions.map((decision) => {
+          {decisions.length ? (
+            <ol className="agent-activity-timeline">
+              {decisions.map((decision) => {
               const hypothesis = hypotheses.find(
                 (item) => item.id === decision.hypothesis,
               );
+              const step = steps.find((item) => item.id === decision.run_step);
               return (
-                <li key={decision.id}>
-                  <span className="agent-step-sequence">{decision.sequence}</span>
-                  <div>
-                    <span className="eyebrow">Hypothesis</span>
-                    <strong>{hypothesis?.title || decision.hypothesis_identifier || decision.decision_type}</strong>
-                    <small><b>Security rationale:</b> {decision.rationale_summary}</small>
-                    {decision.tool_name ? <small><b>Action:</b> <span className="mono">{decision.tool_name}</span></small> : null}
-                    {decision.expected_observation ? <small><b>Expected observation:</b> {decision.expected_observation}</small> : null}
-                    {hypothesis?.oracle_result.safe_summary ? <small><b>Oracle result:</b> {hypothesis.oracle_result.safe_summary}</small> : null}
+                <li key={decision.id} className="agent-activity-card">
+                  <span className="agent-activity-sequence">{decision.sequence}</span>
+                  <div className="agent-activity-content">
+                    <div><span>Hypothesis</span><strong>{hypothesis?.title || hypothesisFamilyLabel(decision.hypothesis_identifier || "bounded_runtime")}</strong></div>
+                    <div><span>AI decision</span><p>{decision.rationale_summary}</p></div>
+                    {decision.tool_name ? (
+                      <div><span>Action</span><p><strong>{humanActionLabel(decision.tool_name)}</strong><small className="mono">{decision.tool_name}</small></p></div>
+                    ) : null}
+                    <div><span>Observation</span><p>{observationSummary(step, decision)}</p></div>
+                    {hypothesis?.oracle_result.safe_summary ? (
+                      <div><span>Oracle result</span><p>{hypothesis.oracle_result.safe_summary}</p></div>
+                    ) : null}
                   </div>
                   <span className={`agent-step-status state-${decision.execution_status.toLowerCase()}`}>
-                    {decision.decision_type === "TOOL_ACTION" ? decision.execution_status : decision.decision_type}
+                    {decision.execution_status === "REJECTED" ? "REJECTED" : decision.decision_type === "TOOL_ACTION" ? decision.execution_status : decision.decision_type}
                   </span>
                 </li>
               );
-            })}
-          </ol>
-          <div className="planner-scope-summary">
-            <div>
-              <span>Coverage</span>
-              <p>{Object.entries(run.coverage_state).map(([area, status]) => `${area}: ${status}`).join(" · ")}</p>
+              })}
+            </ol>
+          ) : (
+            <div className="agent-waiting-state"><span className="agent-pulse" aria-hidden="true" /><strong>Preparing the first bounded decision</strong><p>The agent is loading the approved state and capability envelope.</p></div>
+          )}
+        </section>
+      ) : null}
+
+      <section className="coverage-section" aria-labelledby="coverage-title">
+        <div className="auditor-section-heading"><div><span className="eyebrow">Truthful backend state</span><h3 id="coverage-title">Security coverage</h3></div><span>{coveragePercent}% of assessable areas touched</span></div>
+        <div className="coverage-grid">
+          {coverageEntries.map(([area, status]) => (
+            <div key={area} className={`coverage-item coverage-${coverageTone(status)}`}>
+              <span>{coverageAreaLabel(area)}</span>
+              <strong>{coverageStatusLabel(status)}</strong>
             </div>
-            <div>
-              <span>Security boundary</span>
-              <p>Model chooses one safe experiment. Backend validates policy and budget. Existing gateway executes. Deterministic oracles interpret evidence.</p>
+          ))}
+        </div>
+      </section>
+
+      <section id="assessment-evidence" className="live-evidence-section" aria-labelledby="evidence-title">
+        <div className="auditor-section-heading"><div><span className="eyebrow">Persisted evidence</span><h3 id="evidence-title">Live evidence</h3></div><span>{evidence.length} records · {artifacts.length} artifacts</span></div>
+        {screenshotArtifacts.length ? (
+          <div className="live-screenshot-strip">
+            {screenshotArtifacts.slice(-3).map((artifact) => (
+              <a key={artifact.id} href={artifact.download_url} target="_blank" rel="noreferrer">
+                <img src={artifact.download_url} alt={artifact.name} />
+                <span>{artifact.name}</span>
+              </a>
+            ))}
+          </div>
+        ) : null}
+        {evidence.length ? (
+          <div className="evidence-group-grid">
+            {Object.entries(evidenceGroups).map(([group, items]) => (
+              <section key={group}>
+                <h4>{group}</h4>
+                {items.slice(-3).reverse().map((item) => (
+                  <article key={item.id}>
+                    <strong>{evidenceLabel(item.evidence_type)}</strong>
+                    <p>{boundedPreview(item.snippet || "Structured evidence metadata recorded.")}</p>
+                    <small>{formatDate(item.created_at)} · {item.redacted ? "Redacted" : "Bounded"}</small>
+                  </article>
+                ))}
+              </section>
+            ))}
+          </div>
+        ) : <div className="agent-waiting-state"><strong>No evidence yet</strong><p>Evidence appears here after permitted gateway actions complete.</p></div>}
+        {(evidence.length > 3 || artifacts.length) ? (
+          <details className="assessment-evidence-disclosure">
+            <summary>View All Evidence</summary>
+            <div className="assessment-evidence-grid">
+              <section><h4>Evidence ({evidence.length})</h4><ul>{evidence.map((item) => <li key={item.id}><strong>{evidenceLabel(item.evidence_type)}</strong><span>{item.source}</span><small>{boundedPreview(item.snippet || "Structured evidence metadata recorded.")}</small></li>)}</ul></section>
+              <section><h4>Artifacts ({artifacts.length})</h4><ul>{artifacts.map((artifact) => <li key={artifact.id}><strong>{artifact.name}</strong><span>{artifact.artifact_type} · {artifact.content_type}</span>{artifact.download_url ? <a href={artifact.download_url} target="_blank" rel="noreferrer">Open artifact</a> : <small>Metadata only</small>}</li>)}</ul></section>
             </div>
+          </details>
+        ) : null}
+      </section>
+
+      <section className="oracle-results-section" aria-labelledby="oracle-title">
+        <div className="auditor-section-heading"><div><span className="eyebrow">Deterministic evaluation</span><h3 id="oracle-title">Security evaluation</h3></div><span>Not GPT conclusions</span></div>
+        <div className="oracle-result-grid">
+          {hypotheses.map((hypothesis) => (
+            <article key={hypothesis.id}>
+              <span>{hypothesis.title}</span>
+              <strong className={`oracle-${hypothesis.status.toLowerCase()}`}>{hypothesis.status}</strong>
+              <p>{hypothesis.oracle_result.safe_summary || "Awaiting sufficient deterministic evidence."}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {terminal ? (
+        <section className="assessment-results-dashboard" aria-labelledby="results-title">
+          <div className="auditor-section-heading"><div><span className="eyebrow">Final deterministic results</span><h3 id="results-title">Assessment results</h3></div><span>{summary?.run_finding_count || 0} related findings</span></div>
+          <div className="results-metric-grid">
+            <StatusFact label="Duration" value={formatRunElapsed(run)} />
+            <StatusFact label="Decisions" value={String(run.decision_count)} />
+            <StatusFact label="Actions" value={String(run.tool_call_count)} />
+            <StatusFact label="Evidence" value={String(evidence.length)} />
+            <StatusFact label="Findings" value={String(summary?.run_finding_count ?? 0)} />
+            <StatusFact label="Risk" value={summary?.risk.score === null || summary?.risk.score === undefined ? "Unavailable" : `${summary.risk.score}/100`} detail={summary?.risk.severity} />
+            <StatusFact label="MASVS" value={summary?.compliance.score === null || summary?.compliance.score === undefined ? "Unavailable" : `${summary.compliance.score}%`} />
+          </div>
+          {summary?.run_findings.length ? (
+            <div className="result-finding-list">
+              {summary.run_findings.map((finding) => (
+                <article key={finding.id} className={`result-finding severity-${finding.severity.toLowerCase()}`}>
+                  <span>{finding.severity}</span><h4>{finding.title}</h4><p>{finding.rule_id} · {finding.status} · {finding.confidence} confidence</p>
+                </article>
+              ))}
+            </div>
+          ) : <p className="muted">No deterministic runtime finding was supported by this bounded evidence set.</p>}
+          <div className="results-action-row">
+            <Link className="button button-secondary" to={`/findings?audit=${run.audit}`}>View Findings</Link>
+            {summary?.report.status === "READY" ? <Link className="button button-primary" to={`/audits/${summary.audit_id}/report`}>View Assessment Report</Link> : <span className="report-state">Report: {summary?.report.status || "Generating"}</span>}
+          </div>
+          <div className="provenance-path" aria-label="Finding provenance">
+            <span>AI experiment</span><b>→</b><span>Tool action</span><b>→</b><span>Observation</span><b>→</b><span>Evidence</span><b>→</b><span>Deterministic oracle</span><b>→</b><span>Finding</span>
           </div>
         </section>
       ) : null}
 
-      <ol className="agent-step-list planner-execution-timeline">
-        {steps.map((step) => (
-          <li key={step.id}>
-            <span className="agent-step-sequence">{step.sequence_number}</span>
-            <div>
-              <span className="eyebrow mono">{step.plan_step_identifier}</span>
-              <strong className="mono">
-                {step.is_control_step ? "Plan observation (no tool)" : step.tool_name}
-              </strong>
-              <small>
-                {step.duration_seconds === null ? "Not started" : formatDuration(step.duration_seconds)}
-                {` · ${artifacts.filter((artifact) => artifact.step === step.id).length} artifacts`}
-                {` · ${evidence.filter((item) => item.agent_run_step === step.id).length} evidence records`}
-                {step.retry_count ? ` · ${step.retry_count} retries` : ""}
-              </small>
-              {step.failure_message ? <small>{step.failure_message}</small> : null}
-            </div>
-            <span className={`agent-step-status state-${step.status.toLowerCase()}`}>
-              {step.status}
-            </span>
-          </li>
-        ))}
-      </ol>
-
-      {terminal && (artifacts.length || evidence.length) ? (
-        <details id="assessment-evidence" className="assessment-evidence-disclosure">
-          <summary>Evidence &amp; artifact details</summary>
-          <div className="assessment-evidence-grid">
-            <section>
-              <h4>Evidence ({evidence.length})</h4>
-              {evidence.length ? (
-                <ul>
-                  {evidence.slice(0, 12).map((item) => (
-                    <li key={item.id}>
-                      <strong>{item.evidence_type}</strong>
-                      <span>{item.source}</span>
-                      <small>{item.snippet || "Structured evidence metadata recorded."}</small>
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="muted">No evidence records were produced.</p>}
-            </section>
-            <section>
-              <h4>Artifacts ({artifacts.length})</h4>
-              {artifacts.length ? (
-                <ul>
-                  {artifacts.slice(0, 12).map((artifact) => (
-                    <li key={artifact.id}>
-                      <strong>{artifact.name}</strong>
-                      <span>{artifact.artifact_type} · {artifact.content_type}</span>
-                      {artifact.download_url ? <a href={artifact.download_url}>Open artifact</a> : <small>Metadata only</small>}
-                    </li>
-                  ))}
-                </ul>
-              ) : <p className="muted">No artifacts were produced.</p>}
-            </section>
-          </div>
-        </details>
-      ) : null}
+      <details className="technical-run-details">
+        <summary>Technical Run Details</summary>
+        <div className="technical-plan-facts">
+          <StatusFact label="AgentRun" value={`#${run.id}`} />
+          <StatusFact label="Mode" value={run.execution_mode} />
+          <StatusFact label="Provider / model" value={run.decision_provider} detail={run.decision_model} />
+          <StatusFact label="Provider calls" value={String(run.model_call_count)} />
+          <StatusFact label="Envelope hash" value={`${run.capability_envelope_hash.slice(0, 16)}…`} />
+          <StatusFact label="Termination" value={run.termination_reason || "In progress"} />
+        </div>
+        <ol className="agent-step-list planner-execution-timeline">
+          {steps.map((step) => (
+            <li key={step.id}><span className="agent-step-sequence">{step.sequence_number}</span><div><span className="eyebrow mono">{step.plan_step_identifier}</span><strong className="mono">{step.is_control_step ? "Plan observation" : step.tool_name}</strong><small>{step.duration_seconds === null ? "Not started" : formatDuration(step.duration_seconds)} · {evidence.filter((item) => item.agent_run_step === step.id).length} evidence records</small>{step.failure_message ? <small>{step.failure_message}</small> : null}</div><span className={`agent-step-status state-${step.status.toLowerCase()}`}>{step.status}</span></li>
+          ))}
+        </ol>
+      </details>
 
       {summary?.run_findings.length ? (
-        <div className="planner-scope-summary">
+        <div className="planner-scope-summary technical-authority-note">
           <div>
-            <span>Deterministic findings linked to this run</span>
-            <p>
-              {summary.run_findings.map((finding) => `${finding.rule_id}: ${finding.title}`).join(" · ")}
-            </p>
+            <span>Findings authority</span>
+            <p>Deterministic backend rules and oracles only.</p>
           </div>
           <div>
-            <span>Provenance</span>
-            <p>Evidence → deterministic rule → finding → deterministic score. AI text is not a finding authority.</p>
+            <span>Execution boundary</span>
+            <p>Every selected action passed schema, policy, envelope, budget, and Tool Gateway authorization.</p>
           </div>
         </div>
       ) : null}
-
-      {terminal ? (
-        <div className="planner-no-execution-note">
-          <strong>Optional next cycle.</strong> Any AI-generated recommendation receives a new plan hash and requires a new auditor validation and approval before it can run.
-        </div>
-      ) : null}
-
-      <p className="muted agent-scope-note">
-        {run.result_summary.assessment_scope ||
-          "Runtime observations are evidence primitives, not vulnerability or malware verdicts."}
-      </p>
     </section>
   );
 }
@@ -2382,6 +2490,229 @@ function ServiceIndicator({
   );
 }
 
+function applicationDisplayName(packageName: string): string {
+  if (packageName === "owasp.sat.agoat") return "OWASP AndroGoat";
+  if (!packageName) return "Authorized Android application";
+  const leaf = packageName.split(".").at(-1) || packageName;
+  return leaf.charAt(0).toUpperCase() + leaf.slice(1);
+}
+
+function modelDisplayName(model: string): string {
+  return {
+    "gpt-5.6-luna": "GPT-5.6 Luna",
+    "gpt-5.6-terra": "GPT-5.6 Terra",
+    "gpt-5.5": "GPT-5.5",
+  }[model] || model;
+}
+
+function hypothesisFamilyLabel(value: string): string {
+  return {
+    SENSITIVE_LOG_EXPOSURE: "Sensitive logging",
+    APPLICATION_RUNTIME_STABILITY: "Runtime stability",
+    UI_SENSITIVE_DATA_EXPOSURE: "Sensitive UI exposure",
+    RUNTIME_TAMPERING_RESILIENCE: "Runtime tampering",
+    sensitive_log_exposure: "Sensitive logging",
+    application_runtime_stability: "Runtime stability",
+    ui_sensitive_data_exposure: "Sensitive UI exposure",
+    runtime_tampering_resilience: "Runtime tampering",
+  }[value] || evidenceLabel(value);
+}
+
+function humanActionLabel(toolName: string): string {
+  return {
+    get_device_status: "Check device readiness",
+    list_packages: "Confirm authorized applications",
+    launch_package: "Launch AndroGoat",
+    force_stop_package: "Close target application",
+    take_screenshot: "Capture screenshot",
+    start_logcat: "Start bounded log observation",
+    stop_logcat: "Stop bounded log observation",
+    get_logcat_excerpt: "Inspect runtime logs",
+    dump_ui: "Inspect application interface",
+    tap_coordinates: "Perform approved UI interaction",
+    type_text: "Enter approved test input",
+    frida_status: "Check runtime instrumentation",
+    frida_ps: "Inspect target process state",
+    frida_attach: "Attach approved instrumentation",
+    frida_run_js: "Run controlled instrumentation proof",
+  }[toolName] || evidenceLabel(toolName);
+}
+
+function observationSummary(
+  step: AgentRunStep | undefined,
+  decision: AgentActionDecision,
+): string {
+  if (!step) {
+    if (decision.execution_status === "REJECTED") {
+      return "No action or observation was produced because backend validation rejected the decision.";
+    }
+    if (decision.decision_type === "COMPLETE") {
+      return "The agent determined that no further non-redundant permitted experiment was needed.";
+    }
+    if (decision.decision_type === "NEEDS_AUDITOR") {
+      return "The assessment paused safely for auditor input.";
+    }
+    return decision.execution_status === "RUNNING"
+      ? "Waiting for the permitted action to return a bounded observation."
+      : "No persisted observation is available yet.";
+  }
+  const output = step.output_summary || {};
+  if (step.status !== "SUCCEEDED") {
+    return step.failure_message || "The permitted action did not produce a successful observation.";
+  }
+  if (step.tool_name === "get_device_status") {
+    return `Android ${metadataString(output.android_version) || "emulator"} is ${output.ready ? "ready" : "not ready"}; target authorization remains bounded to this run.`;
+  }
+  if (step.tool_name === "launch_package") {
+    return output.launched
+      ? "The authorized target launched and is now available for the next experiment."
+      : "The target launch result was persisted for follow-up evaluation.";
+  }
+  if (step.tool_name === "dump_ui") {
+    return `${metadataNumber(output.node_count) ?? 0} bounded UI nodes were captured for the authorized target.`;
+  }
+  if (step.tool_name === "get_logcat_excerpt") {
+    return `${metadataNumber(output.line_count) ?? 0} target-correlated log lines were captured with redaction applied.`;
+  }
+  if (step.tool_name === "start_logcat") {
+    return "A run-scoped bounded log observation window was started.";
+  }
+  if (step.tool_name === "stop_logcat") {
+    return "The run-scoped log observation window closed cleanly.";
+  }
+  if (step.tool_name === "frida_status") {
+    return output.frida_server_reachable
+      ? "Approved runtime instrumentation is reachable for the authorized target."
+      : "Runtime instrumentation availability was recorded as unavailable.";
+  }
+  if (step.tool_name === "frida_run_js") {
+    return `${metadataNumber(output.event_count) ?? 0} controlled runtime events were recorded with cleanup state preserved.`;
+  }
+  if (step.tool_name === "take_screenshot") {
+    return "A managed screenshot artifact was captured and persisted.";
+  }
+  return "The permitted action completed and its bounded observation was persisted.";
+}
+
+function agentStatusLabel(status: AgentRun["status"]): string {
+  return {
+    QUEUED: "Starting",
+    RUNNING: "Assessing",
+    PAUSED: "Waiting",
+    SUCCEEDED: "Completed",
+    FAILED: "Failed",
+    CANCELLED: "Cancelled",
+    TIMEOUT: "Timed out",
+  }[status];
+}
+
+function agentFailureMessage(run: AgentRun): string {
+  if (run.pre_execution_failure) {
+    return "AI assessment could not start. No Android actions were executed.";
+  }
+  if (run.termination_reason === "PROVIDER_FAILURE") {
+    return "AI assessment reasoning could not continue.";
+  }
+  if (run.termination_reason === "DECISION_SECURITY_REJECTED") {
+    return "The AI assessment decision did not pass the authorized security checks.";
+  }
+  if (run.termination_reason.includes("GATEWAY") || run.failure_category.includes("TOOL")) {
+    return "A permitted assessment action failed.";
+  }
+  if (run.termination_reason.includes("RUNTIME")) {
+    return "Android lab execution became unavailable.";
+  }
+  return "The assessment stopped safely before completion.";
+}
+
+function providerFailureLabel(run: AgentRun): string {
+  const code = run.result_summary.provider_failure?.code || "";
+  return code.includes("SCHEMA")
+    ? "AI schema failure · rejected before execution"
+    : "AI provider failure · rejected before execution";
+}
+
+function assessmentFailureMessage(
+  error: unknown,
+  stage: "planning" | "policy" | "approval" | "execution",
+): string {
+  const detail = errorMessage(error);
+  const normalized = detail.toLowerCase();
+  if (normalized.includes("policy") || normalized.includes("scope")) {
+    return "The proposed plan exceeded the authorized assessment scope.";
+  }
+  if (normalized.includes("device") || normalized.includes("runtime unavailable")) {
+    return "Android lab is unavailable.";
+  }
+  if (normalized.includes("gateway") || normalized.includes("tool execution")) {
+    return "A permitted assessment action failed.";
+  }
+  if (normalized.includes("provider") || normalized.includes("openai")) {
+    if (normalized.includes("schema") && normalized.includes("no request")) {
+      return "AI schema is not compatible with the provider. No request was sent.";
+    }
+    return stage === "planning"
+      ? "AI planning could not be completed."
+      : "AI assessment reasoning could not continue.";
+  }
+  return {
+    planning: "AI planning could not be completed.",
+    policy: "The assessment could not pass the authorized security checks.",
+    approval: "The assessment approval could not be recorded.",
+    execution: "The security assessment could not be started.",
+  }[stage];
+}
+
+function coverageAreaLabel(area: string): string {
+  return {
+    device_runtime_readiness: "Runtime readiness",
+    application_interaction: "Application interaction",
+    ui_exposure: "UI exposure",
+    logging: "Logging",
+    runtime_instrumentation: "Runtime instrumentation",
+    runtime_stability: "Runtime stability",
+    network_tls: "Network / TLS",
+    local_storage: "Local storage",
+    authentication_authorization: "Authentication / authorization",
+  }[area] || evidenceLabel(area);
+}
+
+function coverageStatusLabel(status: string): string {
+  return status === "NOT_ASSESSABLE_WITH_CURRENT_CAPABILITIES"
+    ? "Not assessable"
+    : evidenceLabel(status);
+}
+
+function coverageTone(status: string): string {
+  if (status === "ASSESSED") return "assessed";
+  if (status === "IN_PROGRESS") return "progress";
+  if (status.startsWith("NOT_ASSESSABLE")) return "unavailable";
+  if (["INCONCLUSIVE", "BLOCKED"].includes(status)) return "warning";
+  return "pending";
+}
+
+function groupEvidence(evidence: Evidence[]): Record<string, Evidence[]> {
+  const groups: Record<string, Evidence[]> = {};
+  for (const item of evidence) {
+    const type = item.evidence_type.toLowerCase();
+    const group = type.includes("screenshot")
+      ? "Screenshots"
+      : type.includes("ui")
+        ? "UI observations"
+        : type.includes("log")
+          ? "Logs"
+          : type.includes("frida") || type.includes("runtime")
+            ? "Runtime / Frida"
+            : "Other";
+    groups[group] = [...(groups[group] || []), item];
+  }
+  return groups;
+}
+
+function boundedPreview(value: string): string {
+  return value.length > 220 ? `${value.slice(0, 217)}…` : value;
+}
+
 function componentById(
   components: SystemComponent[] | undefined,
   id: string,
@@ -2464,6 +2795,20 @@ function formatRunElapsed(run: AgentRun): string {
   if (!run.started_at) return "Not started";
   const elapsedSeconds = Math.max(0, (Date.now() - new Date(run.started_at).getTime()) / 1000);
   return `${elapsedSeconds.toFixed(1)} s`;
+}
+
+function formatRunElapsedCompact(run: AgentRun): string {
+  const seconds = Math.max(
+    0,
+    Math.round(
+      run.duration_seconds ??
+        (run.started_at
+          ? (Date.now() - new Date(run.started_at).getTime()) / 1000
+          : 0),
+    ),
+  );
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function metadataString(value: unknown): string {

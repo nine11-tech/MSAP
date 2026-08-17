@@ -21,6 +21,7 @@ from apps.dynamic_analysis.services.agent_tools import (
 )
 from apps.dynamic_analysis.services.assessment_plan_contract import EVIDENCE_TYPES
 from apps.dynamic_analysis.services.assessment_planner import (
+    OPENAI_MODEL_PROFILES,
     OpenAIPlannerProvider,
     PlannerProviderError,
 )
@@ -250,15 +251,38 @@ class DeterministicAdaptiveDecisionProvider(AgentDecisionProvider):
 class OpenAIAgentDecisionProvider(AgentDecisionProvider):
     name = "OPENAI"
 
-    def __init__(self, *, opener=None, sleeper=None):
-        self._transport = OpenAIPlannerProvider(opener=opener, sleeper=sleeper)
+    def __init__(self, *, opener=None, sleeper=None, model: str | None = None):
+        resolved_model = model or settings.MSAP_AGENT_DECISION_MODEL
+        profile = next(
+            (
+                item
+                for item in OPENAI_MODEL_PROFILES.values()
+                if item["model"] == resolved_model
+            ),
+            None,
+        )
+        self._transport = OpenAIPlannerProvider(
+            opener=opener,
+            sleeper=sleeper,
+            model=resolved_model,
+            reasoning_effort=(
+                profile["reasoning_effort"]
+                if profile is not None
+                else settings.MSAP_AGENT_DECISION_REASONING_EFFORT
+            ),
+            max_output_tokens=(
+                profile["decision_max_output_tokens"]
+                if profile is not None
+                else settings.MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS
+            ),
+        )
         self.model = self._transport.model
         self.last_metadata: dict[str, Any] = {}
 
     def next_action(self, state: dict[str, Any]) -> dict[str, Any]:
         schema = build_action_decision_schema(state)
         try:
-            return self._transport.generate_structured(
+            generated = self._transport.generate_structured(
                 state,
                 system_instructions=AGENT_SYSTEM_INSTRUCTIONS,
                 output_schema=schema,
@@ -267,18 +291,31 @@ class OpenAIAgentDecisionProvider(AgentDecisionProvider):
                 max_output_bytes=MAX_DECISION_BYTES,
                 request_kind="agent_action_decision",
             )
+            decision = generated.get("decision") if isinstance(generated, dict) else None
+            if (
+                not isinstance(generated, dict)
+                or set(generated) != {"decision"}
+                or not isinstance(decision, dict)
+            ):
+                raise PlannerProviderError(
+                    "The adaptive decision provider returned an invalid envelope.",
+                    code="AGENT_DECISION_PROVIDER_OUTPUT_INVALID",
+                )
+            return decision
         finally:
             self.last_metadata = deepcopy(self._transport.last_metadata)
 
 
 def configured_agent_decision_provider(
     provider_name: str | None = None,
+    *,
+    model: str | None = None,
 ) -> AgentDecisionProvider:
     name = (provider_name or settings.MSAP_AGENT_DECISION_PROVIDER).upper()
     if name == "DETERMINISTIC":
         return DeterministicAdaptiveDecisionProvider()
     if name == "OPENAI":
-        return OpenAIAgentDecisionProvider()
+        return OpenAIAgentDecisionProvider(model=model)
     raise PlannerProviderError(
         "The configured adaptive decision provider is unsupported.",
         code="AGENT_DECISION_PROVIDER_UNSUPPORTED",
@@ -366,7 +403,7 @@ def build_action_decision_schema(state: dict[str, Any]) -> dict[str, Any]:
         },
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
     }
-    argument_variants = []
+    tool_variants = []
     for name in envelope["allowed_capabilities"]:
         arguments = deepcopy(TOOL_MANIFEST[name].input_schema)
         properties = arguments.get("properties", {})
@@ -388,33 +425,79 @@ def build_action_decision_schema(state: dict[str, Any]) -> dict[str, Any]:
                 "type": "string",
                 "const": BUILTIN_FRIDA_UI_PROOF,
             }
-        if properties:
-            arguments["required"] = list(properties)
-        if arguments not in argument_variants:
-            argument_variants.append(arguments)
+        arguments["required"] = list(properties)
+        tool_variants.append(
+            {
+                "type": "object",
+                "properties": {
+                    **deepcopy(base_properties),
+                    "decision_type": {
+                        "type": "string",
+                        "const": "TOOL_ACTION",
+                    },
+                    "hypothesis_id": {
+                        "type": "string",
+                        "enum": hypothesis_ids,
+                    },
+                    "tool_name": {"type": "string", "const": name},
+                    "arguments": arguments,
+                },
+                "required": sorted(ACTION_DECISION_FIELDS),
+                "additionalProperties": False,
+            }
+        )
     empty_arguments = {
         "type": "object",
         "properties": {},
         "required": [],
         "additionalProperties": False,
     }
-    if empty_arguments not in argument_variants:
-        argument_variants.append(empty_arguments)
+    empty_evidence = {
+        "type": "array",
+        "maxItems": 0,
+        "items": {"type": "string", "enum": list(EVIDENCE_TYPES)},
+    }
+    decision_variants = [
+        *tool_variants,
+        {
+            "type": "object",
+            "properties": {
+                **deepcopy(base_properties),
+                "decision_type": {"type": "string", "const": "COMPLETE"},
+                "hypothesis_id": {"type": "null"},
+                "tool_name": {"type": "string", "const": ""},
+                "arguments": empty_arguments,
+                "evidence_goal": empty_evidence,
+            },
+            "required": sorted(ACTION_DECISION_FIELDS),
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                **deepcopy(base_properties),
+                "decision_type": {
+                    "type": "string",
+                    "const": "NEEDS_AUDITOR",
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "enum": hypothesis_ids,
+                },
+                "tool_name": {"type": "string", "const": ""},
+                "arguments": empty_arguments,
+                "evidence_goal": empty_evidence,
+            },
+            "required": sorted(ACTION_DECISION_FIELDS),
+            "additionalProperties": False,
+        },
+    ]
     return {
         "type": "object",
         "properties": {
-            **base_properties,
-            "decision_type": {
-                "type": "string",
-                "enum": ["TOOL_ACTION", "COMPLETE", "NEEDS_AUDITOR"],
-            },
-            "tool_name": {
-                "type": "string",
-                "enum": [*envelope["allowed_capabilities"], ""],
-            },
-            "arguments": {"anyOf": argument_variants},
+            "decision": {"anyOf": decision_variants},
         },
-        "required": sorted(ACTION_DECISION_FIELDS),
+        "required": ["decision"],
         "additionalProperties": False,
     }
 

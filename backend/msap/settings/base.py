@@ -361,7 +361,7 @@ MSAP_ASSESSMENT_PLANNER_PROVIDER = os.getenv(
 ).upper()
 MSAP_ASSESSMENT_PLANNER_MODEL = os.getenv(
     "MSAP_ASSESSMENT_PLANNER_MODEL",
-    "gpt-5.5",
+    "gpt-5.6-luna",
 )
 MSAP_ASSESSMENT_PLANNER_OPENAI_API_KEY = os.getenv(
     "MSAP_OPENAI_API_KEY",
@@ -389,11 +389,11 @@ MSAP_ASSESSMENT_PLANNER_RETRY_BASE_MILLISECONDS = min(
 )
 MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS = min(
     16000,
-    max(1024, int(os.getenv("MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS", "8000"))),
+    max(1024, int(os.getenv("MSAP_ASSESSMENT_PLANNER_MAX_OUTPUT_TOKENS", "3000"))),
 )
 MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = os.getenv(
     "MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT",
-    "medium",
+    "low",
 ).lower()
 if MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT not in {
     "none",
@@ -402,7 +402,7 @@ if MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT not in {
     "high",
     "xhigh",
 }:
-    MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = "medium"
+    MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT = "low"
 
 # Adaptive assessment proposes, validates, and persists a new plan only after a
 # completed run. It never auto-approves or auto-executes. The database contract
@@ -447,25 +447,45 @@ MSAP_AGENT_DECISION_PROVIDER = os.getenv(
     "MSAP_AGENT_DECISION_PROVIDER",
     MSAP_ASSESSMENT_PLANNER_PROVIDER,
 ).upper()
+MSAP_AGENT_DECISION_MODEL = os.getenv(
+    "MSAP_AGENT_DECISION_MODEL",
+    "gpt-5.6-luna",
+)
+MSAP_AGENT_DECISION_REASONING_EFFORT = os.getenv(
+    "MSAP_AGENT_DECISION_REASONING_EFFORT",
+    "low",
+).lower()
+if MSAP_AGENT_DECISION_REASONING_EFFORT not in {
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+}:
+    MSAP_AGENT_DECISION_REASONING_EFFORT = "low"
+MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS = min(
+    4000,
+    max(512, int(os.getenv("MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS", "1800"))),
+)
 MSAP_AGENT_MAX_DECISIONS = min(
-    30,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_DECISIONS", "24"))),
+    4,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_DECISIONS", "4"))),
 )
 MSAP_AGENT_MAX_TOOL_CALLS = min(
-    30,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "24"))),
+    4,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "4"))),
 )
 MSAP_AGENT_MAX_PROVIDER_CALLS = min(
-    30,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_PROVIDER_CALLS", "24"))),
+    4,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_PROVIDER_CALLS", "4"))),
 )
 MSAP_AGENT_MAX_CONSECUTIVE_FAILURES = min(
-    5,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_CONSECUTIVE_FAILURES", "3"))),
+    2,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_CONSECUTIVE_FAILURES", "2"))),
 )
 MSAP_AGENT_MAX_DURATION_SECONDS = min(
-    600,
-    max(60, int(os.getenv("MSAP_AGENT_MAX_DURATION_SECONDS", "480"))),
+    300,
+    max(60, int(os.getenv("MSAP_AGENT_MAX_DURATION_SECONDS", "240"))),
 )
 MSAP_AGENT_MAX_ARTIFACTS = min(
     MSAP_ASSESSMENT_EXECUTION_MAX_ARTIFACTS,

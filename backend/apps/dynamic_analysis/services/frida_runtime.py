@@ -397,11 +397,15 @@ class FridaRuntime:
             log_lines = log_text.replace("\r", "").splitlines()[-MAX_FRIDA_LOGCAT_LINES:]
         t2 = datetime.now(timezone.utc).isoformat()
         logcat_digest = sha256("\n".join(log_lines).encode("utf-8")).hexdigest()
+        # A probe is allowed to report a negative domain observation (for
+        # example, ui_modification success=false).  The tool still executed
+        # correctly and that bounded result belongs in evidence for the
+        # deterministic oracle to evaluate.  Only runtime/script failures make
+        # the gateway call fail.
         error_events = [
             event
             for event in execution["events"]
             if event.get("type") in {"script_error", "error", "exception"}
-            or event.get("success") is False
         ]
         if not execution["success"] or error_events:
             raise FridaRuntimeError(
