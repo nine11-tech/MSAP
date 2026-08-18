@@ -285,7 +285,19 @@ class AssessmentAgent:
                     termination_reason="TOTAL_TIME_BUDGET_EXHAUSTED",
                     message="The adaptive assessment reached its total duration bound.",
                 )
-            budget_reason = self._budget_stop_reason(run, envelope)
+            # The paid model budget is distinct from the bounded execution
+            # budget. After Economy has spent its paid calls, the provider
+            # continues only through the immutable approved playbook sequence.
+            allow_local_provider_fallback = (
+                provider.name == "OPENAI"
+                and run.model_call_count >= envelope["maximum_model_provider_calls"]
+                and bool(run.assessment_plan_id)
+            )
+            budget_reason = self._budget_stop_reason(
+                run,
+                envelope,
+                allow_local_provider_fallback=allow_local_provider_fallback,
+            )
             if budget_reason:
                 return self._finish(
                     run,
@@ -299,11 +311,12 @@ class AssessmentAgent:
             try:
                 state = build_agent_state_context(run)
                 state_hash = _json_hash(state)
-                AgentRun.objects.filter(pk=run.pk).update(
-                    model_call_count=run.model_call_count + 1,
-                    updated_at=timezone.now(),
-                )
-                run.model_call_count += 1
+                if not allow_local_provider_fallback:
+                    AgentRun.objects.filter(pk=run.pk).update(
+                        model_call_count=run.model_call_count + 1,
+                        updated_at=timezone.now(),
+                    )
+                    run.model_call_count += 1
                 raw_decision = provider.next_action(state)
                 decision = persist_validated_decision(
                     run=run,
@@ -467,12 +480,20 @@ class AssessmentAgent:
         return run
 
     @staticmethod
-    def _budget_stop_reason(run: AgentRun, envelope: dict[str, Any]) -> str:
+    def _budget_stop_reason(
+        run: AgentRun,
+        envelope: dict[str, Any],
+        *,
+        allow_local_provider_fallback: bool = False,
+    ) -> str:
         if run.decision_count >= envelope["maximum_decisions"]:
             return "DECISION_BUDGET_EXHAUSTED"
         if run.tool_call_count >= envelope["maximum_tool_calls"]:
             return "TOOL_CALL_BUDGET_EXHAUSTED"
-        if run.model_call_count >= envelope["maximum_model_provider_calls"]:
+        if (
+            run.model_call_count >= envelope["maximum_model_provider_calls"]
+            and not allow_local_provider_fallback
+        ):
             return "PROVIDER_CALL_BUDGET_EXHAUSTED"
         if run.consecutive_failure_count >= envelope["maximum_consecutive_failures"]:
             return "CONSECUTIVE_FAILURE_LIMIT_REACHED"

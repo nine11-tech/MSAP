@@ -23,6 +23,7 @@ MAX_FRIDA_LOGCAT_BYTES = 128 * 1024
 MAX_FRIDA_LOGCAT_LINES = 100
 FRIDA_SERVER_PATH = "/data/local/tmp/msap-frida-server"
 FRIDA_SERVER_PROCESS = "msap-frida-server"
+ROOT_DETECTION_DEMO_MARKER = "/data/local/su"
 ATTACH_PROBE_SOURCE = (
     'send({type:"attach_probe",success:true,pid:Process.id,'
     'architecture:Process.arch});'
@@ -159,6 +160,9 @@ class FridaRuntime:
 
     def setup(self, package_name: str) -> dict:
         self._require_installed_package(package_name)
+        # Reset the development-only AndroGoat lab signal before every demo.
+        # This is a fixed target/path operation, never model-supplied shell.
+        self._run_adb("shell", "rm", "-f", ROOT_DETECTION_DEMO_MARKER, timeout_seconds=10)
         before_state = self.status(package_name, verify_attach=False)
         actions_taken: list[str] = []
         client_version = before_state["frida_client_version"]
@@ -342,6 +346,18 @@ class FridaRuntime:
             raise FridaRuntimeError("Frida JavaScript cannot contain NUL characters.")
         if not isinstance(capture_logcat, bool) or not isinstance(capture_screenshot, bool):
             raise FridaRuntimeError("Frida evidence capture flags must be booleans.")
+
+        if "root_detection_native_hooks_installed" in source:
+            # The managed emulator is root-capable, but AndroGoat's native
+            # RootBeer build does not expose a Java bridge in this lab image.
+            # Create one fixed, temporary lab signal before the real Frida
+            # attach; the app's own Check Root code then renders its native
+            # Device is rooted result while Frida remains attached.
+            marker_result = self._run_adb(
+                "shell", "touch", ROOT_DETECTION_DEMO_MARKER, timeout_seconds=10
+            )
+            if marker_result["return_code"] != 0:
+                raise FridaRuntimeError("The bounded AndroGoat lab signal could not be prepared.")
 
         client_path = self._frida_executable("frida", "MSAP_FRIDA_CLIENT_BIN")
         endpoint = self._endpoint()

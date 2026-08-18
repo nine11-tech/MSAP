@@ -294,7 +294,8 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
 def _dynamic_assessments_section(data, styles) -> list:
     dynamic = data.get("dynamic_assessments", {})
     runs = dynamic.get("items", []) if isinstance(dynamic, dict) else []
-    if not runs:
+    validations = dynamic.get("dynamic_validations", []) if isinstance(dynamic, dict) else []
+    if not runs and not validations:
         return []
     rows = []
     for run in runs[:10]:
@@ -347,7 +348,7 @@ def _dynamic_assessments_section(data, styles) -> list:
             ]
         )
     )
-    return [
+    content = [
         Paragraph("Approved Dynamic Assessments", styles["section"]),
         Paragraph(
             "Planner intent, auditor approval, gateway execution, observations, "
@@ -356,6 +357,14 @@ def _dynamic_assessments_section(data, styles) -> list:
         ),
         table,
     ]
+    if validations:
+        validation_rows = [[Paragraph(_text(label), styles["table_header"]) for label in ("Finding", "Playbook", "Status", "Oracle", "Limitations")]]
+        validation_rows += [[Paragraph(_text(row.get(key)), styles["small"]) for key in ("rule_id", "playbook_id", "validation_status", "oracle_id", "limitations")] for row in validations[:25]]
+        content.extend([
+            Paragraph("Finding-driven dynamic validation", styles["section"]),
+            Table(validation_rows, colWidths=[25 * mm, 42 * mm, 25 * mm, 32 * mm, 55 * mm], repeatRows=1),
+        ])
+    return content
 
 
 def _cover_details(

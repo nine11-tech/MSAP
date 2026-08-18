@@ -142,44 +142,51 @@ findings, and reporting visibly separate. Use these phases for the final demo:
    package inventory, and the accepted C2/C3 controls.
 5. **Create/select audit.** Select the authorized AndroGoat audit and verified
    package `owasp.sat.agoat`.
-6. **Generate GPT-5.5 plan.** Choose **OpenAI · GPT-5.5** when configured or the
-   deterministic reference for an offline demo, then select **Generate Plan**.
-   This phase is AI-generated intent only.
-7. **Inspect validation.** Confirm the canonical plan has ordered IDs,
+6. **Select a finding.** From Findings, choose an eligible AndroGoat root or
+   emulator finding and select **Validate dynamically**. Static-only controls
+   and controls without an executable playbook stay out of Dynamic Lab.
+7. **Generate the Luna scenario.** The Economy profile uses `gpt-5.6-luna`
+   with low reasoning. The model receives only the bounded selected-finding
+   context; it proposes the hypothesis and expected evidence, while Django
+   constrains it to the backend playbook catalog.
+8. **Inspect validation.** Confirm the canonical plan has ordered IDs,
    dependencies, bounded arguments/evidence, and only manifest capabilities.
-8. **Inspect policy.** Confirm target, objective, scope, package ownership,
+9. **Inspect policy.** Confirm target, objective, scope, package ownership,
    destructive controls, and policy status are accepted by Django.
-9. **Approve plan.** Select **Approve Plan** and prove no AgentRun/tool call or
+10. **Approve plan.** Select **Approve Plan** and prove no AgentRun/tool call or
    emulator change occurred. This is auditor authorization, not execution.
-10. **Execute assessment.** Select **Execute Assessment**. The endpoint accepts
+11. **Execute assessment.** Select **Execute Assessment**. The endpoint accepts
     no commands/tools/arguments and creates one immutable plan-linked run.
-11. **Inspect AgentRun timeline.** Review sequence, capability, status,
+12. **Inspect AgentRun timeline.** Review sequence, capability, status,
     start/end, duration, retries, dependency skips, and controlled failures.
-12. **Inspect observations/artifacts.** Confirm observations are labeled
+13. **Inspect observations/artifacts.** Confirm observations are labeled
     untrusted data and large screenshot/log/UI bytes remain referenced artifacts.
-13. **Inspect evidence.** Verify audit/plan hash/run/step/artifact/tool hashes and
+14. **Inspect evidence.** Verify audit/plan hash/run/step/artifact/tool hashes and
     provenance.
-14. **Generate findings.** Confirm only `MSAP-DYN-*`/existing deterministic rules
+15. **Generate findings.** Confirm only `MSAP-DYN-*`/existing deterministic rules
     create or update findings. AI/application prose alone creates none.
-15. **Inspect risk/compliance score.** Confirm existing deterministic scoring is
+16. **Inspect risk/compliance score.** Confirm existing deterministic scoring is
     recalculated; informational runtime observations do not inflate risk.
-16. **Open report.** Select **View Assessment Report** and inspect the approved
+17. **Open report.** Select **View Assessment Report** and inspect the approved
     plan, execution, evidence, findings, scores, artifact metadata, provenance,
     status, and limitations. Download the existing PDF if desired.
-17. **Request next assessment recommendation.** On a completed run, select
+18. **Request next assessment recommendation.** On a completed run, select
     **Recommend Next Assessment**.
-18. **Inspect proposed adaptive plan.** Confirm it preserves audit, target,
+19. **Inspect proposed adaptive plan.** Confirm it preserves audit, target,
     objective, and scope; has a new hash; uses only gateway capabilities; and
     clearly requires auditor approval. No AgentRun is created.
-19. **Approve adaptive plan.** Validate and approve it as a new authorization.
+20. **Approve adaptive plan.** Validate and approve it as a new authorization.
     The approval step still does not execute tools.
-20. **Execute second assessment if desired.** Select execution explicitly and
+21. **Execute second assessment if desired.** Select execution explicitly and
     review a new AgentRun. The lineage is capped at two adaptive cycles and
     cannot recursively auto-run.
 
-Local demo mode uses the deterministic provider and requires no OpenAI key. The
-OpenAI provider is backend-only, is configured for `gpt-5.5`, and returns the
-same strict plan schema. Viewer can inspect plans but cannot mutate them.
+For a development-only AndroGoat acceptance fixture, run
+`python manage.py seed_androgoat_finding_demo --audit-id <id> --dev-fixture`.
+The command refuses non-DEBUG environments and requires the audit's verified
+package to be `owasp.sat.agoat`. Local demo mode may use the deterministic
+provider; the real acceptance uses backend-only `gpt-5.6-luna`. Viewer can
+inspect plans but cannot approve or run them.
 
 For Sprint D1 contract acceptance, inspect the plan detail response and confirm
 that `normalized_plan.contract_version` is `msap.assessment-plan/v1`, steps have

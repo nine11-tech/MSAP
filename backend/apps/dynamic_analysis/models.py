@@ -856,6 +856,7 @@ def default_agent_runtime_capabilities() -> dict:
             "list_packages",
             "install_verified_apk",
             "launch_package",
+            "reset_root_detection_demo",
             "force_stop_package",
             "clear_package_data",
             "take_screenshot",
@@ -1349,6 +1350,159 @@ class AgentActionDecision(models.Model):
         ]
 
 
+class DynamicValidationResult(models.Model):
+    class ValidationStatus(models.TextChoices):
+        NOT_STARTED = "NOT_STARTED", "Not started"
+        SCENARIO_GENERATED = "SCENARIO_GENERATED", "Scenario generated"
+        SCENARIO_VALIDATED = "SCENARIO_VALIDATED", "Scenario validated"
+        APPROVED = "APPROVED", "Approved"
+        RUNNING = "RUNNING", "Running"
+        SUPPORTED = "SUPPORTED", "Supported"
+        REJECTED = "REJECTED", "Rejected"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+        REFUTED = "REFUTED", "Refuted"
+        INCONCLUSIVE = "INCONCLUSIVE", "Inconclusive"
+        NOT_ASSESSABLE = "NOT_ASSESSABLE", "Not assessable"
+        FAILED = "FAILED", "Failed"
+        STATIC_ONLY = "STATIC_ONLY", "Static only"
+
+    audit = models.ForeignKey("audits.Audit", on_delete=models.CASCADE, related_name="dynamic_validation_results")
+    finding = models.ForeignKey("findings.Finding", on_delete=models.CASCADE, null=True, blank=True, related_name="dynamic_validation_results")
+    rule_id = models.CharField(max_length=128)
+    scenario_id = models.CharField(max_length=128, blank=True)
+    playbook_id = models.CharField(max_length=128)
+    hypothesis = models.ForeignKey("dynamic_analysis.AgentHypothesis", on_delete=models.SET_NULL, null=True, blank=True, related_name="dynamic_validation_results")
+    agent_run = models.ForeignKey("dynamic_analysis.AgentRun", on_delete=models.SET_NULL, null=True, blank=True, related_name="dynamic_validation_results")
+    action_decision = models.ForeignKey("dynamic_analysis.AgentActionDecision", on_delete=models.SET_NULL, null=True, blank=True, related_name="dynamic_validation_results")
+    evidence = models.ManyToManyField("evidence.Evidence", blank=True, related_name="dynamic_validation_results")
+    oracle_id = models.CharField(max_length=128)
+    oracle_result = models.JSONField(default=dict, blank=True)
+    validation_status = models.CharField(max_length=32, choices=ValidationStatus.choices)
+    confidence = models.FloatField(default=0.0)
+    safe_summary = models.CharField(max_length=1000)
+    limitations = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["audit", "validation_status"]), models.Index(fields=["finding", "playbook_id"])]
+
+
+class FindingValidationMission(models.Model):
+    """One bounded dynamic validation attempt for one static finding."""
+
+    class Status(models.TextChoices):
+        DRAFT = "DRAFT", "Draft"
+        GENERATED = "GENERATED", "Generated"
+        VALIDATED = "VALIDATED", "Validated"
+        APPROVED = "APPROVED", "Approved"
+        RUNNING = "RUNNING", "Running"
+        CONFIRMED = "CONFIRMED", "Confirmed"
+        NOT_REPRODUCED = "NOT_REPRODUCED", "Not reproduced"
+        INCONCLUSIVE = "INCONCLUSIVE", "Inconclusive"
+        BLOCKED = "BLOCKED", "Blocked"
+        NOT_DYNAMICALLY_TESTABLE = (
+            "NOT_DYNAMICALLY_TESTABLE",
+            "Not dynamically testable",
+        )
+        FAILED = "FAILED", "Failed"
+
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.CASCADE,
+        related_name="finding_validation_missions",
+    )
+    apk = models.ForeignKey(
+        "apk_files.APKFile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="finding_validation_missions",
+    )
+    finding = models.ForeignKey(
+        "findings.Finding",
+        on_delete=models.CASCADE,
+        related_name="validation_missions",
+    )
+    assessment_plan = models.OneToOneField(
+        "dynamic_analysis.AssessmentPlan",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="finding_validation_mission",
+    )
+    agent_run = models.OneToOneField(
+        "dynamic_analysis.AgentRun",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="finding_validation_mission",
+    )
+    dynamic_validation_result = models.ForeignKey(
+        "dynamic_analysis.DynamicValidationResult",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="missions",
+    )
+    evidence = models.ManyToManyField(
+        "evidence.Evidence",
+        blank=True,
+        related_name="finding_validation_missions",
+    )
+    target_package = models.CharField(max_length=255)
+    status = models.CharField(
+        max_length=32,
+        choices=Status.choices,
+        default=Status.DRAFT,
+    )
+    scenario_contract = models.JSONField(default=dict, blank=True)
+    scenario_hash = models.CharField(max_length=64, blank=True)
+    mission_hash = models.CharField(max_length=64, blank=True)
+    validation_family = models.CharField(max_length=64, blank=True)
+    playbook_id = models.CharField(max_length=128, blank=True)
+    hypothesis = models.TextField(blank=True)
+    final_conclusion = models.TextField(blank=True)
+    limitations = models.TextField(blank=True)
+    oracle_result = models.JSONField(default=dict, blank=True)
+    provider = models.CharField(max_length=32, blank=True)
+    model = models.CharField(max_length=128, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)
+    allowed_capabilities = models.JSONField(default=list, blank=True)
+    budgets = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_finding_validation_missions",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_finding_validation_missions",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["audit", "status"], name="dynamic_ana_audit_i_d96ca1_idx"),
+            models.Index(fields=["finding", "created_at"], name="dynamic_ana_finding_33e5d7_idx"),
+            models.Index(fields=["target_package", "status"], name="dynamic_ana_target__bc5c3a_idx"),
+            models.Index(fields=["scenario_hash"], name="dynamic_ana_scenari_7cf5b0_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Mission {self.id} validating finding {self.finding_id}"
+
+
 class AssessmentPlan(models.Model):
     class PlanKind(models.TextChoices):
         INITIAL = "INITIAL", "Initial assessment"
@@ -1383,6 +1537,13 @@ class AssessmentPlan(models.Model):
         "audits.Audit",
         on_delete=models.CASCADE,
         related_name="assessment_plans",
+    )
+    source_finding = models.ForeignKey(
+        "findings.Finding",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dynamic_validation_plans",
     )
     plan_kind = models.CharField(
         max_length=16,
@@ -1433,6 +1594,7 @@ class AssessmentPlan(models.Model):
     validation_errors = models.JSONField(default=list, blank=True)
     planner_input_hash = models.CharField(max_length=64, blank=True)
     plan_hash = models.CharField(max_length=64, blank=True)
+    scenario_contract = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

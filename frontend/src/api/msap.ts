@@ -31,6 +31,10 @@ import type {
   DynamicSessionArtifact,
   DynamicSessionEvent,
   DynamicSessionStage,
+  DynamicPlaybook,
+  DynamicValidationResult,
+  FindingValidationMission,
+  FindingValidationTimeline,
   Evidence,
   Finding,
   FindingSourceReference,
@@ -117,6 +121,38 @@ const auditQuery = (auditId?: number) =>
 
 export const listFindings = (auditId?: number) =>
   apiGet<Finding[]>(`findings/${auditQuery(auditId)}`);
+export const listDynamicPlaybooks = () =>
+  apiGet<{ contract_version: string; items: DynamicPlaybook[] }>("dynamic/playbooks/");
+export const listDynamicValidationResults = (auditId?: number) =>
+  apiGet<DynamicValidationResult[]>(`dynamic/validation-results/${auditId ? `?audit=${encodeURIComponent(auditId)}` : ""}`);
+export const listFindingValidationMissions = (auditId?: number) =>
+  apiGet<FindingValidationMission[]>(`dynamic/finding-validations/${auditId ? `?audit=${encodeURIComponent(auditId)}` : ""}`);
+export const generateFindingValidationMission = (findingId: number) =>
+  apiPost<FindingValidationMission, Record<string, never>>(
+    `findings/${findingId}/dynamic-validation/generate/`,
+    {},
+  );
+export const approveFindingValidationMission = (missionId: number) =>
+  apiPost<FindingValidationMission, Record<string, never>>(
+    `dynamic/finding-validations/${missionId}/approve/`,
+    {},
+  );
+export const startFindingValidationMission = (missionId: number) =>
+  apiPost<
+    {
+      mission: FindingValidationMission;
+      run: AgentRun;
+      task_id?: string | null;
+      execution_mode: string;
+    },
+    Record<string, never>
+  >(`dynamic/finding-validations/${missionId}/start/`, {});
+export const getFindingValidationMission = (missionId: number) =>
+  apiGet<FindingValidationMission>(`dynamic/finding-validations/${missionId}/`);
+export const listFindingValidationEvidence = (missionId: number) =>
+  apiGet<Evidence[]>(`dynamic/finding-validations/${missionId}/evidence/`);
+export const getFindingValidationTimeline = (missionId: number) =>
+  apiGet<FindingValidationTimeline>(`dynamic/finding-validations/${missionId}/timeline/`);
 export const getFindingSourceReferences = (findingId: number) =>
   apiGet<FindingSourceReference[]>(
     `findings/${findingId}/source-references/`,
@@ -305,6 +341,7 @@ export const getAssessmentPlan = (planId: number) =>
   apiGet<AssessmentPlan>(`dynamic/agent/plans/${planId}/`);
 export const createAssessmentPlan = (data: {
   audit: number;
+  source_finding?: number;
   target_package: string;
   objective: string;
   scope: string;
@@ -315,6 +352,7 @@ export const createAssessmentPlan = (data: {
     AssessmentPlan,
     {
       audit: number;
+      source_finding?: number;
       target_package: string;
       objective: string;
       scope: string;

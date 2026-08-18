@@ -4730,6 +4730,62 @@ tbody tr:hover td {
 .evidence-group-grid article p { margin: 0; color: #8ba2b0; font-size: 0.6rem; line-height: 1.45; overflow-wrap: anywhere; }
 .evidence-group-grid article small { color: #627b8d; font-size: 0.54rem; }
 
+.finding-validation-dashboard { border-color: #2d6d79; box-shadow: 0 18px 55px rgba(0, 0, 0, 0.28); }
+.validation-workflow-path { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; margin-bottom: 1rem; color: #a8beca; font-size: 0.72rem; }
+.validation-workflow-path span { padding: 0.42rem 0.55rem; border: 1px solid #29475a; border-radius: 999px; background: #071923; }
+.validation-workflow-path b { color: #5ddbcf; }
+.finding-validation-layout { display: grid; grid-template-columns: minmax(260px, 0.8fr) minmax(320px, 1.2fr); gap: 1rem; align-items: start; }
+.static-finding-list { display: grid; gap: 0.65rem; max-height: 720px; overflow: auto; padding-right: 0.2rem; }
+.static-finding-card { display: grid; gap: 0.45rem; padding: 0.8rem; border: 1px solid #284256; border-radius: 10px; background: linear-gradient(180deg, #071a26, #06131d); }
+.static-finding-card header { display: flex; gap: 0.5rem; align-items: start; }
+.static-finding-card header span { padding: 0.15rem 0.4rem; border-radius: 999px; background: #173348; color: #cfe7f0; font-size: 0.58rem; text-transform: uppercase; }
+.static-finding-card strong { color: #e5f2f6; font-size: 0.78rem; line-height: 1.35; }
+.static-finding-card p,
+.static-finding-card small { margin: 0; color: #8fa8b8; font-size: 0.65rem; line-height: 1.45; }
+.finding-card-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+.mission-panel,
+.static-findings-panel,
+.mission-execution-panel { min-width: 0; }
+.mission-review-card,
+.approval-boundary-card,
+.validation-result-card { padding: 0.9rem; border: 1px solid #2b5161; border-radius: 11px; background: #071925; }
+.mission-review-card h3,
+.validation-result-card strong { margin: 0.35rem 0; color: #e9f7fb; }
+.mission-review-card p,
+.approval-boundary-card p,
+.validation-result-card p { color: #98adba; font-size: 0.72rem; line-height: 1.5; }
+.mission-review-card dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; margin: 0.8rem 0 0; }
+.mission-review-card dl > div { min-width: 0; display: grid; gap: 0.15rem; }
+.mission-review-card dt { color: #6e8797; font-size: 0.58rem; text-transform: uppercase; }
+.mission-review-card dd { margin: 0; color: #c8dde6; font-size: 0.68rem; overflow-wrap: anywhere; }
+.mission-review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-top: 0.8rem; }
+.mission-review-grid section { min-width: 0; padding: 0.75rem; border: 1px solid #223b4d; border-radius: 9px; background: #061521; }
+.mission-review-grid h4 { margin: 0 0 0.45rem; color: #d6e7ed; font-size: 0.72rem; }
+.mission-review-grid p,
+.mission-review-grid li { color: #93a9b6; font-size: 0.66rem; line-height: 1.48; }
+.mission-review-grid ol,
+.mission-review-grid ul { margin: 0; padding-left: 1.05rem; }
+.approval-boundary-card { margin-top: 0.8rem; display: grid; gap: 0.45rem; }
+.approval-boundary-card > span { color: #cbe2ea; font-size: 0.72rem; }
+.validation-status-badge { width: fit-content; padding: 0.2rem 0.48rem; border-radius: 999px; background: #102b3a; color: #8fe8dc; font-size: 0.58rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.status-confirmed { background: #083426; color: #85f4c7; }
+.status-not_reproduced,
+.status-not_dynamically_testable { background: #302b12; color: #f4d674; }
+.status-blocked,
+.status-failed { background: #3a1417; color: #ff9ea8; }
+.status-running { background: #102f4f; color: #8fc7ff; }
+.not-testable-note { display: grid; gap: 0.15rem; padding: 0.5rem; border: 1px solid #5b4a24; border-radius: 7px; background: #18170d; color: #ddc77b; font-size: 0.64rem; }
+.security-check-list.vertical { display: grid; gap: 0.35rem; padding: 0; list-style: none; }
+.mission-execution-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #203848; }
+.mission-result-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; margin-bottom: 0.9rem; }
+.mission-timeline { margin-bottom: 1rem; }
+
+@media (max-width: 980px) {
+  .finding-validation-layout,
+  .mission-review-grid,
+  .mission-result-grid { grid-template-columns: 1fr; }
+}
+
 .oracle-result-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.6rem; }
 .oracle-result-grid article { padding: 0.7rem; display: grid; gap: 0.35rem; background: #071823; border: 1px solid #29475a; border-radius: 7px; }
 .oracle-result-grid article > span { color: #9eb4c0; font-size: 0.62rem; }
@@ -5084,3 +5140,19 @@ tbody tr:hover td {
   .agent-activity-card { grid-template-columns: 1fr; }
   .provenance-path { justify-content: flex-start; }
 }
+.finding-driven-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.finding-driven-card { display: grid; gap: 0.4rem; padding: 1rem; min-height: 132px; border: 1px solid rgb(255 138 64 / 22%); border-radius: 0.7rem; background: #171d27; color: #f5efe7; box-shadow: 0 8px 24px rgb(0 0 0 / 18%); }
+.finding-driven-card strong { color: #ffb27a; letter-spacing: 0.03em; }
+.finding-driven-card span { color: #f5efe7; line-height: 1.35; }
+.finding-driven-card small { color: #c8d1df; line-height: 1.4; }
+.finding-driven-card em { color: #aebacc; font-size: 0.78rem; line-height: 1.45; font-style: normal; }
+.auditor-ai-pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 0.65rem; align-items: center; margin: 0 0 1rem; padding: 0.8rem; border: 1px solid rgb(255 138 64 / 16%); border-radius: 0.7rem; background: #111720; color: #f5efe7; }
+.auditor-ai-pipeline span { color: #f5efe7; font-size: 0.82rem; line-height: 1.35; }
+.auditor-ai-pipeline b { color: #ff9b5a; margin-right: 0.3rem; }
+.auditor-ai-pipeline small { color: #aebacc; }
+.auditor-ai-pipeline i { color: #ff9b5a; font-style: normal; font-size: 1.2rem; }
+.plan-feasibility { display: flex; gap: 0.75rem; align-items: baseline; padding: 0.8rem 1rem; border: 1px solid rgba(50, 180, 130, 0.35); border-radius: 0.65rem; background: rgba(50, 180, 130, 0.08); }
+.plan-feasibility.is-blocked { border-color: rgba(220, 90, 90, 0.45); background: rgba(220, 90, 90, 0.08); }
+.plan-feasibility span { color: var(--text-muted, #667085); font-size: 0.85rem; }
+.dynamic-validation-results { margin-top: 1rem; }
+@media (max-width: 900px) { .auditor-ai-pipeline { grid-template-columns: 1fr 1fr; } .auditor-ai-pipeline i { display: none; } }

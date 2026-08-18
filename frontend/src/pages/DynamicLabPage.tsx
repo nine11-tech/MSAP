@@ -8,24 +8,33 @@ import {
   createAssessmentPlan,
   executeAdaptiveAssessment,
   executeAssessmentPlan,
+  approveFindingValidationMission,
   getAgentRun,
   getAgentRunAssessmentSummary,
   getAssessmentPlan,
   getDynamicHostAgentStatus,
+  generateFindingValidationMission,
+  getFindingValidationMission,
+  getFindingValidationTimeline,
   installDynamicAuditApk,
+  listFindingValidationEvidence,
+  listFindingValidationMissions,
   listAgentRunArtifacts,
   listAgentRunDecisions,
   listAgentRunEvidence,
   listAgentRunHypotheses,
   listAgentRuns,
+  listDynamicPlaybooks,
   listAgentRunSteps,
   listAgentRuntimes,
+  listFindings,
   listAssessmentPlans,
   listApkFiles,
   listAudits,
   listDynamicHostAgentPackages,
   runDynamicHostAgentPackageAction,
   retryAdaptiveAssessment,
+  startFindingValidationMission,
   validateAssessmentPlan,
 } from "../api/msap";
 import type {
@@ -42,7 +51,11 @@ import type {
   Audit,
   DynamicHostAgentInstallResult,
   DynamicHostAgentStatus,
+  DynamicPlaybook,
   Evidence,
+  Finding,
+  FindingValidationMission,
+  FindingValidationTimeline,
   SystemComponent,
 } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
@@ -78,7 +91,10 @@ type WorkingAction =
   | "planner-approve"
   | "planner-execute"
   | "planner-retry"
-  | "planner-cancel";
+  | "planner-cancel"
+  | "mission-generate"
+  | "mission-approve"
+  | "mission-start";
 
 type PackageAction =
   | "launch-package"
@@ -189,6 +205,8 @@ const WORKFLOW_STAGES: AuditorStage[] = [
 export function DynamicLabPage() {
   const [searchParams] = useSearchParams();
   const requestedAuditId = Number(searchParams.get("audit") || 0) || null;
+  const requestedFindingId = Number(searchParams.get("finding") || 0) || null;
+  const requestedRunId = Number(searchParams.get("run") || 0) || null;
   const [audits, setAudits] = useState<Audit[]>([]);
   const [apkFiles, setApkFiles] = useState<ApkFile[]>([]);
   const [selectedAuditId, setSelectedAuditId] = useState<number | "">("");
@@ -207,6 +225,13 @@ export function DynamicLabPage() {
   const [agentEvidence, setAgentEvidence] = useState<Evidence[]>([]);
   const [agentDecisions, setAgentDecisions] = useState<AgentActionDecision[]>([]);
   const [agentHypotheses, setAgentHypotheses] = useState<AgentHypothesis[]>([]);
+  const [staticFindings, setStaticFindings] = useState<Finding[]>([]);
+  const [validationMissions, setValidationMissions] = useState<FindingValidationMission[]>([]);
+  const [selectedMissionId, setSelectedMissionId] = useState<number | null>(null);
+  const [missionEvidence, setMissionEvidence] = useState<Evidence[]>([]);
+  const [missionTimeline, setMissionTimeline] =
+    useState<FindingValidationTimeline | null>(null);
+  const [dynamicPlaybooks, setDynamicPlaybooks] = useState<DynamicPlaybook[]>([]);
   const [assessmentExecutionMode, setAssessmentExecutionMode] =
     useState<AssessmentExecutionMode>("ADAPTIVE_AGENT");
   const [selectedAgentRuntime, setSelectedAgentRuntime] =
@@ -257,14 +282,16 @@ export function DynamicLabPage() {
     setLoading(true);
     setError("");
     try {
-      const [auditData, apkData, hostData, packageData, runtimeData, runData, planData] = await Promise.all([
+      const [auditData, apkData, hostData, packageData, runtimeData, runData, planData, playbookData, missionData] = await Promise.all([
         listAudits(),
         listApkFiles(),
-        getDynamicHostAgentStatus(),
-        listDynamicHostAgentPackages(),
-        listAgentRuntimes(),
+        getDynamicHostAgentStatus().catch(() => null),
+        listDynamicHostAgentPackages().catch(() => ({ packages: [], count: 0, truncated: false })),
+        listAgentRuntimes().catch(() => []),
         listAgentRuns(),
         listAssessmentPlans(),
+        listDynamicPlaybooks(),
+        listFindingValidationMissions(),
       ]);
       setAudits(auditData);
       setApkFiles(apkData);
@@ -272,7 +299,11 @@ export function DynamicLabPage() {
       setPackages(packageData.packages);
       setAgentRuntimes(runtimeData);
       setAssessmentPlan(planData[0] || null);
-      const latestRun = runData[0] || null;
+      setDynamicPlaybooks(playbookData.items);
+      setValidationMissions(missionData);
+      const latestRun = (requestedRunId
+        ? runData.find((run) => run.id === requestedRunId)
+        : runData[0]) || null;
       setAgentRun(latestRun);
       if (latestRun) {
         const [stepData, artifactData, evidenceData, decisionData, hypothesisData, summaryData] = await Promise.all([
@@ -323,7 +354,7 @@ export function DynamicLabPage() {
     } finally {
       setLoading(false);
     }
-  }, [requestedAuditId]);
+  }, [requestedAuditId, requestedRunId]);
 
   useEffect(() => {
     void loadWorkspace();
@@ -333,9 +364,35 @@ export function DynamicLabPage() {
     if (!selectedAuditId) return;
     let active = true;
     const auditId = selectedAuditId;
-    void Promise.all([listAssessmentPlans(auditId), listAgentRuns(auditId)])
-      .then(async ([plansForAudit, runsForAudit]) => {
-        const latestAssessmentRun = runsForAudit.find(
+    void Promise.all([
+      listAssessmentPlans(auditId),
+      listAgentRuns(auditId),
+      listFindings(auditId),
+      listFindingValidationMissions(auditId),
+    ])
+      .then(async ([plansForAudit, runsForAudit, findingsForAudit, missionsForAudit]) => {
+        setStaticFindings(findingsForAudit);
+        setValidationMissions(missionsForAudit);
+        setSelectedMissionId((current) => {
+          if (current && missionsForAudit.some((mission) => mission.id === current)) {
+            return current;
+          }
+          if (requestedFindingId) {
+            return missionsForAudit.find((mission) => mission.finding === requestedFindingId)?.id || null;
+          }
+          return missionsForAudit[0]?.id || null;
+        });
+        const requestedFinding = requestedFindingId
+          ? findingsForAudit.find((finding) => finding.id === requestedFindingId)
+          : null;
+        if (requestedFinding && !assessmentPlan && !startingFreshAssessmentRef.current) {
+          setPlannerObjective(`Validate the runtime behavior associated with static finding ${requestedFinding.rule_id}: ${requestedFinding.title}.`);
+          setPlannerScope("Use only the approved Tool Gateway and authorized emulator target. Collect target-correlated runtime evidence and stop if the finding is not assessable with current capabilities.");
+        }
+        const requestedRun = requestedRunId
+          ? runsForAudit.find((run) => run.id === requestedRunId)
+          : null;
+        const latestAssessmentRun = requestedRun || runsForAudit.find(
           (run) => run.objective === "ASSESSMENT_PLAN_EXECUTION",
         );
         const latestOperatorRun = runsForAudit[0] || null;
@@ -383,7 +440,7 @@ export function DynamicLabPage() {
     return () => {
       active = false;
     };
-  }, [selectedAuditId]);
+  }, [selectedAuditId, requestedRunId, requestedFindingId]);
 
   useEffect(() => {
     if (
@@ -432,6 +489,47 @@ export function DynamicLabPage() {
     }, 1500);
     return () => window.clearInterval(timer);
   }, [agentRun]);
+
+  useEffect(() => {
+    if (!selectedMissionId) {
+      setMissionEvidence([]);
+      setMissionTimeline(null);
+      return;
+    }
+    let active = true;
+    async function loadMissionDetails() {
+      try {
+        const [mission, evidence, timeline] = await Promise.all([
+          getFindingValidationMission(selectedMissionId as number),
+          listFindingValidationEvidence(selectedMissionId as number),
+          getFindingValidationTimeline(selectedMissionId as number),
+        ]);
+        if (!active) return;
+        setValidationMissions((items) => {
+          const next = items.filter((item) => item.id !== mission.id);
+          return [mission, ...next].sort((a, b) => b.id - a.id);
+        });
+        setMissionEvidence(evidence);
+        setMissionTimeline(timeline);
+      } catch (requestError) {
+        if (active) setError(errorMessage(requestError));
+      }
+    }
+    void loadMissionDetails();
+    const currentMission = validationMissions.find((mission) => mission.id === selectedMissionId);
+    if (!currentMission || !["RUNNING", "APPROVED"].includes(currentMission.status)) {
+      return () => {
+        active = false;
+      };
+    }
+    const timer = window.setInterval(() => {
+      void loadMissionDetails();
+    }, 1800);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [selectedMissionId]);
 
   useEffect(
     () => () => {
@@ -523,6 +621,26 @@ export function DynamicLabPage() {
     selectedTargetPackage && device?.focused_app?.includes(selectedTargetPackage),
   );
   const selectedAudit = audits.find((audit) => audit.id === selectedAuditId);
+  const selectedFinding = requestedFindingId
+    ? staticFindings.find((finding) => finding.id === requestedFindingId) || null
+    : null;
+  const selectedMission = selectedMissionId
+    ? validationMissions.find((mission) => mission.id === selectedMissionId) || null
+    : null;
+  const dynamicStatusByFinding = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const mission of validationMissions) {
+      if (!map.has(mission.finding)) {
+        map.set(mission.finding, mission.status);
+      }
+    }
+    for (const validation of assessmentSummary?.dynamic_validations || []) {
+      if (!map.has(validation.finding_id)) {
+        map.set(validation.finding_id, validation.validation_status);
+      }
+    }
+    return map;
+  }, [assessmentSummary, validationMissions]);
   const matchingAssessmentRun =
     agentRun?.objective === "ASSESSMENT_PLAN_EXECUTION" &&
     assessmentPlan &&
@@ -572,6 +690,90 @@ export function DynamicLabPage() {
     setAssessmentSummary(null);
     setNotice("Ready to configure a new assessment for this authorized target.");
     setError("");
+  }
+
+  async function handleGenerateValidationMission(findingId: number) {
+    setWorking("mission-generate");
+    setError("");
+    setNotice("");
+    try {
+      const mission = await generateFindingValidationMission(findingId);
+      setValidationMissions((items) => [mission, ...items.filter((item) => item.id !== mission.id)]);
+      setSelectedMissionId(mission.id);
+      if (mission.assessment_plan) {
+        setAssessmentPlan(await getAssessmentPlan(mission.assessment_plan));
+      }
+      setNotice(
+        mission.status === "NOT_DYNAMICALLY_TESTABLE"
+          ? "Mission generated as not dynamically testable with current tools."
+          : `Dynamic validation mission #${mission.id} generated and backend-validated. Approval is still required.`,
+      );
+    } catch (requestError) {
+      setError(assessmentFailureMessage(requestError, "planning"));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleApproveValidationMission() {
+    if (!selectedMission) return;
+    setWorking("mission-approve");
+    setError("");
+    setNotice("");
+    try {
+      const mission = await approveFindingValidationMission(selectedMission.id);
+      setValidationMissions((items) => [mission, ...items.filter((item) => item.id !== mission.id)]);
+      setSelectedMissionId(mission.id);
+      if (mission.assessment_plan) {
+        setAssessmentPlan(await getAssessmentPlan(mission.assessment_plan));
+      }
+      setNotice(`Mission #${mission.id} approved. Start remains a separate auditor action.`);
+    } catch (requestError) {
+      setError(assessmentFailureMessage(requestError, "approval"));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleStartValidationMission() {
+    if (!selectedMission) return;
+    setWorking("mission-start");
+    setError("");
+    setNotice("");
+    try {
+      const response = await startFindingValidationMission(selectedMission.id);
+      const [mission, timeline, evidence, steps, artifacts, decisions, hypotheses] = await Promise.all([
+        getFindingValidationMission(response.mission.id),
+        getFindingValidationTimeline(response.mission.id),
+        listFindingValidationEvidence(response.mission.id),
+        listAgentRunSteps(response.run.id),
+        listAgentRunArtifacts(response.run.id),
+        response.run.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunDecisions(response.run.id)
+          : Promise.resolve([]),
+        response.run.execution_mode === "ADAPTIVE_AGENT"
+          ? listAgentRunHypotheses(response.run.id)
+          : Promise.resolve([]),
+      ]);
+      setValidationMissions((items) => [mission, ...items.filter((item) => item.id !== mission.id)]);
+      setSelectedMissionId(mission.id);
+      setMissionTimeline(timeline);
+      setMissionEvidence(evidence);
+      setAgentRun(response.run);
+      setAgentSteps(steps);
+      setAgentArtifacts(artifacts);
+      setAgentEvidence(evidence);
+      setAgentDecisions(decisions);
+      setAgentHypotheses(hypotheses);
+      if (mission.assessment_plan) {
+        setAssessmentPlan(await getAssessmentPlan(mission.assessment_plan));
+      }
+      setNotice(`Finding Validation Agent started as AgentRun #${response.run.id}.`);
+    } catch (requestError) {
+      setError(assessmentFailureMessage(requestError, "execution"));
+    } finally {
+      setWorking("");
+    }
   }
 
   async function handleRefresh() {
@@ -848,6 +1050,7 @@ export function DynamicLabPage() {
     try {
       const plan = await createAssessmentPlan({
         audit: selectedAuditId,
+        ...(requestedFindingId ? { source_finding: requestedFindingId } : {}),
         target_package: plannerPackageName,
         objective: plannerObjective.trim(),
         scope: plannerScope.trim(),
@@ -1013,6 +1216,64 @@ export function DynamicLabPage() {
         </div>
       ) : null}
 
+      <FindingValidationDashboard
+        audit={selectedAudit}
+        targetPackage={plannerPackageName || selectedTargetPackage}
+        findings={staticFindings}
+        playbooks={dynamicPlaybooks}
+        missions={validationMissions}
+        selectedFinding={selectedFinding}
+        selectedMission={selectedMission}
+        evidence={missionEvidence}
+        timeline={missionTimeline}
+        canOperate={canOperate}
+        working={working}
+        onSelectMission={setSelectedMissionId}
+        onGenerate={(findingId) => void handleGenerateValidationMission(findingId)}
+        onApprove={() => void handleApproveValidationMission()}
+        onStart={() => void handleStartValidationMission()}
+      />
+
+      {staticFindings.filter((finding) => (finding.dynamic_validation_playbooks || []).length > 0).length > 0 ? (
+        <Card className="dynamic-mvp-section finding-driven-panel">
+          <SectionHeader
+            title="Static Findings to Validate"
+            description="The Planner AI reviews these findings, keeps only playbooks supported by the approved Tool Gateway, and presents the bounded plan for auditor approval."
+          />
+          <div className="auditor-ai-pipeline" aria-label="Auditor AI workflow">
+            <span><b>1</b> Planner AI<br /><small>Maps findings to feasible playbooks</small></span>
+            <i aria-hidden="true">→</i>
+            <span><b>2</b> Auditor approval<br /><small>Reviews scope, tools, and limits</small></span>
+            <i aria-hidden="true">→</i>
+            <span><b>3</b> Executor AI<br /><small>Runs only the approved sequence</small></span>
+            <i aria-hidden="true">→</i>
+            <span><b>4</b> Evidence report<br /><small>Oracle status, screenshots, and logs</small></span>
+          </div>
+          <div className="finding-driven-grid">
+            {staticFindings.filter((finding) => (finding.dynamic_validation_playbooks || []).length > 0).slice(0, 12).map((finding) => {
+              const eligibleIds = finding.dynamic_validation_playbooks || [];
+              const recommendations = dynamicPlaybooks.filter((item) => eligibleIds.includes(item.playbook_id));
+              const playbook = recommendations[0] || dynamicPlaybooks.find((item) => eligibleIds.includes(item.playbook_id));
+              const status = dynamicStatusByFinding.get(finding.id) ||
+                (playbook?.current_capability_status === "NOT_ASSESSABLE_WITH_CURRENT_CAPABILITIES"
+                  ? "NOT ASSESSABLE"
+                  : playbook?.current_capability_status === "STATIC_CONFIRMED_RUNTIME_NOT_REQUIRED"
+                    ? "STATIC ONLY"
+                    : "NOT TESTED");
+              return (
+                <div className="finding-driven-card" key={finding.id}>
+                  <strong>{finding.rule_id}</strong>
+                  <span>{finding.title}</span>
+                  <small>Dynamic status: {status} · Playbook: {playbook?.title || "No dynamic playbook"}</small>
+                  {playbook ? <em>{playbook.description} Required: {playbook.required_capabilities.join(", ") || "none"}.</em> : null}
+                  <Link className="button button-secondary" to={`/dynamic?audit=${finding.audit}&finding=${finding.id}`}>Validate dynamically</Link>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      ) : null}
+
       <nav className="assessment-workflow" aria-label="Assessment workflow">
         {WORKFLOW_STAGES.map((stage, index) => {
           const currentIndex = WORKFLOW_STAGES.indexOf(auditorStage);
@@ -1101,6 +1362,20 @@ export function DynamicLabPage() {
             </section>
           </div>
 
+          {requestedFindingId ? (
+            <section className="finding-focus-card" aria-labelledby="finding-focus-title">
+              <span className="eyebrow">Finding-driven validation</span>
+              <h3 id="finding-focus-title">Validate this static finding</h3>
+              <p>The agent will reason about this finding, propose one bounded lab scenario, and use only capabilities that pass backend policy.</p>
+              {staticFindings.find((finding) => finding.id === requestedFindingId) ? (
+                <div className="finding-focus-detail">
+                  <strong>{staticFindings.find((finding) => finding.id === requestedFindingId)?.rule_id}</strong>
+                  <span>{staticFindings.find((finding) => finding.id === requestedFindingId)?.title}</span>
+                  <small>Approved playbooks: {(staticFindings.find((finding) => finding.id === requestedFindingId)?.dynamic_validation_playbooks || []).join(", ") || "None"}</small>
+                </div>
+              ) : <p className="muted">Loading the selected finding…</p>}
+            </section>
+          ) : (
           <section className="assessment-preset-section" aria-labelledby="assessment-type-title">
             <div className="auditor-section-heading">
               <div>
@@ -1126,6 +1401,7 @@ export function DynamicLabPage() {
               ))}
             </div>
           </section>
+          )}
 
           <details className="auditor-disclosure customize-assessment">
             <summary>Customize Assessment</summary>
@@ -1247,7 +1523,7 @@ export function DynamicLabPage() {
         <Card className="dynamic-mvp-section auditor-stage-card plan-stage-card">
           <SectionHeader
             title="AI Assessment Plan"
-            description={`Generated by ${modelDisplayName(assessmentPlan.planner_model)} for ${applicationDisplayName(assessmentPlan.target_package)}.`}
+            description={`Planner AI generated this bounded plan with ${modelDisplayName(assessmentPlan.planner_model)} for ${applicationDisplayName(assessmentPlan.target_package)}. The executor does not run until you approve it.`}
             actions={<span className="planner-only-badge">PLAN ONLY · NO EXECUTION</span>}
           />
           <AssessmentPlanResult plan={assessmentPlan} />
@@ -1796,6 +2072,316 @@ export function DynamicLabPage() {
   );
 }
 
+function FindingValidationDashboard({
+  audit,
+  targetPackage,
+  findings,
+  playbooks,
+  missions,
+  selectedFinding,
+  selectedMission,
+  evidence,
+  timeline,
+  canOperate,
+  working,
+  onSelectMission,
+  onGenerate,
+  onApprove,
+  onStart,
+}: {
+  audit: Audit | undefined;
+  targetPackage: string;
+  findings: Finding[];
+  playbooks: DynamicPlaybook[];
+  missions: FindingValidationMission[];
+  selectedFinding: Finding | null;
+  selectedMission: FindingValidationMission | null;
+  evidence: Evidence[];
+  timeline: FindingValidationTimeline | null;
+  canOperate: boolean;
+  working: WorkingAction;
+  onSelectMission: (missionId: number | null) => void;
+  onGenerate: (findingId: number) => void;
+  onApprove: () => void;
+  onStart: () => void;
+}) {
+  const missionByFinding = new Map<number, FindingValidationMission>();
+  for (const mission of missions) {
+    if (!missionByFinding.has(mission.finding)) {
+      missionByFinding.set(mission.finding, mission);
+    }
+  }
+  const selectedScenario = selectedMission?.scenario_contract || {};
+  const scenarioSteps = Array.isArray(selectedScenario.steps)
+    ? selectedScenario.steps as Array<Record<string, unknown>>
+    : [];
+  const tools = Array.isArray(selectedMission?.allowed_capabilities)
+    ? selectedMission.allowed_capabilities
+    : [];
+  const evidenceGroups = groupEvidence(evidence);
+  const supportedCount = findings.filter((finding) => (finding.dynamic_validation_playbooks || []).length > 0).length;
+  return (
+    <Card className="dynamic-mvp-section finding-validation-dashboard">
+      <SectionHeader
+        title="Finding-Driven Dynamic Validation"
+        description="Select a static finding, let AI generate a bounded validation mission, approve it, then execute through the existing Tool Gateway and deterministic oracles."
+        actions={
+          <span className="planner-only-badge">
+            {audit?.name || "No audit selected"} · {targetPackage || "No target"}
+          </span>
+        }
+      />
+
+      <div className="validation-workflow-path" aria-label="Finding validation workflow">
+        <span>Static finding</span><b>→</b><span>AI mission</span><b>→</b><span>Auditor approval</span><b>→</b><span>Execution agent</span><b>→</b><span>Real evidence</span><b>→</b><span>Oracle result</span>
+      </div>
+
+      <div className="finding-validation-layout">
+        <section className="static-findings-panel" aria-label="Static findings">
+          <div className="auditor-section-heading">
+            <div><span className="eyebrow">Stage 1</span><h3>Static findings</h3></div>
+            <span>{supportedCount} dynamically testable</span>
+          </div>
+          {findings.length ? (
+            <div className="static-finding-list">
+              {findings.slice(0, 16).map((finding) => {
+                const eligible = finding.dynamic_validation_playbooks || [];
+                const mission = missionByFinding.get(finding.id);
+                const playbook = playbooks.find((item) => eligible.includes(item.playbook_id));
+                const testable = eligible.length > 0;
+                return (
+                  <article
+                    key={finding.id}
+                    className={`static-finding-card severity-${finding.severity.toLowerCase()}`}
+                  >
+                    <header>
+                      <span>{finding.severity}</span>
+                      <strong>{finding.title}</strong>
+                    </header>
+                    <p>{finding.rule_id} · {finding.category || "Static rule"}</p>
+                    <small>
+                      {(finding.masvs_controls || []).join(", ") || finding.standard || "No MASVS mapping"} · Evidence {finding.evidence_count || 0}
+                    </small>
+                    {mission ? (
+                      <div className="finding-card-actions">
+                        <button className="button button-secondary" onClick={() => onSelectMission(mission.id)}>
+                          View mission · {mission.status}
+                        </button>
+                        {testable ? (
+                          <button
+                            className="button button-primary"
+                            onClick={() => onGenerate(finding.id)}
+                            disabled={!canOperate || Boolean(working)}
+                          >
+                            {working === "mission-generate" ? "Generating…" : "Validate Again"}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : testable ? (
+                      <button
+                        className="button button-primary"
+                        onClick={() => onGenerate(finding.id)}
+                        disabled={!canOperate || Boolean(working)}
+                      >
+                        {working === "mission-generate" ? "Generating…" : "Validate Dynamically"}
+                      </button>
+                    ) : (
+                      <div className="not-testable-note">
+                        <strong>Not dynamically testable with current tools</strong>
+                        <span>{playbook?.limitations || "No approved runtime validation family maps to this finding."}</span>
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="agent-waiting-state">
+              <strong>No static findings loaded</strong>
+              <p>Run static analysis or select an audit with findings.</p>
+            </div>
+          )}
+        </section>
+
+        <section className="mission-panel" aria-label="Dynamic validation mission">
+          <div className="auditor-section-heading">
+            <div><span className="eyebrow">Stage 2–4</span><h3>Dynamic Validation Mission</h3></div>
+            <span>{selectedMission ? `Mission #${selectedMission.id}` : "No mission selected"}</span>
+          </div>
+          {selectedMission ? (
+            <>
+              <div className="mission-review-card">
+                <span className={`validation-status-badge status-${selectedMission.status.toLowerCase()}`}>
+                  {validationStatusLabel(selectedMission.status)}
+                </span>
+                <h3>{selectedMission.finding_title}</h3>
+                <p>{selectedMission.hypothesis || "No executable hypothesis was generated."}</p>
+                <dl>
+                  <div><dt>Finding</dt><dd>{selectedMission.finding_rule_id} · {selectedMission.finding_severity}</dd></div>
+                  <div><dt>Target</dt><dd className="mono">{selectedMission.target_package}</dd></div>
+                  <div><dt>AI profile</dt><dd>{modelDisplayName(selectedMission.model)}</dd></div>
+                  <div><dt>Playbook</dt><dd>{selectedMission.playbook_id || "Not dynamically testable"}</dd></div>
+                  <div><dt>Scenario hash</dt><dd className="mono">{selectedMission.scenario_hash ? `${selectedMission.scenario_hash.slice(0, 16)}…` : "Unavailable"}</dd></div>
+                </dl>
+              </div>
+
+              <div className="mission-review-grid">
+                <section>
+                  <h4>PoC scenario</h4>
+                  <ol>
+                    {scenarioSteps.length ? scenarioSteps.map((step, index) => (
+                      <li key={`${index}-${String(step.step_id || step.sequence)}`}>
+                        <strong>{String(step.objective || step.title || `Step ${index + 1}`)}</strong>
+                        <span>{String(step.expected_observation || "Bounded observation")}</span>
+                      </li>
+                    )) : <li>No Android action will be executed.</li>}
+                  </ol>
+                </section>
+                <section>
+                  <h4>Tools needed</h4>
+                  <div className="planner-chip-list">
+                    {tools.length ? tools.map((tool) => <span key={tool} className="planner-tool-chip">{humanActionLabel(tool)}</span>) : <span className="muted">None</span>}
+                  </div>
+                  <h4>Evidence required</h4>
+                  <div className="planner-chip-list">
+                    {Array.isArray(selectedScenario.required_evidence_types)
+                      ? selectedScenario.required_evidence_types.map((item) => <span key={String(item)} className="planner-evidence-chip">{evidenceLabel(String(item))}</span>)
+                      : <span className="muted">No runtime evidence required</span>}
+                  </div>
+                </section>
+                <section>
+                  <h4>Success criteria</h4>
+                  <p>{String(selectedScenario.validation_goal || selectedMission.final_conclusion || "Deterministic oracle supports the finding with real evidence.")}</p>
+                  <h4>Limitations</h4>
+                  <p>{selectedMission.limitations || String(selectedScenario.not_assessable_reason || "Runtime validation is bounded to the approved Tool Gateway capabilities.")}</p>
+                </section>
+                <section>
+                  <h4>Security checks</h4>
+                  <ul className="security-check-list vertical">
+                    <li>✓ Target authorized</li>
+                    <li>✓ Scope preserved</li>
+                    <li>✓ Tool policy passed</li>
+                    <li>✓ Destructive actions not allowed</li>
+                    <li>✓ Scenario bounded</li>
+                  </ul>
+                </section>
+              </div>
+
+              <div className="approval-boundary-card">
+                <strong>You are approving MSAP to execute this bounded PoC against:</strong>
+                <span>{applicationDisplayName(selectedMission.target_package)} · <code>{selectedMission.target_package}</code></span>
+                <p>Execution mode: Finding Validation Agent. Forbidden: shell, ADB shell, host filesystem, arbitrary Frida source, credentials.</p>
+                <div className="auditor-stage-actions">
+                  {selectedMission.status === "VALIDATED" ? (
+                    <button className="button button-primary button-prominent" onClick={onApprove} disabled={!canOperate || Boolean(working)}>
+                      {working === "mission-approve" ? "Approving Mission…" : "Approve Validation Mission"}
+                    </button>
+                  ) : null}
+                  {selectedMission.status === "APPROVED" ? (
+                    <button className="button button-primary button-prominent" onClick={onStart} disabled={!canOperate || Boolean(working)}>
+                      {working === "mission-start" ? "Starting Agent…" : "Start Dynamic Validation"}
+                    </button>
+                  ) : null}
+                  {selectedMission.status === "NOT_DYNAMICALLY_TESTABLE" ? (
+                    <span className="not-testable-note">Current MSAP tools cannot validate this finding dynamically.</span>
+                  ) : null}
+                </div>
+              </div>
+
+              <details className="plan-details-disclosure">
+                <summary>View Technical Scenario</summary>
+                <pre>{JSON.stringify(selectedMission.scenario_contract, null, 2)}</pre>
+              </details>
+            </>
+          ) : selectedFinding ? (
+            <div className="agent-waiting-state">
+              <strong>{selectedFinding.title}</strong>
+              <p>Generate a validation mission to review the AI-designed PoC before execution.</p>
+              <button className="button button-primary" onClick={() => onGenerate(selectedFinding.id)} disabled={!canOperate || Boolean(working)}>
+                {working === "mission-generate" ? "Generating…" : "Generate Validation Mission"}
+              </button>
+            </div>
+          ) : (
+            <div className="agent-waiting-state">
+              <strong>Select a static finding</strong>
+              <p>The auditor should not invent the PoC manually; choose a finding and generate the mission.</p>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {selectedMission ? (
+        <section className="mission-execution-panel" aria-label="PoC execution and evidence">
+          <div className="auditor-section-heading">
+            <div><span className="eyebrow">Stage 5–6</span><h3>PoC execution / evidence / result</h3></div>
+            <span>{evidence.length} evidence records</span>
+          </div>
+          <div className="mission-result-grid">
+            <article className="validation-result-card">
+              <span>Dynamic Validation Result</span>
+              <strong>{validationStatusLabel(selectedMission.status)}</strong>
+              <p>{selectedMission.final_conclusion || "Awaiting execution and oracle evaluation."}</p>
+              <div className="results-action-row">
+                <Link className="button button-secondary" to={`/findings?audit=${selectedMission.audit}`}>View Finding</Link>
+                <Link className="button button-primary" to={`/audits/${selectedMission.audit}/report`}>View Validation Report</Link>
+              </div>
+            </article>
+            <article className="validation-result-card">
+              <span>Oracle</span>
+              <strong>{oracleResultLabel(selectedMission.oracle_result)}</strong>
+              <p>{selectedMission.limitations || "Oracle pending."}</p>
+            </article>
+          </div>
+
+          <ol className="agent-activity-timeline mission-timeline">
+            {(timeline?.items || []).length ? timeline!.items.map((item) => (
+              <li key={`${item.sequence}-${item.scenario_step_id}`} className="agent-activity-card">
+                <span className="agent-activity-sequence">{item.sequence}</span>
+                <div className="agent-activity-content">
+                  <div><span>POC step</span><strong>{item.scenario_title}</strong></div>
+                  {item.decision_summary ? <div><span>AI decision</span><p>{item.decision_summary}</p></div> : null}
+                  {item.tool_name ? <div><span>Action</span><p>{humanActionLabel(item.tool_name)} <small className="mono">{item.tool_name}</small></p></div> : null}
+                  <div><span>Observation</span><p>{item.failure_message || boundedPreview(JSON.stringify(item.observation || {})) || item.expected_observation}</p></div>
+                  {item.troubleshooting ? <div><span>Troubleshooting</span><p>Bounded retry/recovery was recorded for this step.</p></div> : null}
+                  <div><span>Evidence goal</span><p>{item.evidence_goal.map(evidenceLabel).join(" · ") || "Tool output"}</p></div>
+                </div>
+                <span className={`agent-step-status state-${item.status.toLowerCase()}`}>{item.status}</span>
+              </li>
+            )) : (
+              <li className="agent-activity-card">
+                <span className="agent-activity-sequence">1</span>
+                <div className="agent-activity-content">
+                  <div><span>Status</span><strong>Awaiting execution</strong></div>
+                  <div><span>Observation</span><p>Timeline appears after the Finding Validation Agent starts.</p></div>
+                </div>
+              </li>
+            )}
+          </ol>
+
+          {Object.keys(evidenceGroups).length ? (
+            <div className="evidence-group-grid">
+              {Object.entries(evidenceGroups).map(([group, items]) => (
+                <section key={group}>
+                  <h4>{group}</h4>
+                  {items.slice(-4).reverse().map((item) => (
+                    <article key={item.id}>
+                      <strong>{evidenceLabel(item.evidence_type)}</strong>
+                      <p>{boundedPreview(item.snippet || "Structured evidence metadata recorded.")}</p>
+                      <small>{formatDate(item.created_at)} · {item.sha256 ? `${item.sha256.slice(0, 12)}…` : "No digest"}</small>
+                    </article>
+                  ))}
+                </section>
+              ))}
+            </div>
+          ) : (
+            <div className="agent-waiting-state"><strong>No evidence yet</strong><p>Real screenshots, UI, logcat, Frida events, and tool output appear after execution.</p></div>
+          )}
+        </section>
+      ) : null}
+    </Card>
+  );
+}
+
 function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
   const evidenceTypes = Array.from(
     new Set(plan.steps.flatMap((step) => step.evidence_requirements)),
@@ -1806,6 +2392,10 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
   );
   const hypothesisFamilies =
     plan.agentic_capability_preview.allowed_hypothesis_families || [];
+  const allowedCapabilities = new Set(plan.agentic_capability_preview.allowed_capabilities || []);
+  const requiredCapabilities = Array.from(new Set(plan.steps.flatMap((step) => step.required_tools)));
+  const unavailableCapabilities = requiredCapabilities.filter((capability) => !allowedCapabilities.has(capability));
+  const feasibility = unavailableCapabilities.length ? "NOT DOABLE" : "DOABLE WITH APPROVED GATEWAY";
   return (
     <section className="planner-result" aria-label="Latest AI assessment plan">
       <div className="planner-result-heading">
@@ -1826,6 +2416,25 @@ function AssessmentPlanResult({ plan }: { plan: AssessmentPlan }) {
         <div><strong>{capabilityCalls}</strong><span>Estimated capability calls</span></div>
         <div><strong>{evidenceTypes.length}</strong><span>Evidence types</span></div>
       </div>
+
+      <div className={`plan-feasibility ${unavailableCapabilities.length ? "is-blocked" : "is-doable"}`} role="status">
+        <strong>Executor feasibility: {feasibility}</strong>
+        <span>{unavailableCapabilities.length ? `Missing approved capabilities: ${unavailableCapabilities.join(", ")}` : "All planned actions are present in the approved Tool Gateway envelope."}</span>
+      </div>
+
+      {plan.scenario_contract && Object.keys(plan.scenario_contract).length ? (
+        <section className="finding-scenario-summary" aria-label="Dynamic validation scenario">
+          <span className="eyebrow">Dynamic validation scenario</span>
+          <h4>{String(plan.scenario_contract.validation_strategy || "Scenario")}</h4>
+          <p>{String(plan.scenario_contract.validation_hypothesis || "The agent will test the selected finding with bounded runtime evidence.")}</p>
+          <dl>
+            <div><dt>Expected evidence</dt><dd>{Array.isArray(plan.scenario_contract.required_evidence_types) ? plan.scenario_contract.required_evidence_types.join(" · ") : "Bounded runtime evidence"}</dd></div>
+            <div><dt>Tools</dt><dd>{Array.isArray(plan.scenario_contract.supported_tool_capabilities) ? plan.scenario_contract.supported_tool_capabilities.join(", ") || "None" : "Backend-selected"}</dd></div>
+            <div><dt>Auditor approval</dt><dd>{plan.scenario_contract.approval_required ? "Required before execution" : "Not executable"}</dd></div>
+          </dl>
+          {plan.scenario_contract.not_assessable_reason ? <p className="notice">{String(plan.scenario_contract.not_assessable_reason)}</p> : null}
+        </section>
+      ) : null}
 
       <div className="plan-evidence-summary">
         <span>Expected evidence</span>
@@ -2136,6 +2745,22 @@ function AssessmentExecutionResult({
         </div>
       </section>
 
+      {summary?.dynamic_validations?.length ? (
+        <section className="dynamic-validation-results" aria-label="Finding-driven dynamic validation results">
+          <div className="auditor-section-heading"><div><span className="eyebrow">Finding-driven validation</span><h3>Static finding results</h3></div><span>Deterministic oracle output</span></div>
+          <div className="finding-driven-grid">
+            {summary.dynamic_validations.map((validation) => (
+              <article className="finding-driven-card" key={validation.id}>
+                <strong>{validation.rule_id}</strong>
+                <span>{validation.playbook_id}</span>
+                <small>Dynamic validation: {validation.validation_status} · Oracle: {oracleResultLabel(validation.oracle_result)}</small>
+                <em>{validation.limitations}</em>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {terminal ? (
         <section className="assessment-results-dashboard" aria-labelledby="results-title">
           <div className="auditor-section-heading"><div><span className="eyebrow">Final deterministic results</span><h3 id="results-title">Assessment results</h3></div><span>{summary?.run_finding_count || 0} related findings</span></div>
@@ -2198,6 +2823,31 @@ function AssessmentExecutionResult({
       ) : null}
     </section>
   );
+}
+
+function validationStatusLabel(status: string): string {
+  return {
+    DRAFT: "Draft",
+    GENERATED: "Generated",
+    VALIDATED: "Ready for approval",
+    APPROVED: "Approved",
+    RUNNING: "Running PoC",
+    CONFIRMED: "CONFIRMED",
+    NOT_REPRODUCED: "NOT REPRODUCED",
+    INCONCLUSIVE: "INCONCLUSIVE",
+    BLOCKED: "BLOCKED",
+    NOT_DYNAMICALLY_TESTABLE: "NOT DYNAMICALLY TESTABLE",
+    FAILED: "FAILED",
+  }[status] || status.replace(/_/g, " ");
+}
+
+function oracleResultLabel(value: unknown) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    const row = value as { status?: string; summary?: string; oracle_id?: string };
+    return row.status || row.summary || row.oracle_id || "INCONCLUSIVE";
+  }
+  return "INCONCLUSIVE";
 }
 
 function RuntimeInstrumentationResult({

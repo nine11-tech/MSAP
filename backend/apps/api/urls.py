@@ -39,6 +39,9 @@ from apps.dynamic_analysis.views import (
     DynamicDeviceViewSet,
     DynamicEmulatorSnapshotViewSet,
     DynamicHostAgentViewSet,
+    DynamicPlaybookViewSet,
+    DynamicValidationResultViewSet,
+    FindingValidationMissionViewSet,
     DynamicSessionArtifactViewSet,
     DynamicSessionEventViewSet,
     DynamicSessionStageViewSet,
@@ -160,6 +163,9 @@ router.register(
     DynamicHostAgentViewSet,
     basename="dynamic-host-agent",
 )
+router.register("dynamic/playbooks", DynamicPlaybookViewSet, basename="dynamic-playbook")
+router.register("dynamic/validation-results", DynamicValidationResultViewSet, basename="dynamic-validation-result")
+router.register("dynamic/finding-validations", FindingValidationMissionViewSet, basename="finding-validation-mission")
 
 urlpatterns = [
     path("health/", HealthView.as_view(), name="health"),

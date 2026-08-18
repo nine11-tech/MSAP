@@ -97,6 +97,11 @@ class AssessmentExecutor:
     ) -> AgentRun:
         if user_role(requested_by) not in {"ADMIN", "ANALYST"}:
             raise AssessmentExecutionPermissionError()
+        if plan.source_finding_id and plan.scenario_contract.get("validation_strategy") == "NOT_ASSESSABLE_WITH_CURRENT_TOOLS":
+            raise AssessmentExecutionError(
+                "This finding is not assessable with the current approved Tool Gateway.",
+                code="FINDING_NOT_ASSESSABLE",
+            )
         if runtime_type not in AgentRuntime.RuntimeType.values:
             raise AssessmentExecutionError(
                 "The requested execution runtime is unsupported.",
