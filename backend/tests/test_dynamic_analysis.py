@@ -634,6 +634,7 @@ def test_agent_tool_manifest_only_exposes_allowlisted_tools():
         "list_packages",
         "install_verified_apk",
         "launch_package",
+        "reset_root_detection_demo",
         "force_stop_package",
         "clear_package_data",
         "take_screenshot",

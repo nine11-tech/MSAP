@@ -9,7 +9,8 @@ from typing import Any
 from apps.appsec_rules.services.dynamic_evidence_evaluator import (
     evaluate_dynamic_evidence,
 )
-from apps.dynamic_analysis.models import AgentRun, AgentRunStep
+from apps.dynamic_analysis.models import AgentRun, AgentRunStep, DynamicValidationResult
+from apps.dynamic_analysis.services.dynamic_validation import record_dynamic_validation
 from apps.findings.models import Finding
 from apps.reports.models import Report
 from apps.reports.services.json_report import generate_json_report
@@ -34,6 +35,19 @@ def resolve_completed_assessment(run: AgentRun | int) -> dict[str, Any]:
             "reason": "AgentRun is not a completed assessment execution.",
         }
     rule_summary = evaluate_dynamic_evidence(run)
+    validation_summary = _resolve_playbook_validations(run)
+    try:
+        from apps.dynamic_analysis.services.finding_validation_missions import (
+            refresh_mission_from_run,
+        )
+
+        refresh_mission_from_run(run)
+    except Exception:
+        logger.warning(
+            "finding_validation_mission_refresh_failed run_id=%s",
+            run.id,
+            exc_info=True,
+        )
     report = generate_json_report(run.audit_id)
     summary = build_assessment_summary(run)
     logger.info(
@@ -48,6 +62,7 @@ def resolve_completed_assessment(run: AgentRun | int) -> dict[str, Any]:
     return {
         "status": "COMPLETED",
         "deterministic_rules": rule_summary,
+        "dynamic_validations": validation_summary,
         "assessment_summary": summary,
         "report": {
             "id": report["report"]["id"],
@@ -55,6 +70,70 @@ def resolve_completed_assessment(run: AgentRun | int) -> dict[str, Any]:
             "status": "READY",
         },
     }
+
+
+def _resolve_playbook_validations(run: AgentRun) -> list[dict[str, Any]]:
+    """Persist conservative finding-linked results from approved playbook steps."""
+    plan = run.assessment_plan
+    if plan is None or not isinstance(plan.normalized_plan, dict):
+        return []
+    step_tools = {
+        tool.get("name")
+        for step in plan.normalized_plan.get("steps", [])
+        if isinstance(step, dict)
+        for tool in step.get("tools", [])
+        if isinstance(tool, dict)
+    }
+    mapping = {
+        "launch_exported_activity": "EXPORTED_ACTIVITY_LAUNCH_VERIFICATION",
+        "send_explicit_broadcast": "EXPORTED_RECEIVER_BROADCAST_VERIFICATION",
+        "query_exported_provider": "EXPORTED_PROVIDER_ACCESS_VERIFICATION",
+        "frida_attach": "DEBUGGABLE_APP_VERIFICATION",
+        "frida_run_js": "DEBUGGABLE_APP_VERIFICATION",
+        "dump_ui": "ROOT_DETECTION_SCREEN_VALIDATION",
+    }
+    source_finding = plan.source_finding if plan is not None else None
+    lab_sources = {
+        "__MSAP_ROOT_DETECTION_LAB_BYPASS_TEMPLATE__": "ROOT_DETECTION_LAB_BYPASS",
+        "__MSAP_EMULATOR_DETECTION_LAB_BYPASS_TEMPLATE__": "EMULATOR_DETECTION_LAB_BYPASS",
+    }
+    results: list[dict[str, Any]] = []
+    for tool_name, playbook_id in mapping.items():
+        if tool_name not in step_tools:
+            continue
+        if playbook_id == "DEBUGGABLE_APP_VERIFICATION" and tool_name == "frida_run_js":
+            source = next((tool.get("arguments", {}).get("source") for step_row in plan.normalized_plan.get("steps", []) for tool in step_row.get("tools", []) if isinstance(tool, dict) and tool.get("name") == tool_name), None)
+            playbook_id = lab_sources.get(source, playbook_id)
+        rule_id = {"DEBUGGABLE_APP_VERIFICATION": "MSAP-AND-001", "EXPORTED_ACTIVITY_LAUNCH_VERIFICATION": "MSAP-AND-004", "EXPORTED_RECEIVER_BROADCAST_VERIFICATION": "MSAP-AND-006", "EXPORTED_PROVIDER_ACCESS_VERIFICATION": "MSAP-AND-007"}.get(playbook_id, "DYNAMIC-PLAYBOOK")
+        if playbook_id == "ROOT_DETECTION_SCREEN_VALIDATION":
+            source_finding = plan.source_finding
+        finding = source_finding or (Finding.objects.filter(audit_id=run.audit_id, rule_id=rule_id).first() if rule_id != "DYNAMIC-PLAYBOOK" else None)
+        if finding is None and playbook_id not in lab_sources.values():
+            continue
+        step = run.steps.filter(tool_name=tool_name).order_by("-sequence_number").first()
+        evidence = {}
+        for candidate in run.steps.order_by("sequence_number"):
+            if isinstance(candidate.output_summary, dict):
+                evidence.update(candidate.output_summary)
+            if isinstance(candidate.observation, dict):
+                evidence.update(candidate.observation)
+        screenshots = [
+            step.output_summary
+            for step in run.steps.filter(tool_name="take_screenshot", status=AgentRunStep.Status.SUCCEEDED).order_by("sequence_number")
+            if isinstance(step.output_summary, dict) and step.output_summary.get("sha256")
+        ]
+        if len(screenshots) >= 2:
+            evidence["before_screenshot_sha256"] = screenshots[0]["sha256"]
+            evidence["after_screenshot_sha256"] = screenshots[-1]["sha256"]
+        if step and isinstance(step.output_summary, dict):
+            evidence.update(step.output_summary)
+        existing = DynamicValidationResult.objects.filter(agent_run=run, finding=finding, playbook_id=playbook_id).first()
+        if existing:
+            result = existing
+        else:
+            result = record_dynamic_validation(finding=finding, audit=run.audit, playbook_id=playbook_id, evidence=evidence, agent_run=run, evidence_records=list(run.evidence_records.all()[:100]), confidence=0.9 if evidence else 0.0, rule_id=finding.rule_id if finding is not None else rule_id, scenario_id=str(plan.id if plan else ""))
+        results.append({"id": result.id, "finding_id": result.finding_id, "rule_id": result.rule_id, "playbook_id": result.playbook_id, "validation_status": result.validation_status, "oracle_result": result.oracle_result, "limitations": result.limitations})
+    return results
 
 
 def build_assessment_summary(run: AgentRun | int) -> dict[str, Any]:
@@ -73,6 +152,10 @@ def build_assessment_summary(run: AgentRun | int) -> dict[str, Any]:
             "status",
             "category",
         )[:100]
+    )
+    dynamic_validations = list(
+        DynamicValidationResult.objects.filter(agent_run=run)
+        .values("id", "finding_id", "rule_id", "playbook_id", "validation_status", "oracle_result", "limitations")
     )
     audit_findings = list(
         Finding.objects.filter(audit_id=run.audit_id).values_list(
@@ -123,6 +206,7 @@ def build_assessment_summary(run: AgentRun | int) -> dict[str, Any]:
             for severity in ("Critical", "High", "Medium", "Low", "Informational")
         },
         "run_findings": run_findings,
+        "dynamic_validations": dynamic_validations,
         "risk": {
             "score": float(risk.score) if risk is not None else None,
             "severity": risk.severity if risk is not None else "Unavailable",

@@ -5,6 +5,7 @@ from rest_framework import serializers
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.storage.models import ObjectStorageReference
+from apps.findings.models import Finding
 from apps.dynamic_analysis.models import (
     AgentActionDecision,
     AgentHypothesis,
@@ -25,6 +26,8 @@ from apps.dynamic_analysis.models import (
     DynamicSessionArtifact,
     DynamicSessionEvent,
     DynamicSessionStage,
+    DynamicValidationResult,
+    FindingValidationMission,
 )
 from apps.dynamic_analysis.services.assessment_planner import (
     OPENAI_MODEL_PROFILE_CHOICES,
@@ -40,6 +43,7 @@ MAX_FRIDA_SCRIPT_BYTES = 32 * 1024
 
 class AssessmentPlanCreateSerializer(serializers.Serializer):
     audit = serializers.PrimaryKeyRelatedField(queryset=Audit.objects.all())
+    source_finding = serializers.PrimaryKeyRelatedField(queryset=Finding.objects.all(), required=False, allow_null=True)
     target_package = serializers.CharField(max_length=255)
     objective = serializers.CharField(max_length=500, trim_whitespace=True)
     scope = serializers.CharField(max_length=2000, trim_whitespace=True)
@@ -60,6 +64,7 @@ class AssessmentPlanCreateSerializer(serializers.Serializer):
             set(data)
             - {
                 "audit",
+                "source_finding",
                 "target_package",
                 "objective",
                 "scope",
@@ -72,6 +77,12 @@ class AssessmentPlanCreateSerializer(serializers.Serializer):
                 {key: "This field is not permitted." for key in unexpected}
             )
         return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        finding = attrs.get("source_finding")
+        if finding is not None and finding.audit_id != attrs["audit"].pk:
+            raise serializers.ValidationError({"source_finding": "Finding must belong to the selected audit."})
+        return attrs
 
     def validate_target_package(self, value):
         if not ANDROID_PACKAGE_NAME_RE.fullmatch(value):
@@ -782,6 +793,7 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "audit",
+            "source_finding",
             "plan_kind",
             "parent_plan",
             "source_run",
@@ -801,6 +813,7 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
             "planner_input_hash",
             "plan_hash",
             "agentic_capability_preview",
+            "scenario_contract",
             "created_by",
             "created_by_username",
             "approved_by",
@@ -810,6 +823,99 @@ class AssessmentPlanSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "steps",
+        ]
+        read_only_fields = fields
+
+
+class DynamicValidationResultSerializer(serializers.ModelSerializer):
+    evidence_ids = serializers.SerializerMethodField()
+    result = serializers.SerializerMethodField()
+
+    def get_evidence_ids(self, obj):
+        return list(obj.evidence.values_list("id", flat=True)[:100])
+
+    def get_result(self, obj):
+        return obj.oracle_result.get("result_contract", {}).get("result", obj.validation_status)
+
+    class Meta:
+        model = DynamicValidationResult
+        fields = [
+            "id", "audit", "finding", "rule_id", "scenario_id", "playbook_id",
+            "agent_run", "oracle_id", "oracle_result", "validation_status", "result",
+            "evidence_ids", "confidence", "safe_summary", "limitations", "created_at",
+        ]
+        read_only_fields = fields
+
+
+class FindingValidationMissionSerializer(serializers.ModelSerializer):
+    evidence_ids = serializers.SerializerMethodField()
+    evidence_count = serializers.SerializerMethodField()
+    finding_title = serializers.CharField(source="finding.title", read_only=True)
+    finding_rule_id = serializers.CharField(source="finding.rule_id", read_only=True)
+    finding_severity = serializers.CharField(source="finding.severity", read_only=True)
+    assessment_plan_status = serializers.CharField(
+        source="assessment_plan.status",
+        read_only=True,
+    )
+    agent_run_status = serializers.CharField(source="agent_run.status", read_only=True)
+    dynamic_validation_result_status = serializers.CharField(
+        source="dynamic_validation_result.validation_status",
+        read_only=True,
+    )
+    approved_by_username = serializers.CharField(
+        source="approved_by.username",
+        read_only=True,
+        allow_blank=True,
+    )
+
+    def get_evidence_ids(self, obj):
+        return list(obj.evidence.values_list("id", flat=True)[:100])
+
+    def get_evidence_count(self, obj):
+        return obj.evidence.count()
+
+    class Meta:
+        model = FindingValidationMission
+        fields = [
+            "id",
+            "audit",
+            "apk",
+            "finding",
+            "finding_title",
+            "finding_rule_id",
+            "finding_severity",
+            "assessment_plan",
+            "assessment_plan_status",
+            "agent_run",
+            "agent_run_status",
+            "dynamic_validation_result",
+            "dynamic_validation_result_status",
+            "target_package",
+            "status",
+            "scenario_contract",
+            "scenario_hash",
+            "mission_hash",
+            "validation_family",
+            "playbook_id",
+            "hypothesis",
+            "final_conclusion",
+            "limitations",
+            "oracle_result",
+            "provider",
+            "model",
+            "provider_metadata",
+            "allowed_capabilities",
+            "budgets",
+            "evidence_ids",
+            "evidence_count",
+            "created_by",
+            "approved_by",
+            "approved_by_username",
+            "approved_at",
+            "started_at",
+            "completed_at",
+            "created_at",
+            "updated_at",
         ]
         read_only_fields = fields
 

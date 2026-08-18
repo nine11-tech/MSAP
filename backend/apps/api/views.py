@@ -34,6 +34,7 @@ from apps.api.serializers import (
     SourceDocumentSerializer,
 )
 from apps.api.permissions import (
+    IsMSAPAnalystOrAdmin,
     IsMSAPViewerOrAbove,
     IsReadOnlyViewerOrAbove,
 )
@@ -50,6 +51,11 @@ from apps.appsec_rules.services.coverage import calculate_rule_coverage
 from apps.apk_files.models import APKFile
 from apps.audits.models import AnalysisJob, Audit
 from apps.audits.tasks import analyze_audit_placeholder
+from apps.dynamic_analysis.serializers import FindingValidationMissionSerializer
+from apps.dynamic_analysis.services.finding_validation_missions import (
+    FindingValidationMissionError,
+    generate_finding_validation_mission,
+)
 from apps.evidence.models import Evidence, SourceDocument
 from apps.evidence.services.source_content import (
     SourceDocumentContentError,
@@ -458,6 +464,14 @@ class FindingViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = FindingSerializer
     permission_classes = [IsMSAPViewerOrAbove]
 
+    def get_permissions(self):
+        permission_classes = (
+            [IsMSAPAnalystOrAdmin]
+            if self.action in {"generate_dynamic_validation"}
+            else [IsMSAPViewerOrAbove]
+        )
+        return [permission() for permission in permission_classes]
+
     @action(detail=True, methods=["get"], url_path="source-references")
     def source_references(self, request, pk=None):
         finding = self.get_object()
@@ -465,6 +479,46 @@ class FindingViewSet(AuditScopedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
             "source_document"
         ).all()
         return Response(FindingSourceReferenceSerializer(references, many=True).data)
+
+    @extend_schema(request=serializers.DictField(), responses={201: FindingValidationMissionSerializer})
+    @action(detail=True, methods=["post"], url_path="dynamic-validation/generate")
+    def generate_dynamic_validation(self, request, pk=None):
+        if not isinstance(request.data, dict):
+            return Response(
+                {"detail": "Request body must be a JSON object."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        unexpected = sorted(set(request.data) - set())
+        if unexpected:
+            return Response(
+                {key: "This field is not permitted." for key in unexpected},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        finding = self.get_object()
+        try:
+            mission = generate_finding_validation_mission(
+                finding=finding,
+                requested_by=request.user,
+            )
+        except FindingValidationMissionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "MISSION_GENERATION_FAILED")
+            http_status = getattr(exc, "http_status", status.HTTP_503_SERVICE_UNAVAILABLE)
+            return Response(
+                {"code": code, "detail": str(exc)},
+                status=http_status,
+            )
+        return Response(
+            FindingValidationMissionSerializer(
+                mission,
+                context={"request": request},
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class SourceDocumentViewSet(

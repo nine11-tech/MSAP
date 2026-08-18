@@ -468,12 +468,12 @@ MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS = min(
     max(512, int(os.getenv("MSAP_AGENT_DECISION_MAX_OUTPUT_TOKENS", "1800"))),
 )
 MSAP_AGENT_MAX_DECISIONS = min(
-    4,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_DECISIONS", "4"))),
+    12,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_DECISIONS", "12"))),
 )
 MSAP_AGENT_MAX_TOOL_CALLS = min(
-    4,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "4"))),
+    12,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "12"))),
 )
 MSAP_AGENT_MAX_PROVIDER_CALLS = min(
     4,

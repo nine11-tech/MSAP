@@ -7,10 +7,10 @@ import re
 from typing import Any
 
 from apps.dynamic_analysis.services.agent_tools import (
-    BUILTIN_FRIDA_UI_PROOF,
     PACKAGE_NAME_RE,
     TOOL_MANIFEST,
 )
+from apps.dynamic_analysis.services.frida_scripts import APPROVED_FRIDA_SOURCE_IDENTIFIERS
 
 
 ASSESSMENT_PLAN_CONTRACT_VERSION = "msap.assessment-plan/v1"
@@ -467,7 +467,7 @@ def _validate_canonical_tools(tools: Any) -> list[dict[str, Any]]:
             TOOL_MANIFEST[name].input_schema,
             f"{name}.arguments",
         )
-        if name == "frida_run_js" and arguments.get("source") != BUILTIN_FRIDA_UI_PROOF:
+        if name == "frida_run_js" and arguments.get("source") not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
             raise AssessmentPlanContractError(
                 "The planner contract permits only the controlled built-in Frida proof."
             )
@@ -475,7 +475,7 @@ def _validate_canonical_tools(tools: Any) -> list[dict[str, Any]]:
             if isinstance(argument_value, str) and not (
                 name == "frida_run_js"
                 and argument_name == "source"
-                and argument_value == BUILTIN_FRIDA_UI_PROOF
+                and argument_value in APPROVED_FRIDA_SOURCE_IDENTIFIERS
             ):
                 reject_unsafe_instruction(
                     argument_value,

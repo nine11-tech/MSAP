@@ -6,9 +6,14 @@ const liveEnabled = process.env.MSAP_LIVE_ACCEPTANCE === "1";
 const preflightOnly = process.env.MSAP_LIVE_PREFLIGHT_ONLY === "1";
 const inspectExisting = process.env.MSAP_LIVE_INSPECT_EXISTING === "1";
 const retryRunId = Number(process.env.MSAP_LIVE_RETRY_RUN_ID || 0);
+const existingPlanId = Number(process.env.MSAP_LIVE_EXISTING_PLAN_ID || 0);
+const existingRunId = Number(process.env.MSAP_LIVE_EXISTING_RUN_ID || 0);
+const livePlaybook = process.env.MSAP_LIVE_PLAYBOOK || "";
 const username = process.env.MSAP_E2E_USERNAME || "";
 const password = process.env.MSAP_E2E_PASSWORD || "";
-const apiBase = process.env.MSAP_E2E_API_BASE_URL || "http://127.0.0.1:8000/api";
+// Match VITE_API_BASE_URL so the session cookie established by the UI login is
+// sent to these browser-side verification requests as well.
+const apiBase = process.env.MSAP_E2E_API_BASE_URL || "http://localhost:8000/api";
 const evidenceDirectory = path.resolve(
   process.cwd(),
   process.env.MSAP_E2E_EVIDENCE_DIR || "../.runtime/msap-demo/browser-acceptance",
@@ -20,7 +25,7 @@ async function browserApiGet(page: Page, endpoint: string): Promise<JsonRecord |
   return page.evaluate(
     async ({ url }) => {
       const response = await fetch(url, { credentials: "include" });
-      if (!response.ok) throw new Error(`GET ${url} returned ${response.status}`);
+      if (!response.ok) throw new Error(`GET ${url} returned ${response.status}: ${await response.text()}`);
       return response.json();
     },
     { url: `${apiBase}/${endpoint}` },
@@ -74,7 +79,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   expect(password, "MSAP_E2E_PASSWORD is required").not.toBe("");
   mkdirSync(evidenceDirectory, { recursive: true });
 
-  await page.goto("/dynamic");
+  await page.goto(existingPlanId || existingRunId ? `/dynamic?audit=4${existingRunId ? `&run=${existingRunId}` : ""}` : "/dynamic");
   const loginHeading = page.getByRole("heading", { name: "Secure assessment workspace" });
   const assessmentHeading = page.getByRole("heading", { name: "Dynamic Security Assessment" });
   await expect(loginHeading.or(assessmentHeading)).toBeVisible();
@@ -84,6 +89,18 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
     await page.getByRole("button", { name: "Sign in securely" }).click();
   }
   await expect(assessmentHeading).toBeVisible();
+
+  if (existingRunId) {
+    const persistedRun = (await browserApiGet(page, `dynamic/agent/runs/${existingRunId}/`)) as JsonRecord;
+    expect(persistedRun.status).toBe("SUCCEEDED");
+    const persistedArtifacts = (await browserApiGet(page, `dynamic/agent/runs/${existingRunId}/artifacts/`)) as JsonRecord[];
+    expect(persistedArtifacts.some((artifact) => artifact.artifact_type === "SCREENSHOT" && Boolean(artifact.download_url))).toBeTruthy();
+    await expect(page.getByRole("heading", { name: /Assessment (completed|stopped)/ })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Static Findings to Validate", { exact: true })).toBeVisible();
+    await expect(page.getByText(/Planner AI/).first()).toBeVisible();
+    await capture(page, "08-finding-driven-result-reload.png");
+    return;
+  }
 
   if (inspectExisting) {
     await expect(
@@ -105,7 +122,25 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   let plan: JsonRecord;
   let runId: number;
 
-  if (retryRunId) {
+  if (existingPlanId) {
+    plan = (await browserApiGet(page, `dynamic/agent/plans/${existingPlanId}/`)) as JsonRecord;
+    expect(plan.planner_provider).toBe("OPENAI");
+    expect(plan.planner_model).toBe("gpt-5.6-luna");
+    expect(plan.validation_status).toBe("PASSED");
+    expect(plan.policy_status).toBe("PASSED");
+    expect(plan.target_package).toBe("owasp.sat.agoat");
+    await expect(page.getByRole("button", { name: "Start Security Assessment" })).toBeVisible();
+    await capture(page, "04-approved-finding-driven-plan.png");
+    const executeResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && /\/execute-adaptive\/$/.test(response.url()),
+    );
+    await page.getByRole("button", { name: "Start Security Assessment" }).click();
+    const executeResponse = await executeResponsePromise;
+    const executePayload = (await executeResponse.json()) as { run?: JsonRecord; code?: string; detail?: string };
+    expect(executeResponse.ok(), `${executePayload.code || executeResponse.status()}: ${executePayload.detail || "execution failed"}`).toBeTruthy();
+    runId = Number(executePayload.run?.id);
+    expect(runId).toBeGreaterThan(0);
+  } else if (retryRunId) {
     const sourceRun = (await browserApiGet(
       page,
       `dynamic/agent/runs/${retryRunId}/`,
@@ -162,6 +197,22 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
     expect(retryPayload.run.decision_model).toBe("gpt-5.6-luna");
   } else {
 
+  // The live acceptance must begin from a real eligible static finding.  Do
+  // not fall back to a generic objective when the finding-driven fixture is
+  // available.
+  const liveFindings = (await browserApiGet(page, "findings/?audit=4")) as JsonRecord[];
+  const selectedFinding = liveFindings.find((finding) => {
+    const playbooks = Array.isArray(finding.dynamic_validation_playbooks)
+      ? finding.dynamic_validation_playbooks as unknown[]
+      : [];
+    return playbooks.includes("ROOT_DETECTION_LAB_BYPASS")
+      || playbooks.includes("EMULATOR_DETECTION_LAB_BYPASS")
+      || playbooks.includes("ROOT_DETECTION_SCREEN_VALIDATION");
+  });
+  expect(selectedFinding, "A real eligible AndroGoat root/emulator static finding is required").toBeTruthy();
+  await page.goto(`/dynamic?audit=4&finding=${String(selectedFinding!.id)}`);
+  await expect(assessmentHeading).toBeVisible();
+
   for (const label of ["Start New Assessment", "Cancel Review", "New Assessment"]) {
     const button = page.getByRole("button", { name: label }).first();
     if (await button.isVisible().catch(() => false)) {
@@ -182,12 +233,22 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   const authorizedTarget = targetOptions.find((value) => value.includes("owasp.sat.agoat"));
   expect(authorizedTarget, "The audit-authorized AndroGoat target is required").toBeTruthy();
   await targetSelect.selectOption({ label: authorizedTarget! });
-  await expect(page.getByText("Standard Dynamic Assessment", { exact: true })).toBeVisible();
+  await expect(page.getByText("Finding-driven validation", { exact: true })).toBeVisible();
+  await expect(page.getByText("Validate this static finding", { exact: true })).toBeVisible();
   if (await page.getByText("Not detected", { exact: true }).isVisible().catch(() => false)) {
     await page.getByText("Manual Controls", { exact: true }).click();
     await page.getByRole("button", { name: "Install", exact: true }).click();
   }
   await expect(page.getByText("Installed", { exact: true })).toBeVisible();
+  // Explicit auditor-approved runtime prerequisite.  Setup is a bounded
+  // backend-owned Frida action, never model-supplied setup or shell access.
+  const advancedControls = page.getByText("SHOW ADVANCED", { exact: true });
+  if (await advancedControls.isVisible().catch(() => false)) await advancedControls.click();
+  const setupFrida = page.getByRole("button", { name: "Setup Frida", exact: true });
+  if (await setupFrida.isVisible().catch(() => false)) {
+    await setupFrida.click();
+    await expect(page.getByText(/Frida setup|Frida.*completed|Frida.*failed/i).first()).toBeVisible({ timeout: 90_000 });
+  }
   await capture(page, "01-target-setup.png");
 
   await page.getByText("Advanced AI Settings").click();
@@ -201,7 +262,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   );
   await page.getByRole("button", { name: "Generate AI Assessment" }).click();
   const planResponse = await planResponsePromise;
-  expect(planResponse.ok()).toBeTruthy();
+  expect(planResponse.ok(), `${planResponse.status()}: ${await planResponse.text()}`).toBeTruthy();
   plan = (await planResponse.json()) as JsonRecord;
   expect(plan.planner_provider).toBe("OPENAI");
   expect(plan.planner_model).toBe("gpt-5.6-luna");
@@ -209,6 +270,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   expect(plan.policy_status).toBe("PASSED");
   expect(plan.target_package).toBe("owasp.sat.agoat");
   await expect(page.getByRole("heading", { name: "AI Assessment Plan" })).toBeVisible();
+  await expect(page.getByText("Dynamic validation scenario", { exact: true })).toBeVisible();
   await expect(page.getByText("Security checks passed", { exact: true })).toBeVisible();
   await capture(page, "02-ai-plan-review.png");
 
@@ -259,6 +321,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   const artifacts = (await browserApiGet(page, `dynamic/agent/runs/${runId}/artifacts/`)) as JsonRecord[];
   const hypotheses = (await browserApiGet(page, `dynamic/agent/runs/${runId}/hypotheses/`)) as JsonRecord[];
   const summary = (await browserApiGet(page, `dynamic/agent/runs/${runId}/assessment-summary/`)) as JsonRecord;
+  const validationResults = (await browserApiGet(page, "dynamic/validation-results/?audit=4")) as JsonRecord[];
 
   writeFileSync(
     path.join(evidenceDirectory, "acceptance-result.json"),
@@ -314,20 +377,30 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
         risk: summary.risk,
         compliance: summary.compliance,
         report: summary.report,
+        dynamic_validation: validationResults,
       },
     }, null, 2),
   );
 
   expect(terminalRun.status).toBe("SUCCEEDED");
   expect(decisions.length).toBeGreaterThanOrEqual(2);
-  expect(decisions.length).toBeLessThanOrEqual(4);
+  expect(decisions.length).toBeLessThanOrEqual(12);
   expect(decisions[0].decision_input_hash).not.toBe(decisions[1].decision_input_hash);
   expect(decisions[0].observation_hash).toBeTruthy();
   expect(steps.filter((step) => step.status === "SUCCEEDED").length).toBeGreaterThanOrEqual(2);
   expect(evidence.length).toBeGreaterThan(0);
+  expect(steps.filter((step) => step.tool_name === "frida_run_js" && step.status === "SUCCEEDED")).toHaveLength(1);
+  expect(steps.filter((step) => step.tool_name === "take_screenshot" && step.status === "SUCCEEDED")).toHaveLength(2);
+  const rootValidation = validationResults.find((item) =>
+    String(item.rule_id) === "MSAP-AND-ROOT-DEMO-001" && Number(item.agent_run) === runId,
+  );
+  expect(rootValidation?.validation_status).toBe("SUPPORTED");
+  expect((rootValidation?.evidence_ids as unknown[] | undefined)?.length || 0).toBeGreaterThan(0);
 
   await expect(page.getByRole("heading", { name: "Assessment completed" })).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("heading", { name: "Assessment results" })).toBeVisible();
+  await expect(page.getByText("Finding-driven validation", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Dynamic validation: (SUPPORTED|REJECTED|INCONCLUSIVE|NOT_ASSESSABLE|FAILED|CONFIRMED|REFUTED|STATIC_ONLY)/).first()).toBeVisible();
   await capture(page, "07-final-results.png");
 
   const findingsLink = page.getByRole("link", { name: "View Findings" });

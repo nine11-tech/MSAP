@@ -22,7 +22,11 @@ from xml.etree import ElementTree
 from django.conf import settings
 
 from apps.dynamic_analysis.services.local_scripts import _redacted_preview
-from apps.dynamic_analysis.services.frida_runtime import FridaRuntime, FridaRuntimeError
+from apps.dynamic_analysis.services.frida_runtime import (
+    FridaRuntime,
+    FridaRuntimeError,
+    ROOT_DETECTION_DEMO_MARKER,
+)
 
 
 logger = logging.getLogger("msap.security")
@@ -605,6 +609,33 @@ class DynamicHostAgent:
             **_public_command_result(result),
         }
 
+    def reset_root_detection_demo(self, body: dict) -> dict:
+        """Reset only the fixed AndroGoat lab signal before a root proof."""
+        if set(body) != {"package_name"}:
+            raise HostAgentRequestError(
+                "root-detection-demo-reset requires only package_name."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        if package_name != "owasp.sat.agoat":
+            raise HostAgentRequestError(
+                "The root-detection demo reset is restricted to authorized AndroGoat."
+            )
+        self._require_installed_package(package_name)
+        result = self._run_adb(
+            "shell", "rm", "-f", ROOT_DETECTION_DEMO_MARKER, timeout_seconds=10
+        )
+        if result["return_code"] != 0:
+            raise HostAgentRequestError(
+                "The fixed AndroGoat root-detection lab signal could not be reset.",
+                HTTPStatus.BAD_GATEWAY,
+            )
+        return {
+            "status": "PASS",
+            "package_name": package_name,
+            "reset": True,
+            "marker_path": ROOT_DETECTION_DEMO_MARKER,
+        }
+
     def launch_package(self, package_name: str) -> dict:
         self._require_installed_package(package_name)
         component = self._resolve_launchable_activity(package_name)
@@ -658,6 +689,49 @@ class DynamicHostAgent:
             "foreground_verified": focused_app == package_name,
             **_public_command_result(result),
         }
+
+    def launch_exported_activity(self, body: dict) -> dict:
+        if set(body) != {"package_name", "component_name"}:
+            raise HostAgentRequestError("launch-exported-activity requires package_name and component_name.")
+        package_name = self._validated_package(body.get("package_name"))
+        component = body.get("component_name")
+        if not isinstance(component, str) or not component.startswith(package_name + "."):
+            raise HostAgentRequestError("Activity component must belong to package_name.")
+        self._require_installed_package(package_name)
+        result = self._run_adb("shell", "am", "start", "-n", f"{package_name}/{component}", timeout_seconds=45)
+        focused_package, focused_activity = self._foreground_component()
+        running = bool(self._package_pid(package_name)) and focused_package == package_name
+        denied = "permission" in (result.get("stderr_preview") or "").lower()
+        return {"launched": bool(result["return_code"] == 0 and running), "permission_denied": denied, "focused_package": focused_package, "focused_activity": focused_activity, "target_package_running": running, "screenshot_sha256": "", "ui_sha256": ""}
+
+    def send_explicit_broadcast(self, body: dict) -> dict:
+        if set(body) != {"package_name", "receiver_name", "action"}:
+            raise HostAgentRequestError("send-explicit-broadcast requires package_name, receiver_name, and action.")
+        package_name = self._validated_package(body.get("package_name"))
+        receiver = body.get("receiver_name")
+        action = body.get("action")
+        if not isinstance(receiver, str) or not receiver.startswith(package_name + "."):
+            raise HostAgentRequestError("Receiver component must belong to package_name.")
+        if not isinstance(action, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,127}", action):
+            raise HostAgentRequestError("Broadcast action is not allowlisted.")
+        self._require_installed_package(package_name)
+        result = self._run_adb("shell", "am", "broadcast", "-n", f"{package_name}/{receiver}", "-a", action, timeout_seconds=45)
+        stderr = (result.get("stderr_preview") or "").lower()
+        return {"delivered": result["return_code"] == 0, "permission_denied": "permission" in stderr, "receiver_observed": False, "target_correlated": result["return_code"] == 0, "result_excerpt": (result.get("stdout_preview") or "")[:1000]}
+
+    def query_exported_provider(self, body: dict) -> dict:
+        if set(body) != {"package_name", "authority"}:
+            raise HostAgentRequestError("query-exported-provider requires package_name and authority.")
+        package_name = self._validated_package(body.get("package_name"))
+        authority = body.get("authority")
+        if not isinstance(authority, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", authority):
+            raise HostAgentRequestError("Provider authority is not allowlisted.")
+        self._require_installed_package(package_name)
+        result = self._run_adb("shell", "content", "query", "--uri", f"content://{authority}/", "--projection", "_id", timeout_seconds=45)
+        stderr = (result.get("stderr_preview") or "").lower()
+        preview = (result.get("stdout_preview") or "")[:1200]
+        row_count = min(preview.count("Row:"), 100)
+        return {"query_succeeded": result["return_code"] == 0, "permission_denied": "permission" in stderr, "metadata_returned": bool(preview), "rows_returned": row_count > 0, "row_count": row_count, "redacted_preview": preview, "result_sha256": sha256(preview.encode()).hexdigest()}
 
     def install_apk(self, request: BaseHTTPRequestHandler) -> dict:
         content_length = _required_content_length(request)
@@ -988,6 +1062,12 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                     self.server.agent.frida_setup(self._read_json_body()),
                 )
                 return
+            if path == "/actions/root-detection-demo-reset":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.reset_root_detection_demo(self._read_json_body()),
+                )
+                return
             if path == "/actions/frida-ps":
                 self._send_json(
                     HTTPStatus.OK,
@@ -1005,6 +1085,15 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     self.server.agent.frida_run_js(self._read_json_body()),
                 )
+                return
+            if path == "/actions/launch-exported-activity":
+                self._send_json(HTTPStatus.OK, self.server.agent.launch_exported_activity(self._read_json_body()))
+                return
+            if path == "/actions/send-explicit-broadcast":
+                self._send_json(HTTPStatus.OK, self.server.agent.send_explicit_broadcast(self._read_json_body()))
+                return
+            if path == "/actions/query-exported-provider":
+                self._send_json(HTTPStatus.OK, self.server.agent.query_exported_provider(self._read_json_body()))
                 return
             if path in {
                 "/actions/launch-package",

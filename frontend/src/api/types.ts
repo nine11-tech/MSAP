@@ -87,6 +87,127 @@ export interface Finding {
   related_agent_runs?: number[];
   related_agent_run_steps?: number[];
   provenance?: "DETERMINISTIC_DYNAMIC_EVIDENCE" | "DETERMINISTIC_STATIC_RULE";
+  dynamic_validation_status?: string;
+  dynamic_validation_result_id?: number | null;
+  dynamic_validation_mission_id?: number | null;
+  dynamic_validation_summary?: {
+    mission_id?: number;
+    run_id?: number | null;
+    status?: string;
+    hypothesis?: string;
+    scenario_summary?: string;
+    evidence_count?: number;
+    oracle_result?: Record<string, unknown>;
+    final_conclusion?: string;
+    limitations?: string;
+    created_at?: string;
+    completed_at?: string | null;
+  };
+  dynamic_validation_playbooks?: string[];
+}
+
+export interface DynamicPlaybook {
+  playbook_id: string;
+  title: string;
+  description: string;
+  applicable_static_rule_ids: string[];
+  masvs_mapping: string[];
+  required_evidence_inputs: string[];
+  supported_tools: string[];
+  required_capabilities: string[];
+  safe_argument_policy: string;
+  oracle_id: string;
+  result_states: string[];
+  limitations: string;
+  destructive: boolean;
+  requires_additional_approval: boolean;
+  default_priority: number;
+  current_capability_status: string;
+}
+
+export interface DynamicValidationResult {
+  id: number;
+  audit: number;
+  finding: number | null;
+  rule_id: string;
+  scenario_id: string;
+  playbook_id: string;
+  agent_run: number | null;
+  oracle_id: string;
+  oracle_result: Record<string, unknown>;
+  validation_status: string;
+  result: string;
+  evidence_ids: number[];
+  confidence: number;
+  safe_summary: string;
+  limitations: string;
+  created_at: string;
+}
+
+export interface FindingValidationMission {
+  id: number;
+  audit: number;
+  apk: number | null;
+  finding: number;
+  finding_title: string;
+  finding_rule_id: string;
+  finding_severity: string;
+  assessment_plan: number | null;
+  assessment_plan_status?: string;
+  agent_run: number | null;
+  agent_run_status?: string;
+  dynamic_validation_result: number | null;
+  dynamic_validation_result_status?: string;
+  target_package: string;
+  status: string;
+  scenario_contract: Record<string, unknown>;
+  scenario_hash: string;
+  mission_hash: string;
+  validation_family: string;
+  playbook_id: string;
+  hypothesis: string;
+  final_conclusion: string;
+  limitations: string;
+  oracle_result: Record<string, unknown>;
+  provider: string;
+  model: string;
+  provider_metadata: Record<string, unknown>;
+  allowed_capabilities: string[];
+  budgets: Record<string, unknown>;
+  evidence_ids: number[];
+  evidence_count: number;
+  created_by: number | null;
+  approved_by: number | null;
+  approved_by_username?: string;
+  approved_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FindingValidationTimelineItem {
+  sequence: number;
+  scenario_step_id: string;
+  scenario_title: string;
+  purpose: string;
+  tool_name: string;
+  status: string;
+  decision_summary: string;
+  expected_observation: string;
+  observation: Record<string, unknown>;
+  evidence_goal: string[];
+  troubleshooting: boolean;
+  failure_message: string;
+  created_at: string;
+}
+
+export interface FindingValidationTimeline {
+  mission_id: number;
+  finding_id: number;
+  agent_run_id: number | null;
+  status: string;
+  items: FindingValidationTimelineItem[];
 }
 
 export type SourceRepresentation =
@@ -871,6 +992,15 @@ export interface AssessmentRunSummary {
     status: string;
     category: string;
   }>;
+  dynamic_validations: Array<{
+    id: number;
+    finding_id: number;
+    rule_id: string;
+    playbook_id: string;
+    validation_status: string;
+    oracle_result: string | { status?: string; summary?: string; oracle_id?: string };
+    limitations: string;
+  }>;
   risk: { score: number | null; severity: string };
   compliance: { standard: string; score: number | null };
   report: { id: number | null; status: string; type: string };
@@ -1156,6 +1286,7 @@ export interface AssessmentPlanStep {
 export interface AssessmentPlan {
   id: number;
   audit: number;
+  source_finding: number | null;
   plan_kind: "INITIAL" | "ADAPTIVE";
   parent_plan: number | null;
   source_run: number | null;
@@ -1203,4 +1334,5 @@ export interface AssessmentPlan {
   created_at: string;
   updated_at: string;
   steps: AssessmentPlanStep[];
+  scenario_contract?: Record<string, unknown>;
 }

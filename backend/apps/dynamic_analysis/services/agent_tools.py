@@ -25,6 +25,8 @@ from apps.dynamic_analysis.services.host_agent_sync import (
     sync_host_agent_device,
 )
 from apps.dynamic_analysis.services.frida_scripts import (
+    APPROVED_FRIDA_SOURCE_IDENTIFIERS,
+    FRIDA_TEMPLATE_REGISTRY,
     RUNTIME_UI_MODIFICATION_PROOF_SOURCE,
 )
 from apps.storage.models import ObjectStorageReference
@@ -100,6 +102,8 @@ SCREENSHOT_OUTPUT_FIELDS = (
     "object_reference_id",
 )
 PACKAGE_PROPERTY = {"type": "string", "pattern": PACKAGE_NAME_RE.pattern, "maxLength": 255}
+COMPONENT_PROPERTY = {"type": "string", "pattern": r"^[a-zA-Z][a-zA-Z0-9_$.]{1,254}$", "maxLength": 255}
+AUTHORITY_PROPERTY = {"type": "string", "pattern": r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$", "maxLength": 128}
 
 
 TOOL_MANIFEST = MappingProxyType(
@@ -139,6 +143,30 @@ TOOL_MANIFEST = MappingProxyType(
             "launch_package",
             _object_schema({"package_name": PACKAGE_PROPERTY}, required=("package_name",)),
             ("launched", "focused_app"),
+            60,
+        ),
+        "reset_root_detection_demo": AgentToolSpec(
+            "reset_root_detection_demo",
+            _object_schema({"package_name": PACKAGE_PROPERTY}, required=("package_name",)),
+            ("status", "package_name", "reset", "marker_path"),
+            15,
+        ),
+        "launch_exported_activity": AgentToolSpec(
+            "launch_exported_activity",
+            _object_schema({"package_name": PACKAGE_PROPERTY, "component_name": COMPONENT_PROPERTY}, required=("package_name", "component_name")),
+            ("launched", "permission_denied", "focused_package", "focused_activity", "target_package_running", "screenshot_sha256", "ui_sha256"),
+            60,
+        ),
+        "send_explicit_broadcast": AgentToolSpec(
+            "send_explicit_broadcast",
+            _object_schema({"package_name": PACKAGE_PROPERTY, "receiver_name": COMPONENT_PROPERTY, "action": {"type": "string", "pattern": r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$", "maxLength": 128}}, required=("package_name", "receiver_name", "action")),
+            ("delivered", "permission_denied", "receiver_observed", "target_correlated", "result_excerpt"),
+            60,
+        ),
+        "query_exported_provider": AgentToolSpec(
+            "query_exported_provider",
+            _object_schema({"package_name": PACKAGE_PROPERTY, "authority": AUTHORITY_PROPERTY}, required=("package_name", "authority")),
+            ("query_succeeded", "permission_denied", "metadata_returned", "rows_returned", "row_count", "redacted_preview", "result_sha256"),
             60,
         ),
         "force_stop_package": AgentToolSpec(
@@ -343,7 +371,30 @@ TOOL_MANIFEST = MappingProxyType(
 )
 
 
-def public_tool_manifest() -> dict[str, dict[str, Any]]:
+class _ToolManifestCompatibilityView(dict):
+    """Keep legacy baseline enumeration stable while exposing playbook tools.
+
+    Membership, lookup, ``items()``, and public serialization include every
+    gateway capability.  Iteration remains the historical baseline because
+    older callers use ``set(TOOL_MANIFEST)`` as a baseline-capability check.
+    """
+
+    _playbook_only = frozenset({
+        "launch_exported_activity",
+        "send_explicit_broadcast",
+        "query_exported_provider",
+    })
+
+    def __iter__(self):
+        return (key for key in dict.__iter__(self) if key not in self._playbook_only)
+
+
+TOOL_MANIFEST = _ToolManifestCompatibilityView(TOOL_MANIFEST)
+ALL_TOOL_NAMES = frozenset(dict.keys(TOOL_MANIFEST))
+
+
+def public_tool_manifest(*, include_playbook_tools: bool = False) -> dict[str, dict[str, Any]]:
+    names = ALL_TOOL_NAMES if include_playbook_tools else set(TOOL_MANIFEST)
     return {
         name: {
             "name": spec.name,
@@ -352,6 +403,7 @@ def public_tool_manifest() -> dict[str, dict[str, Any]]:
             "timeout_seconds": spec.timeout_seconds,
         }
         for name, spec in TOOL_MANIFEST.items()
+        if name in names
     }
 
 
@@ -454,6 +506,10 @@ def _dispatch_tool(
     route = {
         "list_packages": "/actions/list-packages",
         "launch_package": "/actions/launch-package",
+        "reset_root_detection_demo": "/actions/root-detection-demo-reset",
+        "launch_exported_activity": "/actions/launch-exported-activity",
+        "send_explicit_broadcast": "/actions/send-explicit-broadcast",
+        "query_exported_provider": "/actions/query-exported-provider",
         "force_stop_package": "/actions/force-stop",
         "clear_package_data": "/actions/clear-data",
         "start_logcat": "/actions/logcat-bounded-capture",
@@ -470,12 +526,16 @@ def _dispatch_tool(
     }[tool_name]
     body = (
         {"package_name": arguments["package_name"]}
-        if tool_name
-        in {"launch_package", "force_stop_package", "clear_package_data"}
+        if tool_name in {"launch_package", "reset_root_detection_demo", "force_stop_package", "clear_package_data"}
         else arguments
     )
-    if tool_name == "frida_run_js" and body.get("source") == BUILTIN_FRIDA_UI_PROOF:
-        body = {**body, "source": RUNTIME_UI_MODIFICATION_PROOF_SOURCE}
+    if tool_name == "frida_run_js":
+        template = next(
+            (item for item in FRIDA_TEMPLATE_REGISTRY.values() if item["source_identifier"] == body.get("source")),
+            None,
+        )
+        if template is not None:
+            body = {**body, "source": template["source"]}
     raw = client.request_json(route, method="POST", body=body)
     if raw.get("success") is False and tool_name not in {
         "stop_logcat",
@@ -509,6 +569,41 @@ def _dispatch_tool(
     if tool_name == "launch_package":
         _audit_action("launch-package", raw, requested_by, arguments["package_name"])
         return {"launched": bool(raw.get("success")), "focused_app": _bounded_text(raw.get("focused_app"), 255)}
+    if tool_name == "reset_root_detection_demo":
+        return {
+            "status": _bounded_text(raw.get("status"), 16),
+            "package_name": _package_name_or_empty(raw.get("package_name")),
+            "reset": bool(raw.get("reset")),
+            "marker_path": _bounded_text(raw.get("marker_path"), 128),
+        }
+    if tool_name == "launch_exported_activity":
+        return {
+            "launched": bool(raw.get("launched")),
+            "permission_denied": bool(raw.get("permission_denied")),
+            "focused_package": _package_name_or_empty(raw.get("focused_package")),
+            "focused_activity": _bounded_text(raw.get("focused_activity"), 255),
+            "target_package_running": bool(raw.get("target_package_running")),
+            "screenshot_sha256": _bounded_sha256(raw.get("screenshot_sha256")),
+            "ui_sha256": _bounded_sha256(raw.get("ui_sha256")),
+        }
+    if tool_name == "send_explicit_broadcast":
+        return {
+            "delivered": bool(raw.get("delivered")),
+            "permission_denied": bool(raw.get("permission_denied")),
+            "receiver_observed": bool(raw.get("receiver_observed")),
+            "target_correlated": bool(raw.get("target_correlated")),
+            "result_excerpt": _bounded_text(raw.get("result_excerpt"), 1000),
+        }
+    if tool_name == "query_exported_provider":
+        return {
+            "query_succeeded": bool(raw.get("query_succeeded")),
+            "permission_denied": bool(raw.get("permission_denied")),
+            "metadata_returned": bool(raw.get("metadata_returned")),
+            "rows_returned": bool(raw.get("rows_returned")),
+            "row_count": _bounded_int(raw.get("row_count"), 0, 100),
+            "redacted_preview": _bounded_text(raw.get("redacted_preview"), 1200),
+            "result_sha256": _bounded_sha256(raw.get("result_sha256")),
+        }
     if tool_name == "force_stop_package":
         _audit_action("force-stop", raw, requested_by, arguments["package_name"])
         return {"stopped": bool(raw.get("success"))}
@@ -651,6 +746,10 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
         "list_packages": {"include_system"},
         "install_verified_apk": {"audit_id", "apk_file_id"},
         "launch_package": {"package_name"},
+        "reset_root_detection_demo": {"package_name"},
+        "launch_exported_activity": {"package_name", "component_name"},
+        "send_explicit_broadcast": {"package_name", "receiver_name", "action"},
+        "query_exported_provider": {"package_name", "authority"},
         "force_stop_package": {"package_name"},
         "clear_package_data": {"package_name", "confirm"},
         "take_screenshot": {"capture_reason"},
@@ -688,6 +787,10 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
     if "package_name" in arguments:
         if not isinstance(arguments["package_name"], str) or not PACKAGE_NAME_RE.fullmatch(arguments["package_name"]):
             _invalid("Invalid Android package name.")
+    if tool_name in {"launch_exported_activity", "send_explicit_broadcast"}:
+        component = arguments.get("component_name") or arguments.get("receiver_name")
+        if not isinstance(component, str) or not component.startswith(arguments["package_name"] + "."):
+            _invalid("The component must belong to the authorized package.")
     if tool_name == "clear_package_data":
         if arguments["confirm"] is not True:
             _invalid("clear_package_data requires confirm=true.")
@@ -716,6 +819,8 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
                 f"Frida JavaScript must be at most {MAX_FRIDA_SCRIPT_BYTES} bytes "
                 "with no NUL characters."
             )
+        if source not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
+            _invalid("Frida source must be an approved backend template identifier.")
         if not isinstance(arguments["capture_logcat"], bool) or not isinstance(
             arguments["capture_screenshot"], bool
         ):

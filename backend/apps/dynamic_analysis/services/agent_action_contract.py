@@ -19,6 +19,7 @@ from apps.dynamic_analysis.services.agent_tools import (
     TOOL_MANIFEST,
     validate_agent_tool_arguments,
 )
+from apps.dynamic_analysis.services.frida_scripts import APPROVED_FRIDA_SOURCE_IDENTIFIERS
 from apps.dynamic_analysis.services.assessment_plan_contract import EVIDENCE_TYPES
 
 
@@ -157,10 +158,43 @@ def validate_action_decision(
                 code="AGENT_DECISION_TOOL_OUTSIDE_ENVELOPE",
                 http_status=403,
             )
+        plan = run.assessment_plan
+        normalized_plan = plan.normalized_plan if plan is not None else None
+        if isinstance(normalized_plan, dict):
+            planned_tools = [
+                tool.get("name")
+                for step in normalized_plan.get("steps", [])
+                if isinstance(step, dict)
+                and ("MSAP-AND-" in str(step.get("rationale", "")) or any(playbook in str(step.get("rationale", "")) for playbook in {
+                    "ROOT_DETECTION_LAB_BYPASS", "EMULATOR_DETECTION_LAB_BYPASS", "ROOT_SIGNAL_OBSERVATION", "EMULATOR_SIGNAL_OBSERVATION"
+                }) or any(
+                    isinstance(item, dict) and item.get("name") in {
+                        "launch_exported_activity", "send_explicit_broadcast", "query_exported_provider"
+                    }
+                    for item in step.get("tools", [])
+                ))
+                for tool in step.get("tools", [])
+                if isinstance(tool, dict)
+            ]
+            if planned_tools:
+                consumed = run.steps.count()
+                expected = planned_tools[consumed] if consumed < len(planned_tools) else None
+                if expected and tool_name != expected:
+                    raise AgentActionDecisionError(
+                        f"The approved finding-driven playbook requires {expected} next.",
+                        code="AGENT_DECISION_PLAN_STEP_MISMATCH",
+                        http_status=403,
+                    )
         if tool_name in envelope["additional_approval_capabilities"]:
             raise AgentActionDecisionError(
                 "The requested capability requires additional auditor approval.",
                 code="AGENT_DECISION_NEEDS_AUDITOR",
+                http_status=403,
+            )
+        if tool_name == "frida_run_js" and arguments.get("source") not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
+            raise AgentActionDecisionError(
+                "Agentic Frida execution is restricted to the controlled built-in proof.",
+                code="AGENT_DECISION_FRIDA_SOURCE_REJECTED",
                 http_status=403,
             )
         try:
@@ -281,7 +315,7 @@ def _authorize_arguments(
             http_status=403,
         )
     if tool_name == "frida_run_js" and (
-        arguments.get("source") != BUILTIN_FRIDA_UI_PROOF
+        arguments.get("source") not in policy.get("allowed_source_identifiers", [])
         or arguments.get("mode") not in policy["allowed_modes"]
     ):
         raise AgentActionDecisionError(

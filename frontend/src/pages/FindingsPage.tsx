@@ -143,6 +143,9 @@ export function FindingsPage() {
             <section><h3>Remediation</h3><p>{selected.recommendation || "Review the affected configuration and apply platform security guidance."}</p></section>
             <section><h3>False-positive considerations</h3><p>{selected.false_positive_guidance || "Validate application context and the affected release configuration."}</p></section>
             <p className="notice">{selected.requires_manual_validation ? "Manual validation is required." : "Deterministic static finding; contextual validation remains recommended."}</p>
+            {(selected.dynamic_validation_playbooks || []).length > 0 ? (
+              <Link className="button button-primary" to={`/dynamic?audit=${selected.audit}&finding=${selected.id}`}>Validate dynamically</Link>
+            ) : <p className="muted">No approved dynamic playbook is available for this finding.</p>}
           </aside>
         </div>
       ) : null}

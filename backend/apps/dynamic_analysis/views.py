@@ -33,6 +33,8 @@ from apps.dynamic_analysis.models import (
     DynamicSessionArtifact,
     DynamicSessionEvent,
     DynamicSessionStage,
+    DynamicValidationResult,
+    FindingValidationMission,
 )
 from apps.dynamic_analysis.authentication import (
     AgentRunTokenAuthentication,
@@ -69,6 +71,8 @@ from apps.dynamic_analysis.serializers import (
     DynamicSessionEventSerializer,
     DynamicSessionSerializer,
     DynamicSessionStageSerializer,
+    DynamicValidationResultSerializer,
+    FindingValidationMissionSerializer,
     DynamicSessionTransitionSerializer,
 )
 from apps.dynamic_analysis.renderers import PNGRenderer
@@ -76,6 +80,7 @@ from apps.dynamic_analysis.services.host_agent_client import (
     DynamicHostAgentClient,
     HostAgentClientError,
 )
+from apps.dynamic_analysis.services.playbook_catalog import list_playbooks
 from apps.dynamic_analysis.services.agent_controller import (
     AgentController,
     AgentControllerError,
@@ -131,6 +136,12 @@ from apps.dynamic_analysis.services.mvp_runner import (
 )
 from apps.dynamic_analysis.services.runner_readiness import (
     get_dynamic_runner_readiness,
+)
+from apps.dynamic_analysis.services.finding_validation_missions import (
+    FindingValidationMissionError,
+    approve_finding_validation_mission,
+    refresh_mission_from_run,
+    start_finding_validation_mission,
 )
 from apps.dynamic_analysis.tasks import (
     execute_adaptive_assessment_run_task,
@@ -559,6 +570,222 @@ class DynamicSessionArtifactViewSet(
     )
 
 
+class DynamicPlaybookViewSet(viewsets.ViewSet):
+    permission_classes = [IsMSAPViewerOrAbove]
+
+    def list(self, request):
+        return Response({"contract_version": "msap.dynamic-playbook/v1", "items": list_playbooks()})
+
+
+class DynamicValidationResultViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = DynamicValidationResult.objects.select_related("finding", "agent_run").prefetch_related("evidence")
+    serializer_class = DynamicValidationResultSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+    filterset_fields = ("audit", "finding", "validation_status")
+
+
+class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModelViewSet):
+    queryset = (
+        FindingValidationMission.objects.select_related(
+            "audit",
+            "apk",
+            "finding",
+            "assessment_plan",
+            "agent_run",
+            "dynamic_validation_result",
+            "created_by",
+            "approved_by",
+        )
+        .prefetch_related("evidence")
+        .all()
+    )
+    serializer_class = FindingValidationMissionSerializer
+    permission_classes = [IsMSAPViewerOrAbove]
+    filter_fields = ("audit", "finding", "status", "target_package")
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsMSAPAnalystOrAdmin]
+            if self.action in {"approve", "start"}
+            else [IsMSAPViewerOrAbove]
+        )
+        return [permission() for permission in permission_classes]
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: FindingValidationMissionSerializer})
+    @action(detail=True, methods=["post"], url_path="approve")
+    def approve(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mission = self.get_object()
+        try:
+            mission = approve_finding_validation_mission(
+                mission=mission,
+                approved_by=request.user,
+            )
+        except FindingValidationMissionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            FindingValidationMissionSerializer(mission, context={"request": request}).data
+        )
+
+    @extend_schema(request=StrictEmptySerializer, responses={202: AgentRunSerializer})
+    @action(detail=True, methods=["post"], url_path="start")
+    def start(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        mission = self.get_object()
+        try:
+            run = start_finding_validation_mission(
+                mission=mission,
+                requested_by=request.user,
+            )
+        except FindingValidationMissionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        try:
+            async_result = execute_adaptive_assessment_run_task.delay(run.id)
+        except Exception as exc:
+            logger.warning(
+                "finding_validation_enqueue_failed mission_id=%s run_id=%s error_type=%s",
+                mission.id,
+                run.id,
+                type(exc).__name__,
+            )
+            run = AssessmentExecutor.mark_enqueue_failed(run)
+            refresh_mission_from_run(run)
+            return Response(
+                {
+                    "code": "FINDING_VALIDATION_ENQUEUE_FAILED",
+                    "detail": "The finding validation agent could not be queued.",
+                    "run": AgentRunSerializer(run, context={"request": request}).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        run.refresh_from_db()
+        mission.refresh_from_db()
+        return Response(
+            {
+                "mission": FindingValidationMissionSerializer(
+                    mission,
+                    context={"request": request},
+                ).data,
+                "run": AgentRunSerializer(run, context={"request": request}).data,
+                "task_id": getattr(async_result, "id", None),
+                "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    @extend_schema(responses={200: EvidenceSerializer(many=True)})
+    @action(detail=True, methods=["get"], url_path="evidence")
+    def evidence(self, request, pk=None):
+        mission = self.get_object()
+        if mission.agent_run_id:
+            refresh_mission_from_run(mission.agent_run)
+            mission.refresh_from_db()
+        records = mission.evidence.select_related(
+            "storage_reference",
+            "agent_run",
+            "agent_run_step",
+            "agent_run_artifact",
+        ).all()
+        return Response(EvidenceSerializer(records, many=True).data)
+
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        mission = self.get_object()
+        run = mission.agent_run
+        if run is not None:
+            refresh_mission_from_run(run)
+        scenario_steps = (
+            mission.scenario_contract.get("steps", [])
+            if isinstance(mission.scenario_contract, dict)
+            else []
+        )
+        timeline = []
+        decisions = {
+            decision.run_step_id: decision
+            for decision in run.action_decisions.all()
+        } if run is not None else {}
+        run_steps = list(run.steps.order_by("sequence_number")) if run is not None else []
+        for step in run_steps:
+            scenario = next(
+                (
+                    item
+                    for item in scenario_steps
+                    if isinstance(item, dict)
+                    and (
+                        item.get("step_id") == step.plan_step_identifier
+                        or item.get("sequence") == step.plan_step_sequence
+                    )
+                ),
+                {},
+            )
+            decision = decisions.get(step.id)
+            timeline.append(
+                {
+                    "sequence": step.sequence_number,
+                    "scenario_step_id": step.plan_step_identifier,
+                    "scenario_title": scenario.get("objective", step.tool_name),
+                    "purpose": scenario.get("rationale", ""),
+                    "tool_name": step.tool_name,
+                    "status": step.status,
+                    "decision_summary": (
+                        decision.rationale_summary if decision else ""
+                    ),
+                    "expected_observation": step.output_summary.get(
+                        "expected_observation",
+                        scenario.get("expected_observation", ""),
+                    )
+                    if isinstance(step.output_summary, dict)
+                    else scenario.get("expected_observation", ""),
+                    "observation": step.observation,
+                    "evidence_goal": step.evidence_requirements,
+                    "troubleshooting": step.retry_count > 0,
+                    "failure_message": step.failure_message,
+                    "created_at": step.created_at,
+                }
+            )
+        if not timeline:
+            timeline = [
+                {
+                    "sequence": item.get("sequence"),
+                    "scenario_step_id": item.get("step_id"),
+                    "scenario_title": item.get("objective"),
+                    "purpose": item.get("rationale"),
+                    "tool_name": ", ".join(
+                        tool.get("name", "")
+                        for tool in item.get("tools", [])
+                        if isinstance(tool, dict)
+                    ),
+                    "status": "PLANNED",
+                    "decision_summary": "",
+                    "expected_observation": item.get("expected_observation", ""),
+                    "observation": {},
+                    "evidence_goal": item.get("evidence_requirements", []),
+                    "troubleshooting": False,
+                    "failure_message": "",
+                    "created_at": mission.created_at,
+                }
+                for item in scenario_steps
+                if isinstance(item, dict)
+            ]
+        return Response(
+            {
+                "mission_id": mission.id,
+                "finding_id": mission.finding_id,
+                "agent_run_id": mission.agent_run_id,
+                "status": mission.status,
+                "items": timeline,
+            }
+        )
+
+
 class AgentRuntimeViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AgentRuntime.objects.all()
     serializer_class = AgentRuntimeSerializer
@@ -618,6 +845,7 @@ class AssessmentPlanViewSet(
                 target_package=serializer.validated_data["target_package"],
                 objective=serializer.validated_data["objective"],
                 scope=serializer.validated_data["scope"],
+                source_finding=serializer.validated_data.get("source_finding"),
                 requested_by=request.user,
             )
         except AssessmentPlannerError as exc:

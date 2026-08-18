@@ -9,9 +9,10 @@ from django.conf import settings
 
 from apps.dynamic_analysis.models import AgentHypothesis, AssessmentPlan
 from apps.dynamic_analysis.services.agent_tools import (
-    BUILTIN_FRIDA_UI_PROOF,
+    ALL_TOOL_NAMES,
     TOOL_MANIFEST,
 )
+from apps.dynamic_analysis.services.frida_scripts import APPROVED_FRIDA_SOURCE_IDENTIFIERS
 from apps.dynamic_analysis.services.assessment_execution_contract import (
     build_approved_execution_contract,
     validate_persisted_plan_contract,
@@ -35,12 +36,21 @@ AGENTIC_SAFE_CAPABILITIES = frozenset(
         "dump_ui",
         "tap_coordinates",
         "type_text",
+        "reset_root_detection_demo",
         "frida_status",
         "frida_ps",
         "frida_attach",
         "frida_run_js",
     }
 )
+PLAYBOOK_SAFE_CAPABILITIES = frozenset(
+    {
+        "launch_exported_activity",
+        "send_explicit_broadcast",
+        "query_exported_provider",
+    }
+)
+ALL_AGENTIC_SAFE_CAPABILITIES = AGENTIC_SAFE_CAPABILITIES | PLAYBOOK_SAFE_CAPABILITIES
 DESTRUCTIVE_CAPABILITIES = frozenset(
     {"clear_package_data", "install_verified_apk", "frida_setup"}
 )
@@ -110,7 +120,7 @@ def build_capability_preview(plan: AssessmentPlan) -> dict[str, Any]:
         if isinstance(tool, dict) and isinstance(tool.get("name"), str)
     }
     allowed_capabilities = sorted(
-        strategy_capabilities & AGENTIC_SAFE_CAPABILITIES & set(TOOL_MANIFEST)
+        strategy_capabilities & ALL_AGENTIC_SAFE_CAPABILITIES & ALL_TOOL_NAMES
     )
     return {
         "contract_version": CAPABILITY_ENVELOPE_VERSION,
@@ -193,7 +203,7 @@ def _build_capability_envelope(
         for tool in step["tools"]
     }
     allowed_capabilities = sorted(
-        strategy_capabilities & AGENTIC_SAFE_CAPABILITIES & set(TOOL_MANIFEST)
+        strategy_capabilities & ALL_AGENTIC_SAFE_CAPABILITIES & ALL_TOOL_NAMES
     )
     if not allowed_capabilities:
         raise CapabilityEnvelopeError(
@@ -250,8 +260,10 @@ def _hypothesis_families(allowed_capabilities: list[str]) -> list[str]:
         )
     if "dump_ui" in allowed:
         families.append(AgentHypothesis.Family.UI_SENSITIVE_DATA_EXPOSURE)
-    if {"frida_status", "frida_run_js"} <= allowed:
+    if "frida_run_js" in allowed or {"frida_status", "frida_attach"} <= allowed:
         families.append(AgentHypothesis.Family.RUNTIME_TAMPERING_RESILIENCE)
+    if allowed & {"launch_exported_activity", "send_explicit_broadcast", "query_exported_provider"}:
+        families.append(AgentHypothesis.Family.APPLICATION_RUNTIME_STABILITY)
     return sorted(set(families))
 
 
@@ -282,8 +294,8 @@ def validate_capability_envelope(
         not isinstance(allowed, list)
         or not allowed
         or allowed != sorted(set(allowed))
-        or not set(allowed) <= AGENTIC_SAFE_CAPABILITIES
-        or not set(allowed) <= set(TOOL_MANIFEST)
+        or not set(allowed) <= ALL_AGENTIC_SAFE_CAPABILITIES
+        or not set(allowed) <= ALL_TOOL_NAMES
         or not isinstance(policies, dict)
         or set(policies) != set(allowed)
     ):
@@ -321,10 +333,20 @@ def _argument_policy(name: str, plan: AssessmentPlan) -> dict[str, Any]:
         policy["include_system"] = False
     if name in {"tap_coordinates", "type_text"}:
         policy["requires_authorized_target_foreground"] = True
+    if name in {"launch_exported_activity", "send_explicit_broadcast", "query_exported_provider"}:
+        policy["manifest_inventory_required"] = True
+        policy["read_only"] = True
     if name == "frida_run_js":
+        sources = [
+            tool.get("arguments", {}).get("source")
+            for step in (plan.normalized_plan or {}).get("steps", [])
+            if isinstance(step, dict)
+            for tool in step.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name") == "frida_run_js"
+        ]
         policy.update(
             {
-                "allowed_source_identifiers": [BUILTIN_FRIDA_UI_PROOF],
+                "allowed_source_identifiers": sorted(set(sources) & set(APPROVED_FRIDA_SOURCE_IDENTIFIERS)),
                 "allowed_modes": ["attach"],
             }
         )

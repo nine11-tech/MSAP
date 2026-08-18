@@ -206,6 +206,51 @@ class NormalizedArtifactSerializer(serializers.ModelSerializer):
 
 
 class FindingSerializer(serializers.ModelSerializer):
+    dynamic_validation_status = serializers.SerializerMethodField()
+    dynamic_validation_result_id = serializers.SerializerMethodField()
+    dynamic_validation_mission_id = serializers.SerializerMethodField()
+    dynamic_validation_summary = serializers.SerializerMethodField()
+    dynamic_validation_playbooks = serializers.SerializerMethodField()
+
+    def get_dynamic_validation_status(self, obj):
+        latest_mission = obj.validation_missions.order_by("-created_at").first()
+        if latest_mission is not None:
+            return latest_mission.status
+        latest = obj.dynamic_validation_results.order_by("-created_at").first()
+        return latest.validation_status if latest else "NOT_STARTED"
+
+    def get_dynamic_validation_result_id(self, obj):
+        latest = obj.dynamic_validation_results.order_by("-created_at").first()
+        return latest.id if latest else None
+
+    def get_dynamic_validation_mission_id(self, obj):
+        latest = obj.validation_missions.order_by("-created_at").first()
+        return latest.id if latest else None
+
+    def get_dynamic_validation_summary(self, obj):
+        latest = obj.validation_missions.order_by("-created_at").first()
+        if latest is None:
+            return {}
+        return {
+            "mission_id": latest.id,
+            "run_id": latest.agent_run_id,
+            "status": latest.status,
+            "hypothesis": latest.hypothesis,
+            "scenario_summary": latest.scenario_contract.get("validation_goal", "")
+            if isinstance(latest.scenario_contract, dict)
+            else "",
+            "evidence_count": latest.evidence.count(),
+            "oracle_result": latest.oracle_result,
+            "final_conclusion": latest.final_conclusion,
+            "limitations": latest.limitations,
+            "created_at": latest.created_at,
+            "completed_at": latest.completed_at,
+        }
+
+    def get_dynamic_validation_playbooks(self, obj):
+        from apps.dynamic_analysis.services.playbook_catalog import executable_playbooks_for_finding
+        return [item["playbook_id"] for item in executable_playbooks_for_finding(obj)]
+
     masvs_controls = serializers.SerializerMethodField()
     maswe_ids = serializers.SerializerMethodField()
     mastg_references = serializers.SerializerMethodField()
@@ -282,6 +327,11 @@ class FindingSerializer(serializers.ModelSerializer):
             "false_positive_guidance",
             "requires_manual_validation",
             "status",
+            "dynamic_validation_status",
+            "dynamic_validation_result_id",
+            "dynamic_validation_mission_id",
+            "dynamic_validation_summary",
+            "dynamic_validation_playbooks",
             "created_at",
         ]
         read_only_fields = fields

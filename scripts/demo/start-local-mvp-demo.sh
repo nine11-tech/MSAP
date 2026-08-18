@@ -128,6 +128,7 @@ start_host_agent() {
     # The Android/Frida bridge environment is intentionally scoped to this process.
     # shellcheck disable=SC1091
     source "$HOME/.local/bin/msap-dynamic-env"
+    export MSAP_DYNAMIC_HOST_AGENT_TOKEN="$(<"$TOKEN_FILE")"
     exec setsid "$PYTHON" manage.py run_dynamic_host_agent --host 127.0.0.1 --port 8765
   ) < /dev/null >"$fifo" 2>&1 &
   write_pid_record host-agent "$!"
