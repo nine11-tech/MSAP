@@ -27,6 +27,7 @@ import type {
   DynamicHostAgentInstallResult,
   DynamicHostAgentPackages,
   DynamicHostAgentStatus,
+  OpenAIBudgetStatus,
   DynamicSession,
   DynamicSessionArtifact,
   DynamicSessionEvent,
@@ -43,6 +44,9 @@ import type {
   Project,
   RiskScore,
   RuleCoverage,
+  StaticDynamicCorrelation,
+  CorrelationStartPocResponse,
+  CapabilityGapReport,
   SystemStatus,
   SourceDocument,
   SourceLineRange,
@@ -149,10 +153,38 @@ export const startFindingValidationMission = (missionId: number) =>
   >(`dynamic/finding-validations/${missionId}/start/`, {});
 export const getFindingValidationMission = (missionId: number) =>
   apiGet<FindingValidationMission>(`dynamic/finding-validations/${missionId}/`);
+export const startStaticDynamicCorrelation = (auditId: number) =>
+  apiPost<StaticDynamicCorrelation, Record<string, never>>(
+    `dynamic/static-dynamic-correlation/${auditId}/start/`,
+    {},
+  );
+export const getStaticDynamicCorrelationLatest = (auditId: number) =>
+  apiGet<StaticDynamicCorrelation>(
+    `dynamic/static-dynamic-correlation/${auditId}/latest/`,
+  );
+export const startCorrelationCandidatePoc = (
+  auditId: number,
+  findingId: number,
+) =>
+  apiPost<CorrelationStartPocResponse, { finding_id: number }>(
+    `dynamic/static-dynamic-correlation/${auditId}/start-poc/`,
+    { finding_id: findingId },
+  );
+export const getCorrelationCapabilityGaps = (auditId: number) =>
+  apiGet<CapabilityGapReport>(
+    `dynamic/static-dynamic-correlation/${auditId}/capability-gaps/`,
+  );
 export const listFindingValidationEvidence = (missionId: number) =>
   apiGet<Evidence[]>(`dynamic/finding-validations/${missionId}/evidence/`);
 export const getFindingValidationTimeline = (missionId: number) =>
   apiGet<FindingValidationTimeline>(`dynamic/finding-validations/${missionId}/timeline/`);
+export const getOpenAIBudgetStatus = () =>
+  apiGet<OpenAIBudgetStatus>("dynamic/finding-validations/budget-status/");
+export const resetOpenAIBudget = () =>
+  apiPost<OpenAIBudgetStatus, Record<string, never>>(
+    "dynamic/finding-validations/budget-reset/",
+    {},
+  );
 export const getFindingSourceReferences = (findingId: number) =>
   apiGet<FindingSourceReference[]>(
     `findings/${findingId}/source-references/`,

@@ -359,6 +359,10 @@ MSAP_ASSESSMENT_PLANNER_PROVIDER = os.getenv(
     "MSAP_ASSESSMENT_PLANNER_PROVIDER",
     "DETERMINISTIC",
 ).upper()
+# Demo mode: the frontend default flows surface the simple Static -> Dynamic
+# correlation journey and hide advanced operator controls by default. It is a
+# UI preference only and never weakens backend enforcement.
+MSAP_DEMO_MODE = env_bool("MSAP_DEMO_MODE", False)
 MSAP_ASSESSMENT_PLANNER_MODEL = os.getenv(
     "MSAP_ASSESSMENT_PLANNER_MODEL",
     "gpt-5.6-luna",
@@ -499,6 +503,60 @@ MSAP_AGENT_MAX_STATE_CONTEXT_BYTES = min(
     131072,
     max(8192, int(os.getenv("MSAP_AGENT_MAX_STATE_CONTEXT_BYTES", "65536"))),
 )
+
+# Hard OpenAI call budget. The backend enforces this across mission generation,
+# adaptive decision calls, provider retries, and retry runs. The frontend budget
+# is advisory only; these bounds are authoritative and cannot be enlarged by the
+# browser, planner, or decision provider.
+MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS = min(
+    8,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS", "1"))),
+)
+MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS = min(
+    24,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS", "6"))),
+)
+MSAP_OPENAI_MAX_CORRELATION_CALLS = min(
+    16,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_CORRELATION_CALLS", "6"))),
+)
+MSAP_OPENAI_MAX_POC_PLANNING_CALLS = min(
+    8,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_POC_PLANNING_CALLS", "3"))),
+)
+MSAP_OPENAI_MAX_TOTAL_CALLS = min(
+    32,
+    max(
+        1,
+        int(
+            os.getenv(
+                "MSAP_OPENAI_MAX_TOTAL_CALLS",
+                str(
+                    MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS
+                    + MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS
+                ),
+            )
+        ),
+    ),
+)
+
+# Dynamic lab runtime mode. WINDOWS_HOST_AGENT uses Windows adb.exe/Frida via the
+# Windows Host Agent; WSL_BRIDGED keeps the legacy WSL bridge. The default stays
+# explicit so operators always choose a topology rather than guessing silently.
+MSAP_DYNAMIC_LAB_MODE = os.getenv(
+    "MSAP_DYNAMIC_LAB_MODE",
+    "WINDOWS_HOST_AGENT",
+).upper()
+if MSAP_DYNAMIC_LAB_MODE not in {"WINDOWS_HOST_AGENT", "WSL_BRIDGED"}:
+    MSAP_DYNAMIC_LAB_MODE = "WINDOWS_HOST_AGENT"
+MSAP_WINDOWS_ANDROID_SDK_ROOT = os.getenv("MSAP_WINDOWS_ANDROID_SDK_ROOT", "")
+MSAP_WINDOWS_ADB_PATH = os.getenv("MSAP_WINDOWS_ADB_PATH", "")
+MSAP_WINDOWS_FRIDA_PATH = os.getenv("MSAP_WINDOWS_FRIDA_PATH", "")
+MSAP_ANDROID_EMULATOR_SERIAL = os.getenv(
+    "MSAP_ANDROID_EMULATOR_SERIAL",
+    os.getenv("MSAP_DYNAMIC_ADB_SERIAL", "emulator-5554"),
+)
+MSAP_TARGET_PACKAGE = os.getenv("MSAP_TARGET_PACKAGE", "owasp.sat.agoat")
 
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://127.0.0.1:9000")
 MINIO_PUBLIC_ENDPOINT = os.getenv("MINIO_PUBLIC_ENDPOINT", MINIO_ENDPOINT)

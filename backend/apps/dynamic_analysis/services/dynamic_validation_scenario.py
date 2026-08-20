@@ -94,7 +94,7 @@ def validate_scenario(value: Any) -> dict[str, Any]:
     return deepcopy(value)
 
 
-def scenario_from_finding(*, audit_id: int, target_package: str, finding: dict[str, Any], family: str, tools: list[str], evidence: list[str], steps: list[dict[str, Any]], reason: str = "") -> dict[str, Any]:
+def scenario_from_finding(*, audit_id: int, target_package: str, finding: dict[str, Any], family: str, tools: list[str], evidence: list[str], steps: list[dict[str, Any]], reason: str = "", hypothesis: str | None = None, goal: str | None = None) -> dict[str, Any]:
     scenario = {
         "contract_version": CONTRACT_VERSION,
         "audit_id": audit_id,
@@ -102,8 +102,8 @@ def scenario_from_finding(*, audit_id: int, target_package: str, finding: dict[s
         "source_finding_id": finding["finding_id"],
         "finding_rule_id": finding["rule_id"],
         "finding_title": finding["title"],
-        "validation_goal": f"Validate the runtime behavior associated with {finding['rule_id']}.",
-        "validation_hypothesis": f"The behavior described by static finding {finding['rule_id']} can be observed with bounded approved runtime evidence.",
+        "validation_goal": goal or f"Validate the runtime behavior associated with {finding['rule_id']}.",
+        "validation_hypothesis": hypothesis or f"The behavior described by static finding {finding['rule_id']} can be observed with bounded approved runtime evidence.",
         "validation_strategy": family,
         "supported_tool_capabilities": tools,
         "required_evidence_types": evidence,

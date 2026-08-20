@@ -79,9 +79,9 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   expect(password, "MSAP_E2E_PASSWORD is required").not.toBe("");
   mkdirSync(evidenceDirectory, { recursive: true });
 
-  await page.goto(existingPlanId || existingRunId ? `/dynamic?audit=4${existingRunId ? `&run=${existingRunId}` : ""}` : "/dynamic");
+  await page.goto(existingPlanId || existingRunId ? `/dynamic/advanced?audit=4${existingRunId ? `&run=${existingRunId}` : ""}` : "/dynamic/advanced");
   const loginHeading = page.getByRole("heading", { name: "Secure assessment workspace" });
-  const assessmentHeading = page.getByRole("heading", { name: "Dynamic Security Assessment" });
+  const assessmentHeading = page.getByRole("heading", { name: "Advanced Operator Console" });
   await expect(loginHeading.or(assessmentHeading)).toBeVisible();
   if (await loginHeading.isVisible()) {
     await page.getByLabel("Username").fill(username);
@@ -89,6 +89,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
     await page.getByRole("button", { name: "Sign in securely" }).click();
   }
   await expect(assessmentHeading).toBeVisible();
+  await page.getByText("Advanced Operator Tools", { exact: true }).click();
 
   if (existingRunId) {
     const persistedRun = (await browserApiGet(page, `dynamic/agent/runs/${existingRunId}/`)) as JsonRecord;
@@ -210,7 +211,7 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
       || playbooks.includes("ROOT_DETECTION_SCREEN_VALIDATION");
   });
   expect(selectedFinding, "A real eligible AndroGoat root/emulator static finding is required").toBeTruthy();
-  await page.goto(`/dynamic?audit=4&finding=${String(selectedFinding!.id)}`);
+  await page.goto(`/dynamic/advanced?audit=4&finding=${String(selectedFinding!.id)}`);
   await expect(assessmentHeading).toBeVisible();
 
   for (const label of ["Start New Assessment", "Cancel Review", "New Assessment"]) {
@@ -242,8 +243,10 @@ test("real auditor workflow uses Luna, the adaptive agent, Android evidence, fin
   await expect(page.getByText("Installed", { exact: true })).toBeVisible();
   // Explicit auditor-approved runtime prerequisite.  Setup is a bounded
   // backend-owned Frida action, never model-supplied setup or shell access.
-  const advancedControls = page.getByText("SHOW ADVANCED", { exact: true });
-  if (await advancedControls.isVisible().catch(() => false)) await advancedControls.click();
+  const advancedPanel = page.locator("details.advanced-operator-panel");
+  if (!(await advancedPanel.getAttribute("open"))) {
+    await page.getByText("Advanced Operator Tools", { exact: true }).click();
+  }
   const setupFrida = page.getByRole("button", { name: "Setup Frida", exact: true });
   if (await setupFrida.isVisible().catch(() => false)) {
     await setupFrida.click();

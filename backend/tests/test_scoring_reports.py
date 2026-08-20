@@ -282,6 +282,120 @@ def _create_indicator(
     )
 
 
+@pytest.mark.django_db
+def test_pdf_report_renders_finding_validation_mission_evidence(
+    audit,
+    admin_client,
+):
+    from apps.dynamic_analysis.models import (
+        AgentRun,
+        AgentRunStep,
+        AssessmentPlan,
+        FindingValidationMission,
+    )
+
+    finding = _create_finding(audit, "MSAP-AND-004", "High")
+    plan = AssessmentPlan.objects.create(
+        audit=audit,
+        source_finding=finding,
+        target_package="owasp.sat.agoat",
+        planner_provider=AssessmentPlan.PlannerProvider.DETERMINISTIC,
+        planner_model="test",
+        objective="Validate the finding at runtime.",
+        scope="Authorized PoC on the managed device.",
+        status=AssessmentPlan.Status.GENERATED,
+        validation_status=AssessmentPlan.ValidationStatus.PASSED,
+        policy_status=AssessmentPlan.PolicyStatus.PASSED,
+        generated_plan={"steps": []},
+        normalized_plan={"steps": []},
+        scenario_contract={
+            "validation_goal": "Invoke the exported component and capture evidence."
+        },
+    )
+    run = AgentRun.objects.create(
+        audit=audit,
+        assessment_plan=plan,
+        target_package="owasp.sat.agoat",
+        execution_mode=AgentRun.ExecutionMode.SEQUENTIAL_PLAN,
+        objective=AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION,
+        status=AgentRun.Status.SUCCEEDED,
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=1,
+        tool_name="launch_exported_activity",
+        status=AgentRunStep.Status.SUCCEEDED,
+    )
+    mission = FindingValidationMission.objects.create(
+        audit=audit,
+        apk=APKFile.objects.create(
+            audit=audit,
+            package_name="owasp.sat.agoat",
+            sha256="f" * 64,
+            size_bytes=4321,
+        ),
+        finding=finding,
+        target_package="owasp.sat.agoat",
+        status=FindingValidationMission.Status.CONFIRMED,
+        assessment_plan=plan,
+        agent_run=run,
+        hypothesis="The exported component is reachable at runtime.",
+        scenario_contract={
+            "validation_goal": "Invoke the exported component and capture evidence."
+        },
+        final_conclusion="The PoC confirmed the exported activity is reachable.",
+    )
+    Evidence.objects.create(
+        audit=audit,
+        finding=finding,
+        evidence_type="screenshot",
+        source="screenshot",
+        snippet="raw-png-bytes-are-not-inline",
+        sha256="c" * 64,
+    )
+    mission.evidence.set(Evidence.objects.filter(audit=audit))
+
+    response = admin_client.get(
+        f"/api/audits/{audit.id}/report/pdf/",
+        HTTP_ACCEPT="application/pdf",
+    )
+    assert response.status_code == 200
+    assert response.content.startswith(b"%PDF")
+    assert len(response.content) > 1000
+
+    json_report = admin_client.get(f"/api/audits/{audit.id}/report/json/")
+    assert json_report.status_code == 200
+    missions = json_report.json()["dynamic_assessments"]["finding_validation_missions"]
+    assert len(missions) == 1
+    assert missions[0]["finding_id"] == finding.id
+    assert missions[0]["status"] == "CONFIRMED"
+    assert missions[0]["executed_actions"][0]["tool"] == "launch_exported_activity"
+    assert missions[0]["evidence_ids"]
+
+    from apps.reports.services.pdf_report import (
+        _build_styles,
+        _finding_dynamic_validation,
+    )
+
+    elements = _finding_dynamic_validation(missions, _build_styles())
+
+    def collect(flowables):
+        chunks = []
+        for flowable in flowables:
+            if hasattr(flowable, "getPlainText"):
+                chunks.append(flowable.getPlainText())
+            elif hasattr(flowable, "_cellvalues"):
+                for row in flowable._cellvalues:
+                    chunks.append(collect(row))
+        return " ".join(chunk for chunk in chunks if chunk)
+
+    pdf_text = collect(elements)
+    assert "CONFIRMED" in pdf_text
+    assert "reachable at runtime" in pdf_text
+    assert "launch_exported_activity" in pdf_text
+    assert "EXECUTED ACTIONS" in pdf_text
+
+
 def _add_attck_guidance(indicator: SuspiciousIndicator) -> None:
     indicator.auditor_explanation = "READ_SMS permits SMS provider access."
     indicator.dynamic_verification_scenario = (

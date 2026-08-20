@@ -90,7 +90,6 @@ def _resolve_playbook_validations(run: AgentRun) -> list[dict[str, Any]]:
         "query_exported_provider": "EXPORTED_PROVIDER_ACCESS_VERIFICATION",
         "frida_attach": "DEBUGGABLE_APP_VERIFICATION",
         "frida_run_js": "DEBUGGABLE_APP_VERIFICATION",
-        "dump_ui": "ROOT_DETECTION_SCREEN_VALIDATION",
     }
     source_finding = plan.source_finding if plan is not None else None
     lab_sources = {

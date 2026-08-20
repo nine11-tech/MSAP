@@ -427,6 +427,222 @@ integrity drift, replay, target drift, or a budget stop never silently switches
 to deterministic decisions. Tests may select the deterministic reference
 provider explicitly.
 
+## Windows-Native Dynamic Lab Mode (demo default)
+
+The demo defaults to a Windows-native topology: the Android SDK, emulator, and
+Host Agent run directly on the Windows host, while Django and Celery run in WSL
+or Docker Compose.
+
+Configure the topology in the backend environment:
+
+```dotenv
+MSAP_DYNAMIC_LAB_MODE=WINDOWS_HOST_AGENT
+MSAP_DYNAMIC_HOST_AGENT_URL=http://host.docker.internal:8765
+```
+
+`MSAP_DYNAMIC_LAB_MODE` accepts `WINDOWS_HOST_AGENT` (default) or
+`WSL_BRIDGED`. The backend never hardcodes Windows paths; the Host Agent
+reports its own platform, SDK path, and diagnostics through `/health`.
+
+Start the Host Agent from Windows PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\demo\start-windows-host-agent.ps1
+```
+
+The script verifies `adb.exe`, the emulator serial, and the Frida client,
+reports safe recovery hints (for example a stale `127.0.0.1:27042` server), and
+prints the URLs the backend can use. It never prints the token or environment
+secrets.
+
+Django-to-Host-Agent URL resolution:
+
+| Django location | Host Agent URL |
+| --- | --- |
+| WSL directly | `http://127.0.0.1:8765` |
+| Docker Compose on Windows (default) | `http://host.docker.internal:8765` |
+| Docker Compose when `host.docker.internal` resolves to the wrong host | `http://<Windows host IP>:8765` |
+
+In the `WSL_BRIDGED` fallback the Host Agent still runs on Windows, but bridge
+and Frida connectivity are managed with the existing
+`refresh-frida-bridge.sh` flow.
+
+`demo_health_check` prints the detected topology before the service checks:
+
+```text
+TOPOLOGY: configured_url=http://host.docker.internal:8765 lab_mode=WINDOWS_HOST_AGENT resolved_address=172.17.0.1 connected=OK suggested_fix=none
+```
+
+## OpenAI call budget (demo-hard limit)
+
+The backend enforces a hard OpenAI call budget that the browser cannot change.
+Once a request is sent to OpenAI it counts, regardless of the provider response;
+local schema-preflight rejections that never sent a request do not count.
+Mocked or deterministic providers never count.
+
+```dotenv
+MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS=1
+MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS=6
+MSAP_OPENAI_MAX_TOTAL_CALLS=7
+```
+
+When the budget is exhausted the current mission run finishes as `FAILED` with
+termination reason `OPENAI_BUDGET_EXHAUSTED` and the mission becomes
+`INCONCLUSIVE`: evidence collected so far is preserved and the page explains
+that the AI call budget was reached. This is an expected, safe demo state, not
+an error.
+
+The Dynamic Lab page shows the remaining budget, backed by
+`dynamic/finding-validations/budget-status/`. An Analyst/Admin can reset the
+budget for a fresh demo via `dynamic/finding-validations/budget-reset/` or the
+**Reset Budget** control in the right sidebar.
+
+## Working Browser Demo Checklist
+
+Use this path for the finding-driven browser demo. It keeps the current Tool
+Gateway, FindingValidationMission workflow, Celery worker, MinIO, and Android
+Host Agent architecture.
+
+1. Start core services:
+
+```bash
+docker compose up -d postgres redis minio minio-init backend worker frontend
+```
+
+2. Configure the Compose Host Agent URL for the current topology.
+
+For Django running directly in WSL, use:
+
+```dotenv
+MSAP_DYNAMIC_HOST_AGENT_URL=http://127.0.0.1:8765
+```
+
+For Django running in Docker Compose and Host Agent running in WSL, use the WSL
+interface IP, not `host.docker.internal`, when Docker resolves
+`host.docker.internal` to the Windows/Docker host instead of the WSL distro:
+
+```bash
+WSL_IP="$(hostname -I | awk '{print $1}')"
+sed -i "s#^MSAP_DYNAMIC_HOST_AGENT_URL=.*#MSAP_DYNAMIC_HOST_AGENT_URL=http://$WSL_IP:8765#" .env
+docker compose up -d --force-recreate backend worker
+```
+
+3. Start the Host Agent for Compose:
+
+```bash
+scripts/demo/start-compose-host-agent.sh start
+```
+
+On a Windows host, the same topology uses the PowerShell starter instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\demo\start-windows-host-agent.ps1
+```
+
+For direct WSL Django, the existing local script starts a loopback Host Agent:
+
+```bash
+scripts/demo/start-local-mvp-demo.sh up
+```
+
+4. Start or restore Frida for the live PoC:
+
+```bash
+source scripts/dynamic-lab/lib/common.sh
+msap_load_env
+"$HOME/.local/bin/msap-frida-start"
+```
+
+If Frida reports `127.0.0.1:27042` already in use, inspect the emulator for a
+stale managed process and clear only that process:
+
+```bash
+source scripts/dynamic-lab/lib/common.sh
+msap_load_env
+msap_adb shell 'ps -A | grep -i msap-frida-server || true'
+msap_adb shell 'kill <stale-msap-frida-server-pid> || true; rm -f /data/local/tmp/msap-frida-server.pid'
+scripts/dynamic-lab/frida-smoke.sh
+"$HOME/.local/bin/msap-frida-start"
+```
+
+5. Run safe lab health before any OpenAI call:
+
+```bash
+docker compose exec -T backend python manage.py demo_health_check
+```
+
+Expected safe statuses:
+
+```text
+BACKEND OK
+POSTGRESQL OK
+REDIS OK
+CELERY OK
+MINIO OK
+HOST_AGENT OK
+EMULATOR OK
+TARGET_APP OK
+FRIDA OK
+DEMO_HEALTH_RESULT=PASS
+```
+
+6. Seed the idempotent AndroGoat finding demo:
+
+```bash
+docker compose exec -T backend python manage.py seed_androgoat_finding_demo --dev-fixture
+```
+
+The command prints the project, audit, APK, finding, target package, expected
+playbook, and demo username. It does not print passwords or tokens.
+
+7. Run the zero-cost path with deterministic providers:
+
+```dotenv
+MSAP_ASSESSMENT_PLANNER_PROVIDER=DETERMINISTIC
+MSAP_AGENT_DECISION_PROVIDER=DETERMINISTIC
+MSAP_DYNAMIC_RUNNER_ENABLED=true
+```
+
+Recreate backend/worker after changing Compose env:
+
+```bash
+docker compose up -d --force-recreate backend worker
+docker compose exec -T backend python manage.py check_dynamic_runner
+```
+
+8. Run the real browser acceptance only after health is green:
+
+```dotenv
+MSAP_ASSESSMENT_PLANNER_PROVIDER=OPENAI
+MSAP_AGENT_DECISION_PROVIDER=OPENAI
+MSAP_ASSESSMENT_PLANNER_MODEL=gpt-5.6-luna
+MSAP_AGENT_DECISION_MODEL=gpt-5.6-luna
+MSAP_ASSESSMENT_PLANNER_REASONING_EFFORT=low
+MSAP_AGENT_DECISION_REASONING_EFFORT=low
+MSAP_AGENT_MAX_PROVIDER_CALLS=3
+```
+
+The OpenAI budget caps the whole demo: at most 1 mission-generation call and 6
+adaptive-decision calls (7 OpenAI calls total, `MSAP_OPENAI_MAX_*`). After
+exhaustion the mission becomes `INCONCLUSIVE` and a budget reset is required
+before the next demo cycle.
+
+```bash
+cd frontend
+MSAP_LIVE_ACCEPTANCE=1 \
+MSAP_E2E_AUDIT_ID=<demo-audit-id> \
+MSAP_E2E_USERNAME=<demo-user> \
+MSAP_E2E_PASSWORD=<demo-password> \
+MSAP_E2E_API_BASE_URL=http://127.0.0.1:8000/api \
+MSAP_E2E_EVIDENCE_DIR=../.runtime/msap-demo/browser-acceptance-real \
+npx playwright test e2e/finding-validation-mission-live.spec.ts --workers=1
+```
+
+Use `127.0.0.1` consistently for the frontend and API base in browser tests so
+session cookies are sent. If a paid mission already exists and only browser
+verification is needed, pass `MSAP_E2E_EXISTING_MISSION_ID` and
+`MSAP_E2E_EXISTING_RUN_ID` to avoid another OpenAI mission generation.
+
 ## Recovery Procedures
 
 1. Stop active dynamic workers for the affected local device.

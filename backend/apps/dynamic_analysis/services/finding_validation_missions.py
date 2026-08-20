@@ -4,6 +4,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -14,7 +15,7 @@ from apps.dynamic_analysis.models import (
     DynamicValidationResult,
     FindingValidationMission,
 )
-from apps.dynamic_analysis.services.assessment_agent import AssessmentAgent
+from apps.dynamic_analysis.services.assessment_executor import AssessmentExecutor
 from apps.dynamic_analysis.services.assessment_executor import AssessmentExecutionError
 from apps.dynamic_analysis.services.assessment_planner import (
     AssessmentPlannerError,
@@ -22,8 +23,19 @@ from apps.dynamic_analysis.services.assessment_planner import (
     PlanPolicyError,
     configured_planner_provider,
 )
+from apps.dynamic_analysis.services.host_agent_client import (
+    DynamicHostAgentClient,
+    HostAgentClientError,
+)
 from apps.dynamic_analysis.services.dynamic_validation_scenario import (
     scenario_from_finding,
+)
+from apps.dynamic_analysis.services.openai_budget import (
+    KIND_GENERATION,
+    OpenAIBudgetExhausted,
+    record_response_id,
+    release_call,
+    reserve_call,
 )
 from apps.dynamic_analysis.services.playbook_catalog import (
     executable_playbooks_for_finding,
@@ -43,6 +55,24 @@ def _json_hash(value: Any) -> str:
     return sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def _reserve_generation_budget(provider) -> None:
+    if getattr(provider, "name", "") != "OPENAI":
+        return
+    reserve_call(KIND_GENERATION)
+
+
+def _provider_request_was_not_sent(provider) -> bool:
+    metadata = getattr(provider, "last_metadata", {}) or {}
+    return metadata.get("provider_request_sent") is False
+
+
+def _record_generation_response_id(provider) -> None:
+    if getattr(provider, "name", "") != "OPENAI":
+        return
+    metadata = getattr(provider, "last_metadata", {}) or {}
+    record_response_id(metadata.get("response_id"))
 
 
 def _latest_apk_for_audit(audit_id: int, target_package: str | None = None) -> APKFile:
@@ -123,15 +153,27 @@ def generate_finding_validation_mission(
     try:
         provider = configured_planner_provider(model_profile="ECONOMY")
         service = AssessmentPlannerService(provider)
-        plan = service.generate(
-            audit=finding.audit,
-            target_package=apk.package_name,
-            objective=objective,
-            scope=scope,
-            source_finding=finding,
-            requested_by=requested_by,
-        )
+        _reserve_generation_budget(provider)
+        try:
+            plan = service.generate(
+                audit=finding.audit,
+                target_package=apk.package_name,
+                objective=objective,
+                scope=scope,
+                source_finding=finding,
+                requested_by=requested_by,
+            )
+        finally:
+            if _provider_request_was_not_sent(provider):
+                release_call(KIND_GENERATION)
+        _record_generation_response_id(provider)
         plan = service.validate(plan)
+    except OpenAIBudgetExhausted as exc:
+        raise FindingValidationMissionError(
+            "AI call budget reached. Evidence collected so far was preserved.",
+            code=exc.reason,
+            http_status=409,
+        ) from exc
     except AssessmentPlannerError:
         raise
     except Exception as exc:
@@ -289,11 +331,11 @@ def start_finding_validation_mission(
             code="MISSION_PLAN_MISSING",
             http_status=409,
         )
+    _require_dynamic_lab_ready(mission)
     try:
-        run = AssessmentAgent().create_run(
+        run = AssessmentExecutor().create_run(
             plan=mission.assessment_plan,
             requested_by=requested_by,
-            decision_provider_name=decision_provider_name,
         )
     except AssessmentExecutionError as exc:
         raise FindingValidationMissionError(
@@ -309,6 +351,103 @@ def start_finding_validation_mission(
     return run
 
 
+def _require_dynamic_lab_ready(mission: FindingValidationMission) -> None:
+    client = DynamicHostAgentClient(timeout_seconds=60)
+    status_payload = client.get_status()
+    if status_payload.get("connected") is not True:
+        raise FindingValidationMissionError(
+            "Dynamic lab is offline. Start the Host Agent and retry.",
+            code="DYNAMIC_LAB_OFFLINE",
+            http_status=503,
+        )
+    device = status_payload.get("device") if isinstance(status_payload, dict) else None
+    if not isinstance(device, dict) or device.get("state") != "device":
+        raise FindingValidationMissionError(
+            "Dynamic lab is offline. Start the Host Agent and retry.",
+            code="DYNAMIC_LAB_EMULATOR_OFFLINE",
+            http_status=503,
+        )
+    if device.get("serial") and device.get("serial") != settings.MSAP_DYNAMIC_ADB_SERIAL:
+        raise FindingValidationMissionError(
+            "Dynamic lab emulator serial does not match the approved mission.",
+            code="DYNAMIC_LAB_SERIAL_MISMATCH",
+            http_status=409,
+        )
+    try:
+        package_payload = client.request_json(
+            "/actions/list-packages",
+            method="POST",
+            body={"include_system": False},
+        )
+    except HostAgentClientError as exc:
+        raise FindingValidationMissionError(
+            "Dynamic lab is offline. Start the Host Agent and retry.",
+            code=exc.code,
+            http_status=exc.status_code,
+        ) from None
+    packages = package_payload.get("packages") or []
+    package_names = {
+        item.get("package_name") if isinstance(item, dict) else item
+        for item in packages
+    }
+    if mission.target_package not in package_names:
+        raise FindingValidationMissionError(
+            f"Dynamic lab target app is not installed: {mission.target_package}",
+            code="DYNAMIC_LAB_TARGET_APP_MISSING",
+            http_status=503,
+        )
+    if any(str(capability).startswith("frida_") for capability in mission.allowed_capabilities):
+        try:
+            frida_payload = client.request_json(
+                "/actions/frida-status",
+                method="POST",
+                body={"package_name": mission.target_package},
+            )
+        except HostAgentClientError as exc:
+            raise FindingValidationMissionError(
+                "Dynamic lab is offline. Start the Host Agent and retry.",
+                code=exc.code,
+                http_status=exc.status_code,
+            ) from None
+        if frida_payload.get("frida_client_installed") is not True:
+            raise FindingValidationMissionError(
+                "Dynamic lab Frida client is unavailable. Restore Frida and retry.",
+                code="DYNAMIC_LAB_FRIDA_UNAVAILABLE",
+                http_status=503,
+            )
+
+
+def create_mission_from_poc_plan(
+    *,
+    finding: Finding,
+    plan: AssessmentPlan,
+    candidate: dict[str, Any] | None = None,
+    requested_by=None,
+) -> FindingValidationMission:
+    """Create a VALIDATED mission from an AI-generated PoC plan.
+
+    The mission carries no playbook id: it is a capability-driven PoC produced
+    by the PoC planning agent. The standard approve -> start -> execute
+    lifecycle applies unchanged.
+    """
+    apk = _latest_apk_for_audit(finding.audit_id, plan.target_package)
+    return _create_mission_from_parts(
+        finding=finding,
+        apk=apk,
+        status=FindingValidationMission.Status.VALIDATED,
+        scenario=plan.scenario_contract,
+        assessment_plan=plan,
+        playbook=None,
+        requested_by=requested_by,
+        final_conclusion="Awaiting auditor approval and execution.",
+        limitations=(
+            (candidate or {}).get("limitations", "")
+            if isinstance(candidate, dict)
+            else ""
+        ),
+    )
+
+
 def refresh_mission_from_run(run: AgentRun) -> FindingValidationMission | None:
     mission = (
         FindingValidationMission.objects.select_related("finding", "agent_run")
@@ -318,11 +457,7 @@ def refresh_mission_from_run(run: AgentRun) -> FindingValidationMission | None:
     if mission is None:
         return None
     evidence = list(run.evidence_records.all()[:100])
-    result = (
-        DynamicValidationResult.objects.filter(agent_run=run, finding=mission.finding)
-        .order_by("-created_at")
-        .first()
-    )
+    result = _preferred_dynamic_validation_result(run, mission)
     if result is not None:
         status = _mission_status_from_result(result)
         oracle = result.oracle_result if isinstance(result.oracle_result, dict) else {}
@@ -332,6 +467,19 @@ def refresh_mission_from_run(run: AgentRun) -> FindingValidationMission | None:
         status = FindingValidationMission.Status.INCONCLUSIVE
         oracle = {}
         conclusion = "The mission completed, but no deterministic oracle result was produced."
+        limitations = mission.limitations
+    elif (
+        run.termination_reason == "OPENAI_BUDGET_EXHAUSTED"
+        and run.status == AgentRun.Status.FAILED
+    ):
+        status = FindingValidationMission.Status.INCONCLUSIVE
+        oracle = {}
+        conclusion = (
+            "AI call budget reached. Evidence collected so far was preserved. "
+            "The PoC executed and evidence was collected, but deterministic "
+            "criteria for confirmation were not fully met because the AI budget "
+            "was exhausted."
+        )
         limitations = mission.limitations
     elif run.status in {AgentRun.Status.FAILED, AgentRun.Status.TIMEOUT}:
         status = FindingValidationMission.Status.BLOCKED
@@ -361,6 +509,87 @@ def refresh_mission_from_run(run: AgentRun) -> FindingValidationMission | None:
         mission.evidence.set(evidence)
     return mission
 
+
+
+def _preferred_dynamic_validation_result(run: AgentRun, mission: FindingValidationMission) -> DynamicValidationResult | None:
+    """
+    Pick the validation result that belongs to the approved mission scenario.
+
+    A single run can produce multiple conservative validation rows. The mission
+    must not blindly select the newest one because unrelated lab/root oracles can
+    be created later during post-processing.
+    """
+    candidates = DynamicValidationResult.objects.filter(
+        agent_run=run,
+        finding=mission.finding,
+    )
+
+    expected_playbook_id = _mission_expected_playbook_id(mission)
+    if expected_playbook_id:
+        result = (
+            candidates.filter(playbook_id=expected_playbook_id)
+            .order_by("-created_at")
+            .first()
+        )
+        if result is not None:
+            return result
+
+    finding_rule_id = getattr(mission.finding, "rule_id", "") or ""
+    if finding_rule_id:
+        result = (
+            candidates.filter(rule_id=finding_rule_id)
+            .exclude(playbook_id="ROOT_DETECTION_SCREEN_VALIDATION")
+            .order_by("-created_at")
+            .first()
+        )
+        if result is not None:
+            return result
+
+    if expected_playbook_id != "ROOT_DETECTION_SCREEN_VALIDATION":
+        result = (
+            candidates.exclude(playbook_id="ROOT_DETECTION_SCREEN_VALIDATION")
+            .order_by("-created_at")
+            .first()
+        )
+        if result is not None:
+            return result
+
+    return candidates.order_by("-created_at").first()
+
+
+def _mission_expected_playbook_id(mission: FindingValidationMission) -> str:
+    finding_rule_id = getattr(mission.finding, "rule_id", "") or ""
+    by_rule = {
+        "MSAP-AND-001": "DEBUGGABLE_APP_VERIFICATION",
+        "MSAP-AND-004": "EXPORTED_ACTIVITY_LAUNCH_VERIFICATION",
+        "MSAP-AND-006": "EXPORTED_RECEIVER_BROADCAST_VERIFICATION",
+        "MSAP-AND-007": "EXPORTED_PROVIDER_ACCESS_VERIFICATION",
+    }
+    if finding_rule_id in by_rule:
+        return by_rule[finding_rule_id]
+
+    scenario = mission.scenario_contract if isinstance(mission.scenario_contract, dict) else {}
+    scenario_text = str(scenario)
+    tools = {
+        tool.get("name")
+        for step in scenario.get("steps", [])
+        if isinstance(step, dict)
+        for tool in step.get("tools", [])
+        if isinstance(tool, dict)
+    }
+
+    if "ROOT_DETECTION_SCREEN_VALIDATION" in scenario_text or "reset_root_detection_demo" in tools:
+        return "ROOT_DETECTION_SCREEN_VALIDATION"
+    if "launch_exported_activity" in tools:
+        return "EXPORTED_ACTIVITY_LAUNCH_VERIFICATION"
+    if "send_explicit_broadcast" in tools:
+        return "EXPORTED_RECEIVER_BROADCAST_VERIFICATION"
+    if "query_exported_provider" in tools:
+        return "EXPORTED_PROVIDER_ACCESS_VERIFICATION"
+    if {"frida_attach", "frida_run_js"} & tools:
+        return "DEBUGGABLE_APP_VERIFICATION"
+
+    return ""
 
 def _mission_status_from_result(result: DynamicValidationResult) -> str:
     value = (

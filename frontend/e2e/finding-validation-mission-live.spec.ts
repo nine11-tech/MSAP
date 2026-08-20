@@ -6,6 +6,9 @@ const liveEnabled = process.env.MSAP_LIVE_ACCEPTANCE === "1";
 const username = process.env.MSAP_E2E_USERNAME || "";
 const password = process.env.MSAP_E2E_PASSWORD || "";
 const apiBase = process.env.MSAP_E2E_API_BASE_URL || "http://localhost:8000/api";
+const auditId = process.env.MSAP_E2E_AUDIT_ID || "4";
+const existingMissionId = process.env.MSAP_E2E_EXISTING_MISSION_ID || "";
+const existingRunId = process.env.MSAP_E2E_EXISTING_RUN_ID || "";
 const evidenceDirectory = path.resolve(
   process.cwd(),
   process.env.MSAP_E2E_EVIDENCE_DIR || "../.runtime/msap-demo/browser-acceptance",
@@ -38,10 +41,13 @@ async function waitForMissionTerminal(page: Page, missionId: number) {
     "FAILED",
   ]);
   let mission: JsonRecord = {};
-  await expect.poll(async () => {
+  const deadline = Date.now() + 5 * 60_000;
+  while (Date.now() < deadline) {
     mission = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/`)) as JsonRecord;
-    return String(mission.status || "");
-  }, { timeout: 5 * 60_000 }).toSatisfy((value: string) => terminal.has(value));
+    if (terminal.has(String(mission.status || ""))) return mission;
+    await page.waitForTimeout(2_000);
+  }
+  expect(String(mission.status || ""), `Mission ${missionId} did not reach a terminal status`).toBe("TERMINAL");
   return mission;
 }
 
@@ -68,9 +74,9 @@ test("real static finding becomes approved mission, agent execution, evidence, a
   expect(password, "MSAP_E2E_PASSWORD is required").not.toBe("");
   mkdirSync(evidenceDirectory, { recursive: true });
 
-  await page.goto("/dynamic?audit=4");
+  await page.goto(`/dynamic/advanced?audit=${auditId}`);
   const loginHeading = page.getByRole("heading", { name: "Secure assessment workspace" });
-  const dynamicHeading = page.getByRole("heading", { name: "Dynamic Security Assessment" });
+  const dynamicHeading = page.getByRole("heading", { name: "Advanced Operator Console" });
   await expect(loginHeading.or(dynamicHeading)).toBeVisible();
   if (await loginHeading.isVisible()) {
     await page.getByLabel("Username").fill(username);
@@ -80,7 +86,7 @@ test("real static finding becomes approved mission, agent execution, evidence, a
   await expect(dynamicHeading).toBeVisible();
   await expect(page.getByRole("heading", { name: "Finding-Driven Dynamic Validation" })).toBeVisible();
 
-  const findings = (await browserApiGet(page, "findings/?audit=4")) as JsonRecord[];
+  const findings = (await browserApiGet(page, `findings/?audit=${auditId}`)) as JsonRecord[];
   const selectedFinding = findings.find((finding) => {
     const playbooks = Array.isArray(finding.dynamic_validation_playbooks)
       ? finding.dynamic_validation_playbooks as unknown[]
@@ -91,50 +97,61 @@ test("real static finding becomes approved mission, agent execution, evidence, a
   });
   expect(selectedFinding, "A supported AndroGoat static finding is required").toBeTruthy();
 
-  await page.goto(`/dynamic?audit=4&finding=${String(selectedFinding!.id)}`);
+  await page.goto(`/dynamic/advanced?audit=${auditId}&finding=${String(selectedFinding!.id)}`);
   await expect(page.getByRole("heading", { name: "Finding-Driven Dynamic Validation" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Validate Dynamically|Validate Again|Generate Validation Mission/ }).first()).toBeVisible({ timeout: 30_000 });
   await capture(page, "fv-01-static-findings.png");
 
-  const generateButton = page.getByRole("button", { name: /Validate Dynamically|Validate Again|Generate Validation Mission/ }).first();
-  const missionResponsePromise = page.waitForResponse(
-    (response) => response.request().method() === "POST" && /\/dynamic-validation\/generate\/$/.test(response.url()),
-    { timeout: 90_000 },
-  );
-  await generateButton.click();
-  const missionResponse = await missionResponsePromise;
-  expect(missionResponse.ok(), `${missionResponse.status()}: ${await missionResponse.text()}`).toBeTruthy();
-  const generatedMission = (await missionResponse.json()) as JsonRecord;
-  const missionId = Number(generatedMission.id);
-  expect(missionId).toBeGreaterThan(0);
-  expect(generatedMission.status).toBe("VALIDATED");
-  expect(generatedMission.provider).toBe("OPENAI");
-  expect(generatedMission.model).toBe("gpt-5.6-luna");
+  let missionId = Number(existingMissionId || 0);
+  let runId = Number(existingRunId || 0);
+  if (!missionId) {
+    const generateButton = page.getByRole("button", { name: /Validate Dynamically|Validate Again|Generate Validation Mission/ }).first();
+    const missionResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && /\/dynamic-validation\/generate\/$/.test(response.url()),
+      { timeout: 90_000 },
+    );
+    await generateButton.click();
+    const missionResponse = await missionResponsePromise;
+    expect(missionResponse.ok(), `${missionResponse.status()}: ${await missionResponse.text()}`).toBeTruthy();
+    const generatedMission = (await missionResponse.json()) as JsonRecord;
+    missionId = Number(generatedMission.id);
+    expect(missionId).toBeGreaterThan(0);
+    expect(generatedMission.status).toBe("VALIDATED");
+    expect(generatedMission.provider).toBe("OPENAI");
+    expect(generatedMission.model).toBe("gpt-5.6-luna");
 
-  await expect(page.getByRole("button", { name: "Approve Validation Mission" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("Shell, ADB shell, host filesystem", { exact: false })).toBeVisible();
-  await capture(page, "fv-02-mission-review.png");
+    await expect(page.getByRole("button", { name: "Approve Validation Mission" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Shell, ADB shell, host filesystem", { exact: false })).toBeVisible();
+    await capture(page, "fv-02-mission-review.png");
 
-  const approveResponsePromise = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith(`/api/dynamic/finding-validations/${missionId}/approve/`),
-  );
-  await page.getByRole("button", { name: "Approve Validation Mission" }).click();
-  const approveResponse = await approveResponsePromise;
-  expect(approveResponse.ok(), `${approveResponse.status()}: ${await approveResponse.text()}`).toBeTruthy();
-  await expect(page.getByRole("button", { name: "Start Dynamic Validation" })).toBeVisible({ timeout: 30_000 });
-  await capture(page, "fv-03-approval-boundary.png");
+    const approveResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().endsWith(`/api/dynamic/finding-validations/${missionId}/approve/`),
+    );
+    await page.getByRole("button", { name: "Approve Validation Mission" }).click();
+    const approveResponse = await approveResponsePromise;
+    expect(approveResponse.ok(), `${approveResponse.status()}: ${await approveResponse.text()}`).toBeTruthy();
+    await expect(page.getByRole("button", { name: "Start Dynamic Validation" })).toBeVisible({ timeout: 30_000 });
+    await capture(page, "fv-03-approval-boundary.png");
 
-  const startResponsePromise = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith(`/api/dynamic/finding-validations/${missionId}/start/`),
-  );
-  await page.getByRole("button", { name: "Start Dynamic Validation" }).click();
-  const startResponse = await startResponsePromise;
-  expect(startResponse.ok(), `${startResponse.status()}: ${await startResponse.text()}`).toBeTruthy();
-  const startPayload = (await startResponse.json()) as { run: JsonRecord; mission: JsonRecord };
-  const runId = Number(startPayload.run.id);
-  expect(runId).toBeGreaterThan(0);
-  expect(startPayload.run.execution_mode).toBe("ADAPTIVE_AGENT");
-  await capture(page, "fv-04-live-poc-started.png");
+    const startResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && response.url().endsWith(`/api/dynamic/finding-validations/${missionId}/start/`),
+    );
+    await page.getByRole("button", { name: "Start Dynamic Validation" }).click();
+    const startResponse = await startResponsePromise;
+    expect(startResponse.ok(), `${startResponse.status()}: ${await startResponse.text()}`).toBeTruthy();
+    const startPayload = (await startResponse.json()) as { run: JsonRecord; mission: JsonRecord };
+    runId = Number(startPayload.run.id);
+    expect(runId).toBeGreaterThan(0);
+    expect(startPayload.run.execution_mode).toBe("ADAPTIVE_AGENT");
+    await capture(page, "fv-04-live-poc-started.png");
+  } else {
+    const mission = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/`)) as JsonRecord;
+    expect(mission.provider).toBe("OPENAI");
+    expect(mission.model).toBe("gpt-5.6-luna");
+    runId = runId || Number(mission.agent_run);
+    expect(runId).toBeGreaterThan(0);
+    await capture(page, "fv-02-existing-mission.png");
+  }
 
   await expect.poll(async () => {
     const timeline = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/timeline/`)) as JsonRecord;
@@ -148,7 +165,7 @@ test("real static finding becomes approved mission, agent execution, evidence, a
   const timeline = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/timeline/`)) as JsonRecord;
   const run = (await browserApiGet(page, `dynamic/agent/runs/${runId}/`)) as JsonRecord;
   const steps = (await browserApiGet(page, `dynamic/agent/runs/${runId}/steps/`)) as JsonRecord[];
-  const results = (await browserApiGet(page, `dynamic/validation-results/?audit=4`)) as JsonRecord[];
+  const results = (await browserApiGet(page, `dynamic/validation-results/?audit=${auditId}`)) as JsonRecord[];
   const missionResult = results.find((item) => Number(item.agent_run) === runId && Number(item.finding) === Number(selectedFinding!.id));
 
   expect(run.status).toBe("SUCCEEDED");

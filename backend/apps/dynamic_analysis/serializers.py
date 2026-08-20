@@ -2,6 +2,7 @@ import re
 
 from rest_framework import serializers
 
+from apps.api.serializers import EvidenceSerializer
 from apps.apk_files.models import APKFile
 from apps.audits.models import Audit
 from apps.storage.models import ObjectStorageReference
@@ -31,6 +32,13 @@ from apps.dynamic_analysis.models import (
 )
 from apps.dynamic_analysis.services.assessment_planner import (
     OPENAI_MODEL_PROFILE_CHOICES,
+)
+from apps.dynamic_analysis.services.static_dynamic_correlation import (
+    evidence_preview_type,
+    evidence_title,
+    result_explanation,
+    result_label,
+    scenario_summary_for_mission,
 )
 
 
@@ -99,6 +107,22 @@ class StrictEmptySerializer(serializers.Serializer):
                 {key: "This field is not permitted." for key in sorted(data)}
             )
         return {}
+
+
+class OpenAIBudgetStatusSerializer(serializers.Serializer):
+    """Serializable OpenAI call budget snapshot (no secrets)."""
+
+    scope = serializers.CharField()
+    max_mission_generation_calls = serializers.IntegerField()
+    max_adaptive_decision_calls = serializers.IntegerField()
+    max_total_openai_calls = serializers.IntegerField()
+    mission_generation_call_count = serializers.IntegerField()
+    adaptive_decision_call_count = serializers.IntegerField()
+    current_openai_call_count = serializers.IntegerField()
+    remaining_total_calls = serializers.IntegerField()
+    provider_response_ids = serializers.ListField(child=serializers.CharField())
+    budget_exhausted_reason = serializers.CharField()
+    exhausted = serializers.BooleanField()
 
 
 class AdaptiveAssessmentRecommendationSerializer(serializers.Serializer):
@@ -867,12 +891,24 @@ class FindingValidationMissionSerializer(serializers.ModelSerializer):
         read_only=True,
         allow_blank=True,
     )
+    result_label = serializers.SerializerMethodField()
+    result_explanation = serializers.SerializerMethodField()
+    scenario_summary = serializers.SerializerMethodField()
 
     def get_evidence_ids(self, obj):
         return list(obj.evidence.values_list("id", flat=True)[:100])
 
     def get_evidence_count(self, obj):
         return obj.evidence.count()
+
+    def get_result_label(self, obj):
+        return result_label(obj.status)
+
+    def get_result_explanation(self, obj):
+        return result_explanation(obj.status)
+
+    def get_scenario_summary(self, obj):
+        return scenario_summary_for_mission(obj)
 
     class Meta:
         model = FindingValidationMission
@@ -908,6 +944,9 @@ class FindingValidationMissionSerializer(serializers.ModelSerializer):
             "budgets",
             "evidence_ids",
             "evidence_count",
+            "result_label",
+            "result_explanation",
+            "scenario_summary",
             "created_by",
             "approved_by",
             "approved_by_username",
@@ -916,6 +955,81 @@ class FindingValidationMissionSerializer(serializers.ModelSerializer):
             "completed_at",
             "created_at",
             "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class CapabilityGapEntrySerializer(serializers.Serializer):
+    missing_capability = serializers.CharField()
+    affected_finding_count = serializers.IntegerField()
+    affected_finding_ids = serializers.ListField(child=serializers.IntegerField())
+
+
+class CorrelationCandidateSerializer(serializers.Serializer):
+    finding_id = serializers.IntegerField()
+    finding_title = serializers.CharField()
+    severity = serializers.CharField()
+    confidence = serializers.CharField()
+    rule_id = serializers.CharField()
+    category = serializers.CharField()
+    classification = serializers.CharField()
+    priority = serializers.IntegerField()
+    security_hypothesis = serializers.CharField()
+    dynamic_validation_value = serializers.CharField()
+    recommended_poc_summary = serializers.CharField()
+    likely_capabilities = serializers.ListField(child=serializers.CharField())
+    expected_evidence = serializers.ListField(child=serializers.CharField())
+    prerequisites = serializers.CharField()
+    limitations = serializers.CharField()
+    estimated_complexity = serializers.CharField()
+    current_validation_status = serializers.CharField()
+    missing_capabilities = serializers.ListField(child=serializers.CharField())
+    start_poc_available = serializers.BooleanField()
+
+
+class StaticDynamicCorrelationSerializer(serializers.Serializer):
+    audit_id = serializers.IntegerField()
+    target_package = serializers.CharField()
+    contract_version = serializers.CharField()
+    total_static_findings = serializers.IntegerField()
+    recommended_count = serializers.IntegerField()
+    optional_count = serializers.IntegerField()
+    static_sufficient_count = serializers.IntegerField()
+    not_testable_count = serializers.IntegerField()
+    already_validated_count = serializers.IntegerField()
+    blocked_count = serializers.IntegerField()
+    correlation_mode = serializers.CharField()
+    model = serializers.CharField()
+    generated_at = serializers.CharField()
+    capability_gaps = CapabilityGapEntrySerializer(many=True)
+    candidates = CorrelationCandidateSerializer(many=True)
+
+
+class CorrelationCandidateStartPocRequestSerializer(serializers.Serializer):
+    finding_id = serializers.IntegerField()
+
+
+class CorrelationCandidateStartPocSerializer(serializers.Serializer):
+    mission = FindingValidationMissionSerializer()
+    next_step = serializers.CharField()
+
+
+class FindingMissionEvidenceSerializer(EvidenceSerializer):
+    """Mission evidence with clean auditor-facing UI labels."""
+
+    evidence_title = serializers.SerializerMethodField()
+    evidence_preview_type = serializers.SerializerMethodField()
+
+    def get_evidence_title(self, obj):
+        return evidence_title(obj.evidence_type)
+
+    def get_evidence_preview_type(self, obj):
+        return evidence_preview_type(obj.evidence_type)
+
+    class Meta(EvidenceSerializer.Meta):
+        fields = EvidenceSerializer.Meta.fields + [
+            "evidence_title",
+            "evidence_preview_type",
         ]
         read_only_fields = fields
 

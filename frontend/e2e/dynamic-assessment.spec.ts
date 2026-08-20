@@ -225,6 +225,7 @@ async function installMockApi(page: Page, options: { planningFailure?: boolean; 
     if (path === "apk-files/") return fulfillJson(route, [{ id: 10, audit: 1, package_name: "owasp.sat.agoat", version_name: "1.0", sha256: "6".repeat(64), size_bytes: 1024, storage_reference: 1, storage_status: "VERIFIED", created_at: now }]);
     if (path === "dynamic/host-agent/status/") return fulfillJson(route, { connected: true, enabled: true, code: "HOST_AGENT_CONNECTED", detail: "Ready", agent: { version: "1.0" }, device: { serial: "emulator-5554", state: "device", root_uid: 0, api_level: 35, android_version: "15", abi: "x86_64", selinux: "Enforcing", focused_app: "owasp.sat.agoat/.MainActivity" }, last_sync_at: now });
     if (path === "dynamic/host-agent/packages/") return fulfillJson(route, { packages: ["owasp.sat.agoat"], count: 1, truncated: false });
+    if (path === "dynamic/finding-validations/budget-status/") return fulfillJson(route, { scope: "GLOBAL", max_mission_generation_calls: 1, max_adaptive_decision_calls: 6, max_total_openai_calls: 7, mission_generation_call_count: 0, adaptive_decision_call_count: 0, current_openai_call_count: 0, remaining_total_calls: 7, provider_response_ids: [], budget_exhausted_reason: "", exhausted: false });
     if (path === "dynamic/agent/runtimes/") return fulfillJson(route, [{ id: 1, name: "Internal Controller", runtime_type: "INTERNAL_CONTROLLER", status: "AVAILABLE", description: "", capabilities: { tools: ["get_device_status", "launch_package", "dump_ui"] }, isolation_level: "INTERNAL_ONLY", enabled: true, configuration_enabled: true, available: true, last_seen_at: now, created_at: now, updated_at: now }]);
     if (path === "dynamic/agent/plans/" && method === "GET") return fulfillJson(route, planState ? [planState] : []);
     if (path === "dynamic/agent/runs/" && method === "GET") return fulfillJson(route, runState ? [runState] : []);
@@ -252,14 +253,23 @@ async function installMockApi(page: Page, options: { planningFailure?: boolean; 
   });
 }
 
-test("guided stages keep future and advanced controls out of the default target view", async ({ page }) => {
+async function openAdvancedTools(page: Page) {
+  await page.getByText("Advanced Operator Tools", { exact: true }).click();
+}
+
+test("guided stages keep future and advanced controls out of the default finding-driven view", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await expect(page.getByRole("heading", { name: "Advanced Operator Console" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Finding-Driven Dynamic Validation" })).toBeVisible();
+  await expect(page.getByText("AI call budget 7/7", { exact: false })).toBeVisible();
+  await expect(page.locator("details.advanced-operator-panel")).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("heading", { name: "Configure Security Assessment" })).toHaveCount(0);
+  await page.getByText("Advanced Operator Tools", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "Configure Security Assessment" })).toBeVisible();
   await expect(page.locator(".assessment-workflow > span")).toHaveCount(5);
   await expect(page.getByRole("heading", { name: "AI Assessment Plan" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Start Security Assessment" })).toHaveCount(0);
-  await expect(page.locator("details.advanced-operator-panel")).not.toHaveAttribute("open", "");
   await expect(page.locator("details.advanced-ai-settings")).not.toHaveAttribute("open", "");
   await page.getByText("Advanced AI Settings").click();
   await expect(page.locator(".advanced-ai-settings select").first()).toHaveValue("ECONOMY");
@@ -268,7 +278,8 @@ test("guided stages keep future and advanced controls out of the default target 
 
 test("auditor can generate, review, approve, start, watch evidence, and reach results", async ({ page }) => {
   await installMockApi(page);
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await openAdvancedTools(page);
   await page.getByRole("button", { name: "Generate AI Assessment" }).click();
   await expect(page.getByRole("heading", { name: "AI Assessment Plan" })).toBeVisible();
   await expect(page.getByText("Security checks passed", { exact: true })).toBeVisible();
@@ -292,7 +303,8 @@ test("auditor can generate, review, approve, start, watch evidence, and reach re
 
 test("planning failure is safe and does not advance or offer execution", async ({ page }) => {
   await installMockApi(page, { planningFailure: true });
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await openAdvancedTools(page);
   await page.getByRole("button", { name: "Generate AI Assessment" }).click();
   await expect(page.getByText("AI planning could not be completed.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Configure Security Assessment" })).toBeVisible();
@@ -302,7 +314,8 @@ test("planning failure is safe and does not advance or offer execution", async (
 
 test("local planner schema rejection explains that no provider request was sent", async ({ page }) => {
   await installMockApi(page, { planningSchemaFailure: true });
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await openAdvancedTools(page);
   await page.getByRole("button", { name: "Generate AI Assessment" }).click();
   await expect(page.getByText("AI schema is not compatible with the provider. No request was sent.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Approve Assessment" })).toHaveCount(0);
@@ -313,7 +326,8 @@ test("provider schema failure before execution is accurate, empty, retryable, an
   const requests: string[] = [];
   await page.on("request", (request) => requests.push(request.url()));
   await installMockApi(page, { preExecutionFailure: true });
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await openAdvancedTools(page);
   await page.getByRole("button", { name: "Generate AI Assessment" }).click();
   await page.getByRole("button", { name: "Review & Continue" }).click();
   await page.getByRole("button", { name: "Approve Assessment" }).click();
@@ -334,10 +348,10 @@ test("provider schema failure before execution is accurate, empty, retryable, an
 
 test("viewer sees the safe pre-execution failure but cannot retry or mutate", async ({ page }) => {
   await installMockApi(page, { initialFailure: true, viewer: true });
-  await page.goto("/dynamic");
+  await page.goto("/dynamic/advanced");
+  await openAdvancedTools(page);
 
   await expect(page.getByText("AI assessment could not start. No Android actions were executed.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry Adaptive Assessment" })).toHaveCount(0);
-  await page.getByText("Advanced Operator Controls", { exact: true }).click();
   await expect(page.locator(".agent-foundation-card button").first()).toBeDisabled();
 });

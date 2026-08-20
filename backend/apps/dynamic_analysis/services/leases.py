@@ -92,8 +92,10 @@ def create_lease(
         raise DynamicLeaseError("Lease job must belong to the selected audit.")
 
     with transaction.atomic():
-        device = DynamicDevice.objects.select_for_update().select_related("pool").get(
-            pk=device.pk
+        device = (
+            DynamicDevice.objects.select_for_update(of=("self",))
+            .select_related("pool")
+            .get(pk=device.pk)
         )
         _validate_device_can_be_leased(device)
         if _has_active_lease(device):

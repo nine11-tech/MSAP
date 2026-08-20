@@ -42,4 +42,6 @@ class Command(BaseCommand):
         try:
             serve_dynamic_host_agent(host=host, port=port, token=token)
         except OSError as exc:
-            raise CommandError("Dynamic host-agent listener could not start.") from exc
+            raise CommandError(
+                f"Dynamic host-agent listener could not start on {host}:{port}: {exc}"
+            ) from exc
