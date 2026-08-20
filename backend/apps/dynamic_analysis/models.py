@@ -977,6 +977,10 @@ class AgentRun(models.Model):
         RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE", "Runtime unavailable"
         AI_PROVIDER_FAILURE = "AI_PROVIDER_FAILURE", "AI provider failure"
         AI_DECISION_REJECTED = "AI_DECISION_REJECTED", "AI decision rejected"
+        OPENAI_BUDGET_EXHAUSTED = (
+            "OPENAI_BUDGET_EXHAUSTED",
+            "OpenAI budget exhausted",
+        )
         TOOL_EXECUTION_FAILED = (
             "TOOL_EXECUTION_FAILED",
             "Tool execution failed",
@@ -1501,6 +1505,162 @@ class FindingValidationMission(models.Model):
 
     def __str__(self) -> str:
         return f"Mission {self.id} validating finding {self.finding_id}"
+
+
+class OpenAICallBudget(models.Model):
+    """Backend-enforced hard budget for real OpenAI calls.
+
+    A single row (scope="global") is the authoritative counter for the demo.
+    Every mission-generation and adaptive-decision request is reserved through
+    this row under a row lock, so concurrent workers cannot exceed the cap.
+    Local schema-preflight failures (where no request is sent) are rolled back.
+    """
+
+    scope = models.CharField(max_length=64, unique=True)
+    max_mission_generation_calls = models.PositiveIntegerField(
+        default=1,
+    )
+    max_adaptive_decision_calls = models.PositiveIntegerField(
+        default=6,
+    )
+    max_correlation_calls = models.PositiveIntegerField(
+        default=6,
+    )
+    max_poc_planning_calls = models.PositiveIntegerField(
+        default=3,
+    )
+    max_total_openai_calls = models.PositiveIntegerField(
+        default=7,
+    )
+    mission_generation_call_count = models.PositiveIntegerField(default=0)
+    adaptive_decision_call_count = models.PositiveIntegerField(default=0)
+    correlation_call_count = models.PositiveIntegerField(default=0)
+    poc_planning_call_count = models.PositiveIntegerField(default=0)
+    current_openai_call_count = models.PositiveIntegerField(default=0)
+    provider_response_ids = models.JSONField(default=list, blank=True)
+    budget_exhausted_reason = models.CharField(max_length=128, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scope"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(current_openai_call_count__gte=0),
+                name="openai_budget_current_count_non_negative",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"OpenAI call budget {self.scope} ({self.current_openai_call_count}/{self.max_total_openai_calls})"
+
+
+class StaticDynamicCorrelationRun(models.Model):
+    """Persisted AI correlation result for one audit (contract v2).
+
+    The audit-level Static -> Dynamic correlation agent classifies every real
+    static finding into a closed set of dynamic-validation buckets. Results are
+    cached against a fingerprint of the findings, the APK, and the current
+    capability manifest so an unchanged audit never spends budget twice.
+    """
+
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.CASCADE,
+        related_name="static_dynamic_correlation_runs",
+    )
+    contract_version = models.CharField(max_length=64, default="msap.static-dynamic-correlation/v2")
+    cache_key = models.CharField(max_length=64, db_index=True)
+    findings_fingerprint = models.CharField(max_length=64)
+    apk_sha256 = models.CharField(max_length=64, blank=True)
+    capability_manifest_hash = models.CharField(max_length=64, blank=True)
+    capability_manifest = models.JSONField(default=dict, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+    candidates = models.JSONField(default=list, blank=True)
+    batches = models.JSONField(default=list, blank=True)
+    capability_gaps = models.JSONField(default=list, blank=True)
+    provider = models.CharField(max_length=32, blank=True)
+    model = models.CharField(max_length=128, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_static_dynamic_correlation_runs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["audit", "cache_key"], name="dynamic_ana_corr_cache_idx"),
+            models.Index(fields=["audit", "created_at"], name="dynamic_ana_corr_audit_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Correlation run {self.id} for audit {self.audit_id}"
+
+
+class DynamicPoCPlan(models.Model):
+    """Persisted AI PoC plan (contract msap.dynamic-poc-plan/v1).
+
+    The PoC planning agent turns one correlated static finding into a bounded
+    validation mission strategy. The plan is guidance for the adaptive
+    execution agent: the backend still validates capabilities, approval, and
+    execution through the existing run-scoped Tool Gateway.
+    """
+
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.CASCADE,
+        related_name="dynamic_poc_plans",
+    )
+    finding = models.ForeignKey(
+        "findings.Finding",
+        on_delete=models.CASCADE,
+        related_name="dynamic_poc_plans",
+    )
+    mission = models.ForeignKey(
+        "FindingValidationMission",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dynamic_poc_plans",
+    )
+    assessment_plan = models.OneToOneField(
+        "AssessmentPlan",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dynamic_poc_plan",
+    )
+    contract_version = models.CharField(max_length=64, default="msap.dynamic-poc-plan/v1")
+    plan = models.JSONField(default=dict, blank=True)
+    plan_hash = models.CharField(max_length=64, blank=True)
+    hypothesis = models.TextField(blank=True)
+    objective = models.TextField(blank=True)
+    provider = models.CharField(max_length=32, blank=True)
+    model = models.CharField(max_length=128, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_dynamic_poc_plans",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["finding", "created_at"], name="dynamic_ana_pocplan_find_idx"),
+            models.Index(fields=["mission"], name="dynamic_ana_pocplan_mission"),
+        ]
+
+    def __str__(self) -> str:
+        return f"PoC plan {self.id} for finding {self.finding_id}"
 
 
 class AssessmentPlan(models.Model):

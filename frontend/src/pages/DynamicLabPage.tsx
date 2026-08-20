@@ -16,6 +16,8 @@ import {
   generateFindingValidationMission,
   getFindingValidationMission,
   getFindingValidationTimeline,
+  getOpenAIBudgetStatus,
+  resetOpenAIBudget,
   installDynamicAuditApk,
   listFindingValidationEvidence,
   listFindingValidationMissions,
@@ -56,6 +58,7 @@ import type {
   Finding,
   FindingValidationMission,
   FindingValidationTimeline,
+  OpenAIBudgetStatus,
   SystemComponent,
 } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
@@ -94,7 +97,8 @@ type WorkingAction =
   | "planner-cancel"
   | "mission-generate"
   | "mission-approve"
-  | "mission-start";
+  | "mission-start"
+  | "budget-reset";
 
 type PackageAction =
   | "launch-package"
@@ -214,6 +218,7 @@ export function DynamicLabPage() {
   const [agentStatus, setAgentStatus] = useState<DynamicHostAgentStatus | null>(
     null,
   );
+  const [openAiBudget, setOpenAiBudget] = useState<OpenAIBudgetStatus | null>(null);
   const [packages, setPackages] = useState<string[]>([]);
   const [packageName, setPackageName] = useState("");
   const [installResult, setInstallResult] =
@@ -275,6 +280,7 @@ export function DynamicLabPage() {
   const [notice, setNotice] = useState("");
   const { hasRole } = useAuth();
   const canOperate = hasRole("ADMIN", "ANALYST");
+  const labOnline = Boolean(agentStatus?.connected && agentStatus.device?.state === "device");
   const { status: systemStatus, refresh: refreshSystemStatus } =
     useSystemStatus();
 
@@ -356,9 +362,17 @@ export function DynamicLabPage() {
     }
   }, [requestedAuditId, requestedRunId]);
 
+  const refreshOpenAiBudget = useCallback(() => {
+    getOpenAIBudgetStatus().then(setOpenAiBudget).catch(() => null);
+  }, []);
+
   useEffect(() => {
     void loadWorkspace();
   }, [loadWorkspace]);
+
+  useEffect(() => {
+    refreshOpenAiBudget();
+  }, [refreshOpenAiBudget]);
 
   useEffect(() => {
     if (!selectedAuditId) return;
@@ -711,6 +725,7 @@ export function DynamicLabPage() {
     } catch (requestError) {
       setError(assessmentFailureMessage(requestError, "planning"));
     } finally {
+      refreshOpenAiBudget();
       setWorking("");
     }
   }
@@ -731,6 +746,7 @@ export function DynamicLabPage() {
     } catch (requestError) {
       setError(assessmentFailureMessage(requestError, "approval"));
     } finally {
+      refreshOpenAiBudget();
       setWorking("");
     }
   }
@@ -772,6 +788,7 @@ export function DynamicLabPage() {
     } catch (requestError) {
       setError(assessmentFailureMessage(requestError, "execution"));
     } finally {
+      refreshOpenAiBudget();
       setWorking("");
     }
   }
@@ -787,6 +804,20 @@ export function DynamicLabPage() {
       ]);
       setAgentStatus(hostData);
       setNotice("Device and service status refreshed.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleResetBudget() {
+    setWorking("budget-reset");
+    setError("");
+    setNotice("");
+    try {
+      setOpenAiBudget(await resetOpenAIBudget());
+      setNotice("OpenAI call budget reset to zero for this demo scope.");
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
@@ -1204,9 +1235,14 @@ export function DynamicLabPage() {
   return (
     <div className="dynamic-mvp-page">
       <PageHeader
-        eyebrow="Authorized Android workspace"
-        title="Dynamic Security Assessment"
-        description="Assess an authorized Android application using bounded AI planning and controlled runtime evidence."
+        eyebrow="MSAP · Operator tools"
+        title="Advanced Operator Console"
+        description="Internal lab health, AI budget counters, raw mission and run details, manual device and Frida controls, and legacy dynamic lab workflows. The auditor-facing Static → Dynamic flow lives on the main Dynamic Lab page."
+        actions={
+          <Link className="button button-secondary" to="/dynamic">
+            Back to Dynamic Lab
+          </Link>
+        }
       />
 
       {error ? <ErrorMessage message={error} /> : null}
@@ -1215,6 +1251,29 @@ export function DynamicLabPage() {
           {notice}
         </div>
       ) : null}
+
+      <div className="dynamic-status-strip" aria-label="Dynamic lab status">
+        <span className={`status-pill ${labOnline ? "is-online" : "is-offline"}`}>
+          <i aria-hidden="true" />Dynamic lab {labOnline ? "ready" : "offline"}
+        </span>
+        <span className={`status-pill ${agentStatus?.connected ? "is-online" : "is-offline"}`}>
+          <i aria-hidden="true" />Host agent {agentStatus?.connected ? "online" : "offline"}
+        </span>
+        <span className={`status-pill ${emulatorOnline ? "is-online" : "is-offline"}`}>
+          <i aria-hidden="true" />Emulator {emulatorOnline ? "ready" : "offline"}
+        </span>
+        <span className={`status-pill ${
+          openAiBudget
+            ? openAiBudget.exhausted
+              ? "is-offline"
+              : openAiBudget.remaining_total_calls <= 2
+                ? "is-warning"
+                : "is-online"
+            : "is-unknown"
+        }`}>
+          <i aria-hidden="true" />AI call budget {openAiBudget ? `${openAiBudget.remaining_total_calls}/${openAiBudget.max_total_openai_calls}` : "…"}
+        </span>
+      </div>
 
       <FindingValidationDashboard
         audit={selectedAudit}
@@ -1226,14 +1285,28 @@ export function DynamicLabPage() {
         selectedMission={selectedMission}
         evidence={missionEvidence}
         timeline={missionTimeline}
+        agentStatus={agentStatus}
         canOperate={canOperate}
         working={working}
         onSelectMission={setSelectedMissionId}
         onGenerate={(findingId) => void handleGenerateValidationMission(findingId)}
         onApprove={() => void handleApproveValidationMission()}
         onStart={() => void handleStartValidationMission()}
+        onRetryLabHealth={() => void handleRefresh()}
+        budget={openAiBudget}
+        onResetBudget={() => void handleResetBudget()}
+        workingResetBudget={working === "budget-reset"}
       />
 
+      <details className="advanced-operator-panel">
+        <summary>
+          <span>
+            <strong>Advanced Operator Tools</strong>
+            <small>Planner AI assessment workflow, deterministic mobile tools, runtime instrumentation, and debug evidence.</small>
+          </span>
+          <span className="advanced-toggle-label">Show advanced</span>
+        </summary>
+        <div className="advanced-operator-content">
       {staticFindings.filter((finding) => (finding.dynamic_validation_playbooks || []).length > 0).length > 0 ? (
         <Card className="dynamic-mvp-section finding-driven-panel">
           <SectionHeader
@@ -1642,15 +1715,6 @@ export function DynamicLabPage() {
         </Card>
       ) : null}
 
-      <details className="advanced-operator-panel">
-        <summary>
-          <span>
-            <strong>Advanced Operator Controls</strong>
-            <small>Readiness checks, deterministic mobile tools, runtime instrumentation, and debug evidence.</small>
-          </span>
-          <span className="advanced-toggle-label">Show advanced</span>
-        </summary>
-        <div className="advanced-operator-content">
       <Card className="dynamic-mvp-section agent-foundation-card">
         <SectionHeader
           title="Deterministic Mobile Checks"
@@ -2082,12 +2146,17 @@ function FindingValidationDashboard({
   selectedMission,
   evidence,
   timeline,
+  agentStatus,
   canOperate,
   working,
+  budget,
+  onResetBudget,
+  workingResetBudget,
   onSelectMission,
   onGenerate,
   onApprove,
   onStart,
+  onRetryLabHealth,
 }: {
   audit: Audit | undefined;
   targetPackage: string;
@@ -2098,12 +2167,17 @@ function FindingValidationDashboard({
   selectedMission: FindingValidationMission | null;
   evidence: Evidence[];
   timeline: FindingValidationTimeline | null;
+  agentStatus: DynamicHostAgentStatus | null;
   canOperate: boolean;
   working: WorkingAction;
+  budget: OpenAIBudgetStatus | null;
+  onResetBudget: () => void;
+  workingResetBudget: boolean;
   onSelectMission: (missionId: number | null) => void;
   onGenerate: (findingId: number) => void;
   onApprove: () => void;
   onStart: () => void;
+  onRetryLabHealth: () => void;
 }) {
   const missionByFinding = new Map<number, FindingValidationMission>();
   for (const mission of missions) {
@@ -2118,8 +2192,33 @@ function FindingValidationDashboard({
   const tools = Array.isArray(selectedMission?.allowed_capabilities)
     ? selectedMission.allowed_capabilities
     : [];
+  const labReady = Boolean(agentStatus?.connected && agentStatus.device?.state === "device");
+  const labLastChecked = agentStatus?.last_checked_at
+    ? new Date(agentStatus.last_checked_at).toLocaleString()
+    : "Not checked";
   const evidenceGroups = groupEvidence(evidence);
   const supportedCount = findings.filter((finding) => (finding.dynamic_validation_playbooks || []).length > 0).length;
+  const missionStatus = selectedMission?.status || "";
+  const resultStatuses = ["CONFIRMED", "NOT_REPRODUCED", "INCONCLUSIVE", "BLOCKED", "NOT_DYNAMICALLY_TESTABLE", "FAILED"];
+  const currentStage = !selectedMission
+    ? 1
+    : missionStatus === "VALIDATED"
+      ? 3
+      : missionStatus === "APPROVED" || missionStatus === "RUNNING"
+        ? 4
+        : resultStatuses.includes(missionStatus)
+          ? 5
+          : 2;
+  const MISSION_STAGES = [
+    "Select finding",
+    "Generate mission",
+    "Approve PoC",
+    "Execute",
+    "Evidence & result",
+  ];
+  const latestEvidence = evidence.slice(-4).reverse();
+  const timelineItems = timeline?.items || [];
+  const lastTimelineItem = timelineItems[timelineItems.length - 1];
   return (
     <Card className="dynamic-mvp-section finding-validation-dashboard">
       <SectionHeader
@@ -2132,9 +2231,22 @@ function FindingValidationDashboard({
         }
       />
 
-      <div className="validation-workflow-path" aria-label="Finding validation workflow">
-        <span>Static finding</span><b>→</b><span>AI mission</span><b>→</b><span>Auditor approval</span><b>→</b><span>Execution agent</span><b>→</b><span>Real evidence</span><b>→</b><span>Oracle result</span>
-      </div>
+      <ol className="validation-stepper" aria-label="Finding validation workflow">
+        {MISSION_STAGES.map((stage, index) => {
+          const step = index + 1;
+          const stateClass = step < currentStage
+            ? "is-complete"
+            : step === currentStage
+              ? "is-current"
+              : "is-future";
+          return (
+            <li key={stage} className={stateClass} aria-current={step === currentStage ? "step" : undefined}>
+              <b>{step < currentStage ? "✓" : step}</b>
+              <span>{stage}</span>
+            </li>
+          );
+        })}
+      </ol>
 
       <div className="finding-validation-layout">
         <section className="static-findings-panel" aria-label="Static findings">
@@ -2203,9 +2315,10 @@ function FindingValidationDashboard({
           )}
         </section>
 
+        <div className="finding-validation-main">
         <section className="mission-panel" aria-label="Dynamic validation mission">
           <div className="auditor-section-heading">
-            <div><span className="eyebrow">Stage 2–4</span><h3>Dynamic Validation Mission</h3></div>
+            <div><span className="eyebrow">Mission</span><h3>Review the AI-generated PoC</h3></div>
             <span>{selectedMission ? `Mission #${selectedMission.id}` : "No mission selected"}</span>
           </div>
           {selectedMission ? (
@@ -2271,6 +2384,17 @@ function FindingValidationDashboard({
                 <strong>You are approving MSAP to execute this bounded PoC against:</strong>
                 <span>{applicationDisplayName(selectedMission.target_package)} · <code>{selectedMission.target_package}</code></span>
                 <p>Execution mode: Finding Validation Agent. Forbidden: shell, ADB shell, host filesystem, arbitrary Frida source, credentials.</p>
+                {!labReady ? (
+                  <div className="alert alert-warning" role="status">
+                    <strong>Dynamic lab is offline. Start the Host Agent and retry.</strong>
+                    <span>Configured Host Agent URL: <code>{agentStatus?.configured_url || "Not configured"}</code></span>
+                    <span>Last health check: {labLastChecked}</span>
+                    <span>Emulator status: {agentStatus?.device?.state || "unavailable"}</span>
+                    <button className="button button-secondary" onClick={onRetryLabHealth} disabled={Boolean(working)}>
+                      Retry Lab Health
+                    </button>
+                  </div>
+                ) : null}
                 <div className="auditor-stage-actions">
                   {selectedMission.status === "VALIDATED" ? (
                     <button className="button button-primary button-prominent" onClick={onApprove} disabled={!canOperate || Boolean(working)}>
@@ -2278,7 +2402,7 @@ function FindingValidationDashboard({
                     </button>
                   ) : null}
                   {selectedMission.status === "APPROVED" ? (
-                    <button className="button button-primary button-prominent" onClick={onStart} disabled={!canOperate || Boolean(working)}>
+                    <button className="button button-primary button-prominent" onClick={onStart} disabled={!canOperate || !labReady || Boolean(working)}>
                       {working === "mission-start" ? "Starting Agent…" : "Start Dynamic Validation"}
                     </button>
                   ) : null}
@@ -2308,12 +2432,88 @@ function FindingValidationDashboard({
             </div>
           )}
         </section>
+
+        <aside className="finding-validation-sidebar" aria-label="Lab, budget and evidence">
+          <section className="sidebar-card">
+            <h4>Lab readiness</h4>
+            <dl className="sidebar-facts">
+              <div><dt>Host agent</dt><dd className={agentStatus?.connected ? "state-text-ready" : "state-text-failed"}>{agentStatus?.connected ? `Online · ${agentStatus.agent?.version || "v?"}` : "Offline"}</dd></div>
+              <div><dt>Emulator</dt><dd className={labReady ? "state-text-ready" : "state-text-failed"}>{labReady ? `Ready · ${agentStatus?.device?.android_version || "Android"}` : agentStatus?.device?.state || "Unavailable"}</dd></div>
+              <div><dt>Device serial</dt><dd className="mono">{agentStatus?.device?.serial || "—"}</dd></div>
+              <div><dt>Target app</dt><dd className="mono">{targetPackage || "Not selected"}</dd></div>
+              <div><dt>Last health check</dt><dd>{labLastChecked}</dd></div>
+              <div><dt>Configured URL</dt><dd className="mono">{agentStatus?.configured_url || "Not configured"}</dd></div>
+            </dl>
+            <button className="button button-secondary" onClick={onRetryLabHealth} disabled={Boolean(working)}>
+              Refresh Lab Health
+            </button>
+          </section>
+
+          <section className="sidebar-card">
+            <h4>AI call budget</h4>
+            {budget ? (
+              <>
+                <div className="budget-meter" aria-label="Remaining AI calls">
+                  <strong>{budget.remaining_total_calls}</strong>
+                  <span>of {budget.max_total_openai_calls} OpenAI calls remaining</span>
+                </div>
+                <dl className="sidebar-facts">
+                  <div><dt>Mission generation</dt><dd>{budget.mission_generation_call_count}/{budget.max_mission_generation_calls}</dd></div>
+                  <div><dt>Adaptive decisions</dt><dd>{budget.adaptive_decision_call_count}/{budget.max_adaptive_decision_calls}</dd></div>
+                </dl>
+                {budget.exhausted ? (
+                  <div className="alert alert-warning budget-exhausted-note" role="status">
+                    <strong>AI call budget reached.</strong>
+                    <span>{budget.budget_exhausted_reason || "Evidence collected so far was preserved."}</span>
+                  </div>
+                ) : null}
+                {canOperate ? (
+                  <button className="button button-secondary" onClick={onResetBudget} disabled={Boolean(working) || workingResetBudget}>
+                    {workingResetBudget ? "Resetting…" : "Reset Budget"}
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <p className="muted">Budget status unavailable.</p>
+            )}
+          </section>
+
+          <section className="sidebar-card">
+            <h4>Latest evidence</h4>
+            {latestEvidence.length ? (
+              <ol className="sidebar-evidence-list">
+                {latestEvidence.map((item) => (
+                  <li key={item.id}>
+                    <strong>{evidenceLabel(item.evidence_type)}</strong>
+                    <span>{formatDate(item.created_at)}</span>
+                  </li>
+                ))}
+              </ol>
+            ) : (
+              <p className="muted">No runtime evidence yet.</p>
+            )}
+          </section>
+
+          {selectedMission && resultStatuses.includes(selectedMission.status) ? (
+            <section className="sidebar-card">
+              <h4>Result</h4>
+              <span className={`validation-status-badge status-${selectedMission.status.toLowerCase()}`}>
+                {validationStatusLabel(selectedMission.status)}
+              </span>
+              <p>{selectedMission.final_conclusion || "See the validation report for oracle details."}</p>
+              <Link className="button button-primary" to={`/audits/${selectedMission.audit}/report`}>
+                View Validation Report
+              </Link>
+            </section>
+          ) : null}
+        </aside>
+        </div>
       </div>
 
       {selectedMission ? (
         <section className="mission-execution-panel" aria-label="PoC execution and evidence">
           <div className="auditor-section-heading">
-            <div><span className="eyebrow">Stage 5–6</span><h3>PoC execution / evidence / result</h3></div>
+            <div><span className="eyebrow">Execution</span><h3>PoC evidence and result</h3></div>
             <span>{evidence.length} evidence records</span>
           </div>
           <div className="mission-result-grid">
@@ -2332,6 +2532,18 @@ function FindingValidationDashboard({
               <p>{selectedMission.limitations || "Oracle pending."}</p>
             </article>
           </div>
+
+          {selectedMission.status === "RUNNING" ? (
+            <div className="mission-live-progress" role="status">
+              <strong>Validating {selectedMission.finding_title}</strong>
+              <span>Current phase: {lastTimelineItem ? `Step ${lastTimelineItem.sequence} · ${lastTimelineItem.scenario_title}` : "Starting the Finding Validation Agent…"}</span>
+              <div className="mission-progress-chips">
+                <span>{timelineItems.length} steps reached</span>
+                <span>{evidence.length} evidence records</span>
+                <span>{budget ? `AI calls ${budget.current_openai_call_count}/${budget.max_total_openai_calls}` : "AI calls …"}</span>
+              </div>
+            </div>
+          ) : null}
 
           <ol className="agent-activity-timeline mission-timeline">
             {(timeline?.items || []).length ? timeline!.items.map((item) => (

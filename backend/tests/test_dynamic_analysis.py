@@ -1984,11 +1984,14 @@ def test_host_agent_client_disabled_returns_clear_status():
         token="",
     ).get_status()
 
+    assert result["last_checked_at"]
     assert result == {
         "connected": False,
         "enabled": False,
         "code": "HOST_AGENT_DISABLED",
         "detail": "Start the local dynamic host agent on WSL to control the emulator.",
+        "configured_url": "",
+        "last_checked_at": result["last_checked_at"],
     }
 
 

@@ -52,6 +52,16 @@ MAX_REPORTED_FINDINGS = 500
 MAX_REPORTED_AUDIT_EVIDENCE = 1000
 MAX_REPORTED_METADATA_ROWS = 1000
 REPORT_TEXT_LIMIT = 4000
+ROOT_DETECTION_PLAYBOOK_IDS = {
+    "ROOT_DETECTION_SCREEN_VALIDATION",
+    "ROOT_DETECTION_LAB_BYPASS",
+}
+ROOT_DETECTION_TEXT_TERMS = (
+    "root detection",
+    "rootbeer",
+    "rooted device",
+    "root check",
+)
 REPORT_SECRET_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
@@ -64,6 +74,132 @@ REPORT_SECRET_PATTERNS = (
 
 
 @transaction.atomic
+def _is_root_detection_finding(finding) -> bool:
+    if finding is None:
+        return False
+    haystack = " ".join(
+        filter(
+            None,
+            (
+                str(finding.title or ""),
+                str(finding.category or ""),
+                str(getattr(finding, "description", None) or "")[:500],
+            ),
+        )
+    ).lower()
+    return any(term in haystack for term in ROOT_DETECTION_TEXT_TERMS)
+
+
+def _is_misplaced_root_detection_validation(item) -> bool:
+    return (
+        getattr(item, "playbook_id", None) in ROOT_DETECTION_PLAYBOOK_IDS
+        and not _is_root_detection_finding(getattr(item, "finding", None))
+    )
+
+
+def _latest_relevant_validation_results(items: list) -> list:
+    """Latest result per (finding, playbook); exclude misplaced root-detection rows."""
+    latest: dict[tuple, DynamicValidationResult] = {}
+    for item in items:
+        if _is_misplaced_root_detection_validation(item):
+            continue
+        key = (item.finding_id, item.playbook_id)
+        previous = latest.get(key)
+        if previous is None or item.created_at >= previous.created_at:
+            latest[key] = item
+    return sorted(latest.values(), key=lambda item: item.created_at, reverse=True)
+
+
+def _latest_relevant_missions(items: list) -> list:
+    """Latest mission per (finding, playbook); exclude misplaced root-detection missions."""
+    latest: dict[tuple, FindingValidationMission] = {}
+    for mission in items:
+        if _is_misplaced_root_detection_validation(mission):
+            continue
+        key = (mission.finding_id, mission.playbook_id)
+        previous = latest.get(key)
+        if previous is None or mission.created_at >= previous.created_at:
+            latest[key] = mission
+    return sorted(latest.values(), key=lambda mission: mission.created_at, reverse=True)
+
+
+def _validation_result_data(item: DynamicValidationResult) -> dict:
+    return {
+        "id": item.id,
+        "finding_id": item.finding_id,
+        "rule_id": item.rule_id,
+        "static_finding": (
+            item.finding.title if item.finding is not None else item.rule_id
+        ),
+        "playbook_id": item.playbook_id,
+        "validation_status": item.validation_status,
+        "result": item.oracle_result.get("result_contract", {}).get(
+            "result", item.validation_status
+        ),
+        "scenario_id": item.scenario_id,
+        "oracle_id": item.oracle_id,
+        "oracle_result": item.oracle_result,
+        "evidence_ids": [evidence.id for evidence in item.evidence.all()[:100]],
+        "safe_summary": _redact_report_text(item.safe_summary),
+        "limitations": _redact_report_text(item.limitations),
+    }
+
+
+def _mission_data(mission: FindingValidationMission) -> dict:
+    return {
+        "id": mission.id,
+        "finding_id": mission.finding_id,
+        "rule_id": mission.finding.rule_id,
+        "static_finding": mission.finding.title,
+        "playbook_id": mission.playbook_id,
+        "status": mission.status,
+        "target_package": mission.target_package,
+        "assessment_plan_id": mission.assessment_plan_id,
+        "agent_run_id": mission.agent_run_id,
+        "dynamic_validation_result_id": mission.dynamic_validation_result_id,
+        "hypothesis": _redact_report_text(mission.hypothesis),
+        "poc_scenario_summary": _redact_report_text(
+            mission.scenario_contract.get("validation_goal", "")
+            if isinstance(mission.scenario_contract, dict)
+            else ""
+        ),
+        "executed_actions": [
+            {
+                "sequence": step.sequence_number,
+                "scenario_step": step.plan_step_identifier,
+                "tool": step.tool_name,
+                "status": step.status,
+                "evidence_requirements": step.evidence_requirements,
+                "failure_message": _redact_report_text(step.failure_message),
+            }
+            for step in (
+                mission.agent_run.steps.order_by("sequence_number")[:MAX_REPORTED_AGENT_STEPS]
+                if mission.agent_run_id
+                else []
+            )
+        ],
+        "troubleshooting": [
+            {
+                "sequence": step.sequence_number,
+                "scenario_step": step.plan_step_identifier,
+                "retry_count": step.retry_count,
+                "failure_message": _redact_report_text(step.failure_message),
+            }
+            for step in (
+                mission.agent_run.steps.filter(retry_count__gt=0).order_by("sequence_number")[:MAX_REPORTED_AGENT_STEPS]
+                if mission.agent_run_id
+                else []
+            )
+        ],
+        "evidence_ids": [item.id for item in mission.evidence.all()[:100]],
+        "oracle_result": mission.oracle_result,
+        "final_conclusion": _redact_report_text(mission.final_conclusion),
+        "limitations": _redact_report_text(mission.limitations),
+        "scenario_hash": mission.scenario_hash,
+        "mission_hash": mission.mission_hash,
+    }
+
+
 def generate_json_report(audit_id: int) -> dict:
     audit = Audit.objects.select_related("project").get(id=audit_id)
     apk_file = (
@@ -240,84 +376,21 @@ def generate_json_report(audit_id: int) -> dict:
             "planner_is_execution_authority": False,
             "finding_authority": "DETERMINISTIC_RULES_ONLY",
             "dynamic_validations": [
-                {
-                    "id": item.id,
-                    "finding_id": item.finding_id,
-                    "rule_id": item.rule_id,
-                    "static_finding": item.finding.title if item.finding is not None else item.rule_id,
-                    "playbook_id": item.playbook_id,
-                    "validation_status": item.validation_status,
-                    "result": item.oracle_result.get("result_contract", {}).get("result", item.validation_status),
-                    "scenario_id": item.scenario_id,
-                    "oracle_id": item.oracle_id,
-                    "oracle_result": item.oracle_result,
-                    "evidence_ids": [evidence.id for evidence in item.evidence.all()[:100]],
-                    "safe_summary": _redact_report_text(item.safe_summary),
-                    "limitations": _redact_report_text(item.limitations),
-                }
-                for item in validation_results
+                _validation_result_data(item)
+                for item in _latest_relevant_validation_results(validation_results)
+            ],
+            "debug_raw_validation_trail": [
+                _validation_result_data(item) for item in validation_results
             ],
             "finding_validation_missions": [
-                {
-                    "id": mission.id,
-                    "finding_id": mission.finding_id,
-                    "rule_id": mission.finding.rule_id,
-                    "static_finding": mission.finding.title,
-                    "status": mission.status,
-                    "target_package": mission.target_package,
-                    "assessment_plan_id": mission.assessment_plan_id,
-                    "agent_run_id": mission.agent_run_id,
-                    "dynamic_validation_result_id": mission.dynamic_validation_result_id,
-                    "hypothesis": _redact_report_text(mission.hypothesis),
-                    "poc_scenario_summary": _redact_report_text(
-                        mission.scenario_contract.get("validation_goal", "")
-                        if isinstance(mission.scenario_contract, dict)
-                        else ""
-                    ),
-                    "executed_actions": [
-                        {
-                            "sequence": step.sequence_number,
-                            "scenario_step": step.plan_step_identifier,
-                            "tool": step.tool_name,
-                            "status": step.status,
-                            "evidence_requirements": step.evidence_requirements,
-                            "failure_message": _redact_report_text(
-                                step.failure_message
-                            ),
-                        }
-                        for step in (
-                            mission.agent_run.steps.order_by("sequence_number")[:MAX_REPORTED_AGENT_STEPS]
-                            if mission.agent_run_id
-                            else []
-                        )
-                    ],
-                    "troubleshooting": [
-                        {
-                            "sequence": step.sequence_number,
-                            "scenario_step": step.plan_step_identifier,
-                            "retry_count": step.retry_count,
-                            "failure_message": _redact_report_text(
-                                step.failure_message
-                            ),
-                        }
-                        for step in (
-                            mission.agent_run.steps.filter(retry_count__gt=0).order_by("sequence_number")[:MAX_REPORTED_AGENT_STEPS]
-                            if mission.agent_run_id
-                            else []
-                        )
-                    ],
-                    "evidence_ids": [item.id for item in mission.evidence.all()[:100]],
-                    "oracle_result": mission.oracle_result,
-                    "final_conclusion": _redact_report_text(mission.final_conclusion),
-                    "limitations": _redact_report_text(mission.limitations),
-                    "scenario_hash": mission.scenario_hash,
-                    "mission_hash": mission.mission_hash,
-                }
-                for mission in validation_missions
+                _mission_data(mission)
+                for mission in _latest_relevant_missions(validation_missions)
             ],
         },
         "limitations": (
-            RUNTIME_REPORT_LIMITATIONS if agent_runs else REPORT_LIMITATIONS
+            RUNTIME_REPORT_LIMITATIONS
+            if (agent_runs or validation_results or validation_missions)
+            else REPORT_LIMITATIONS
         ),
     }
 

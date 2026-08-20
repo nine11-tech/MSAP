@@ -176,6 +176,9 @@ export interface FindingValidationMission {
   budgets: Record<string, unknown>;
   evidence_ids: number[];
   evidence_count: number;
+  result_label?: string;
+  result_explanation?: string;
+  scenario_summary?: string;
   created_by: number | null;
   approved_by: number | null;
   approved_by_username?: string;
@@ -186,12 +189,83 @@ export interface FindingValidationMission {
   updated_at: string;
 }
 
+export type CorrelationClassification =
+  | "RECOMMENDED_DYNAMIC_VALIDATION"
+  | "OPTIONAL_DYNAMIC_VALIDATION"
+  | "STATIC_EVIDENCE_SUFFICIENT"
+  | "NOT_TESTABLE_WITH_CURRENT_CAPABILITIES"
+  | "ALREADY_VALIDATED"
+  | "BLOCKED_BY_LAB_CAPABILITY";
+
+export interface CorrelationCandidate {
+  finding_id: number;
+  finding_title: string;
+  severity: string;
+  confidence: string;
+  rule_id: string;
+  category: string;
+  classification: CorrelationClassification;
+  priority: number;
+  security_hypothesis: string;
+  dynamic_validation_value: string;
+  recommended_poc_summary: string;
+  likely_capabilities: string[];
+  expected_evidence: string[];
+  prerequisites: string;
+  limitations: string;
+  estimated_complexity: string;
+  current_validation_status: string;
+  missing_capabilities: string[];
+  start_poc_available: boolean;
+}
+
+export interface CapabilityGapEntry {
+  missing_capability: string;
+  affected_finding_count: number;
+  affected_finding_ids: number[];
+}
+
+export interface CapabilityGapReport {
+  audit_id: number;
+  contract_version: string;
+  available_capabilities: string[];
+  unavailable_capabilities: string[];
+  testable_with_current_primitives: number;
+  total_static_findings: number;
+  highest_value_missing_capabilities: CapabilityGapEntry[];
+}
+
+export interface StaticDynamicCorrelation {
+  audit_id: number;
+  target_package: string;
+  contract_version: string;
+  total_static_findings: number;
+  recommended_count: number;
+  optional_count: number;
+  static_sufficient_count: number;
+  not_testable_count: number;
+  already_validated_count: number;
+  blocked_count: number;
+  correlation_mode: string;
+  model: string;
+  generated_at: string;
+  capability_gaps: CapabilityGapEntry[];
+  candidates: CorrelationCandidate[];
+}
+
+export interface CorrelationStartPocResponse {
+  mission: FindingValidationMission;
+  next_step: string;
+}
+
 export interface FindingValidationTimelineItem {
   sequence: number;
   scenario_step_id: string;
   scenario_title: string;
   purpose: string;
   tool_name: string;
+  friendly_action_label?: string;
+  observation_summary?: string;
   status: string;
   decision_summary: string;
   expected_observation: string;
@@ -338,6 +412,8 @@ export interface Evidence {
   sha256: string;
   provenance: Record<string, unknown>;
   created_at: string;
+  evidence_title?: string;
+  evidence_preview_type?: string;
 }
 
 export interface RiskScore {
@@ -730,6 +806,8 @@ export interface DynamicHostAgentStatus {
   enabled: boolean;
   code: string;
   detail: string;
+  configured_url?: string;
+  last_checked_at?: string;
   agent?: {
     status: string;
     version: string;
@@ -740,6 +818,20 @@ export interface DynamicHostAgentStatus {
   device?: DynamicHostAgentDevice | null;
   synced_device_id?: number;
   last_sync_at?: string | null;
+}
+
+export interface OpenAIBudgetStatus {
+  scope: string;
+  max_mission_generation_calls: number;
+  max_adaptive_decision_calls: number;
+  max_total_openai_calls: number;
+  mission_generation_call_count: number;
+  adaptive_decision_call_count: number;
+  current_openai_call_count: number;
+  remaining_total_calls: number;
+  provider_response_ids: string[];
+  budget_exhausted_reason: string;
+  exhausted: boolean;
 }
 
 export interface DynamicHostAgentActionResult {

@@ -67,6 +67,7 @@ from apps.dynamic_analysis.serializers import (
     DynamicEmulatorSnapshotSerializer,
     DynamicHostAgentInstallSerializer,
     DynamicHostAgentPackageActionSerializer,
+    OpenAIBudgetStatusSerializer,
     DynamicSessionArtifactSerializer,
     DynamicSessionEventSerializer,
     DynamicSessionSerializer,
@@ -74,6 +75,10 @@ from apps.dynamic_analysis.serializers import (
     DynamicValidationResultSerializer,
     FindingValidationMissionSerializer,
     DynamicSessionTransitionSerializer,
+    CorrelationCandidateStartPocRequestSerializer,
+    CorrelationCandidateStartPocSerializer,
+    FindingMissionEvidenceSerializer,
+    StaticDynamicCorrelationSerializer,
 )
 from apps.dynamic_analysis.renderers import PNGRenderer
 from apps.dynamic_analysis.services.host_agent_client import (
@@ -137,11 +142,26 @@ from apps.dynamic_analysis.services.mvp_runner import (
 from apps.dynamic_analysis.services.runner_readiness import (
     get_dynamic_runner_readiness,
 )
+from apps.dynamic_analysis.services.openai_budget import (
+    budget_status,
+    reset_budget,
+)
 from apps.dynamic_analysis.services.finding_validation_missions import (
     FindingValidationMissionError,
     approve_finding_validation_mission,
     refresh_mission_from_run,
     start_finding_validation_mission,
+)
+from apps.dynamic_analysis.services.static_dynamic_correlation import (
+    friendly_action_label,
+    observation_summary_for_tool,
+)
+from apps.dynamic_analysis.services.correlation_agent import (
+    CorrelationError,
+    build_capability_gap_report,
+    correlate_audit_findings,
+    latest_correlation,
+    start_candidate_poc,
 )
 from apps.dynamic_analysis.tasks import (
     execute_adaptive_assessment_run_task,
@@ -606,10 +626,22 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
     def get_permissions(self):
         permission_classes = (
             [IsMSAPAnalystOrAdmin]
-            if self.action in {"approve", "start"}
+            if self.action in {"approve", "start", "budget-reset"}
             else [IsMSAPViewerOrAbove]
         )
         return [permission() for permission in permission_classes]
+
+    @extend_schema(responses={200: OpenAIBudgetStatusSerializer})
+    @action(detail=False, methods=["get"], url_path="budget-status")
+    def budget_status(self, request):
+        return Response(budget_status())
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: OpenAIBudgetStatusSerializer})
+    @action(detail=False, methods=["post"], url_path="budget-reset")
+    def budget_reset(self, request):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return Response(budget_status(reset_budget().scope))
 
     @extend_schema(request=StrictEmptySerializer, responses={200: FindingValidationMissionSerializer})
     @action(detail=True, methods=["post"], url_path="approve")
@@ -648,7 +680,7 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                 status=exc.http_status,
             )
         try:
-            async_result = execute_adaptive_assessment_run_task.delay(run.id)
+            async_result = execute_assessment_plan_run_task.delay(run.id)
         except Exception as exc:
             logger.warning(
                 "finding_validation_enqueue_failed mission_id=%s run_id=%s error_type=%s",
@@ -676,12 +708,12 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                 ).data,
                 "run": AgentRunSerializer(run, context={"request": request}).data,
                 "task_id": getattr(async_result, "id", None),
-                "execution_mode": AgentRun.ExecutionMode.ADAPTIVE_AGENT,
+                "execution_mode": run.execution_mode,
             },
             status=status.HTTP_202_ACCEPTED,
         )
 
-    @extend_schema(responses={200: EvidenceSerializer(many=True)})
+    @extend_schema(responses={200: FindingMissionEvidenceSerializer(many=True)})
     @action(detail=True, methods=["get"], url_path="evidence")
     def evidence(self, request, pk=None):
         mission = self.get_object()
@@ -694,7 +726,7 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
             "agent_run_step",
             "agent_run_artifact",
         ).all()
-        return Response(EvidenceSerializer(records, many=True).data)
+        return Response(FindingMissionEvidenceSerializer(records, many=True).data)
 
     @action(detail=True, methods=["get"], url_path="timeline")
     def timeline(self, request, pk=None):
@@ -734,6 +766,11 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                     "scenario_title": scenario.get("objective", step.tool_name),
                     "purpose": scenario.get("rationale", ""),
                     "tool_name": step.tool_name,
+                    "friendly_action_label": friendly_action_label(step.tool_name),
+                    "observation_summary": observation_summary_for_tool(
+                        step.tool_name,
+                        step.observation,
+                    ),
                     "status": step.status,
                     "decision_summary": (
                         decision.rationale_summary if decision else ""
@@ -763,6 +800,14 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                         for tool in item.get("tools", [])
                         if isinstance(tool, dict)
                     ),
+                    "friendly_action_label": friendly_action_label(
+                        ", ".join(
+                            tool.get("name", "")
+                            for tool in item.get("tools", [])
+                            if isinstance(tool, dict)
+                        )
+                    ),
+                    "observation_summary": "Planned step awaiting execution.",
                     "status": "PLANNED",
                     "decision_summary": "",
                     "expected_observation": item.get("expected_observation", ""),
@@ -783,6 +828,120 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                 "status": mission.status,
                 "items": timeline,
             }
+        )
+
+
+class StaticDynamicCorrelationViewSet(viewsets.GenericViewSet):
+    """Auditor-facing AI Static -> Dynamic correlation for one audit.
+
+    The correlation agent classifies every real static finding with bounded AI
+    batches and a capability manifest; the PoC planning agent composes an
+    executable validation plan from primitive capabilities (no playbook
+    catalog). Deterministic capability-driven fallbacks apply when the AI
+    provider is unavailable or the hard OpenAI budget is exhausted.
+    """
+
+    permission_classes = [IsMSAPViewerOrAbove]
+    lookup_value_regex = r"[0-9]+"
+
+    def get_permissions(self):
+        permission_classes = (
+            [IsMSAPAnalystOrAdmin]
+            if self.action in {"start", "start_poc"}
+            else [IsMSAPViewerOrAbove]
+        )
+        return [permission() for permission in permission_classes]
+
+    def _get_audit(self, request):
+        audit_id = self.kwargs.get("pk")
+        try:
+            return Audit.objects.get(pk=int(audit_id))
+        except (Audit.DoesNotExist, TypeError, ValueError):
+            return None
+
+    @extend_schema(responses={200: StaticDynamicCorrelationSerializer})
+    @action(detail=True, methods=["post"], url_path="start")
+    def start(self, request, pk=None):
+        audit = self._get_audit(request)
+        if audit is None:
+            return Response(
+                {"detail": "Audit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            return Response(
+                correlate_audit_findings(audit.id, force=True, requested_by=request.user)
+            )
+        except CorrelationError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+
+    @extend_schema(responses={200: StaticDynamicCorrelationSerializer})
+    @action(detail=True, methods=["get"], url_path="latest")
+    def latest(self, request, pk=None):
+        audit = self._get_audit(request)
+        if audit is None:
+            return Response(
+                {"detail": "Audit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            return Response(
+                latest_correlation(audit.id, requested_by=request.user)
+            )
+        except CorrelationError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+
+    @extend_schema(responses={200: StaticDynamicCorrelationSerializer})
+    @action(detail=True, methods=["get"], url_path="capability-gaps")
+    def capability_gaps(self, request, pk=None):
+        audit = self._get_audit(request)
+        if audit is None:
+            return Response(
+                {"detail": "Audit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(build_capability_gap_report(audit.id))
+
+    @extend_schema(
+        request=CorrelationCandidateStartPocRequestSerializer,
+        responses={201: CorrelationCandidateStartPocSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="start-poc")
+    def start_poc(self, request, pk=None):
+        audit = self._get_audit(request)
+        if audit is None:
+            return Response(
+                {"detail": "Audit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = CorrelationCandidateStartPocRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = start_candidate_poc(
+                audit_id=audit.id,
+                finding_id=serializer.validated_data["finding_id"],
+                requested_by=request.user,
+            )
+        except (FindingValidationMissionError, CorrelationError) as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            {
+                "mission": FindingValidationMissionSerializer(
+                    result["mission"],
+                    context={"request": request},
+                ).data,
+                "next_step": result["next_step"],
+            },
+            status=status.HTTP_201_CREATED,
         )
 
 

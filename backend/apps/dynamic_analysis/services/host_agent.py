@@ -9,9 +9,11 @@ import json
 import logging
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -73,18 +75,114 @@ class DynamicHostAgent:
         self._capture_lock = threading.Lock()
 
     def health(self) -> dict:
+        """Safe, structured lab status. No secrets, tokens, or raw environment."""
         adb_path = self._adb_path()
+        adb_available = bool(adb_path and Path(adb_path).is_file())
+        emulator_connected = False
+        target_package_installed = False
+        frida_client_available = bool(self._frida_client_path())
+        frida_server_status = "UNKNOWN"
+        frida_port_status = "UNKNOWN"
+        last_error = ""
+        if adb_available:
+            try:
+                devices_result = self._run_command(
+                    [adb_path, "devices"], timeout_seconds=6
+                )
+                device_state = _device_state(
+                    devices_result.get("stdout_preview", ""),
+                    self.serial,
+                )
+                emulator_connected = device_state == "device"
+                if not emulator_connected:
+                    last_error = f"emulator state is {device_state or 'unknown'}"
+            except HostAgentRequestError as exc:
+                last_error = str(exc)[:300]
+            if emulator_connected and not last_error:
+                try:
+                    target_result = self._run_adb(
+                        "shell",
+                        "pm",
+                        "path",
+                        settings.MSAP_TARGET_PACKAGE,
+                        timeout_seconds=8,
+                    )
+                    target_package_installed = (
+                        target_result["return_code"] == 0
+                        and any(
+                            line.strip().startswith("package:")
+                            for line in target_result.get(
+                                "stdout_preview", ""
+                            ).splitlines()
+                        )
+                    )
+                    if not target_package_installed:
+                        last_error = (
+                            f"{settings.MSAP_TARGET_PACKAGE} is not installed"
+                        )
+                except HostAgentRequestError as exc:
+                    last_error = str(exc)[:300]
+        if frida_client_available:
+            try:
+                server_reachable = self._frida_server_probe()
+                frida_server_status = (
+                    "REACHABLE" if server_reachable else "NOT_REACHABLE"
+                )
+                frida_port_status = "OPEN" if server_reachable else "BUSY_OR_UNREACHABLE"
+            except HostAgentRequestError as exc:
+                last_error = str(exc)[:300]
         dynamic_env_detected = bool(
             os.getenv("ADB_WIN")
             and (os.getenv("MSAP_ANDROID_SERIAL") or self.serial)
         )
         return {
-            "status": "ok",
-            "version": HOST_AGENT_VERSION,
+            "host_agent_status": "ok",
+            "host_agent_version": HOST_AGENT_VERSION,
+            "os": _safe_platform_summary(),
+            "lab_mode": settings.MSAP_DYNAMIC_LAB_MODE,
             "dynamic_env_detected": dynamic_env_detected,
-            "adb_path_present": bool(adb_path and Path(adb_path).is_file()),
-            "serial": self.serial,
+            "adb_path": adb_path or "",
+            "adb_available": adb_available,
+            "emulator_serial": self.serial,
+            "emulator_connected": emulator_connected,
+            "target_package": settings.MSAP_TARGET_PACKAGE,
+            "target_package_installed": target_package_installed,
+            "frida_client_available": frida_client_available,
+            "frida_server_status": frida_server_status,
+            "frida_port_status": frida_port_status,
+            "last_error": last_error[:500],
         }
+
+    def _frida_client_path(self) -> str:
+        configured = str(os.getenv("MSAP_FRIDA_CLIENT_BIN", "") or "").strip()
+        candidate = configured or shutil.which("frida") or ""
+        if not candidate:
+            return ""
+        resolved = Path(candidate).resolve()
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            return ""
+        return str(resolved)
+
+    def _frida_server_probe(self) -> bool:
+        """Probe the Frida server endpoint without printing process lists."""
+        client_path = self._frida_client_path()
+        if not client_path:
+            return False
+        configured = str(os.getenv("MSAP_FRIDA_ENDPOINT", "") or "").strip()
+        candidates = [configured, "127.0.0.1:27042"]
+        for endpoint in candidates:
+            if not endpoint:
+                continue
+            try:
+                result = self._run_command(
+                    [client_path, "-H", endpoint, "-q", "--version"],
+                    timeout_seconds=6,
+                )
+            except HostAgentRequestError:
+                continue
+            if result.get("return_code") == 0 and not result.get("timed_out"):
+                return True
+        return False
 
     def devices(self) -> dict:
         adb_path = self._adb_path()
@@ -1328,6 +1426,14 @@ def _public_command_result(result: dict) -> dict:
         "timed_out": result["timed_out"],
         "redaction_applied": result["redaction_applied"],
     }
+
+
+def _safe_platform_summary() -> str:
+    try:
+        value = f"{sys.platform} {platform.release()}"
+    except Exception:
+        value = os.name or "unknown"
+    return str(value)[:128]
 
 
 def _content_length(request: BaseHTTPRequestHandler) -> int:

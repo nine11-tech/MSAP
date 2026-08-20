@@ -16,6 +16,7 @@ import { AdministrationPage } from "./pages/AdministrationPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { DynamicLabPage } from "./pages/DynamicLabPage";
 import { DynamicSessionDetailPage } from "./pages/DynamicSessionDetailPage";
+import { DynamicValidationHome } from "./pages/dynamic/DynamicValidationHome";
 
 export default function App() {
   return (
@@ -33,7 +34,8 @@ export default function App() {
                 <Route path="/findings" element={<FindingsPage />} />
                 <Route path="/attack-triage" element={<AttackTriagePage />} />
                 <Route path="/reports" element={<ReportsPage />} />
-                <Route path="/dynamic" element={<DynamicLabPage />} />
+                <Route path="/dynamic" element={<DynamicValidationHome />} />
+                <Route path="/dynamic/advanced" element={<DynamicLabPage />} />
                 <Route
                   path="/dynamic/sessions/:sessionId"
                   element={<DynamicSessionDetailPage />}

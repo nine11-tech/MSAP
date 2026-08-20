@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import socket
 import ssl
+from datetime import datetime, timezone
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import urljoin, urlsplit
@@ -68,6 +69,7 @@ class DynamicHostAgentClient:
         )
 
     def get_status(self) -> dict:
+        checked_at = datetime.now(timezone.utc).isoformat()
         try:
             self._ensure_configured()
             health = self.request_json("/health")
@@ -75,6 +77,8 @@ class DynamicHostAgentClient:
         except HostAgentClientError as exc:
             payload = exc.as_dict()
             payload["enabled"] = self.enabled
+            payload["configured_url"] = self.base_url
+            payload["last_checked_at"] = checked_at
             return payload
 
         devices = device_response.get("devices", [])
@@ -84,6 +88,8 @@ class DynamicHostAgentClient:
             "enabled": True,
             "code": "HOST_AGENT_CONNECTED",
             "detail": "Dynamic host agent is connected.",
+            "configured_url": self.base_url,
+            "last_checked_at": checked_at,
             "agent": health,
             "device": device,
         }

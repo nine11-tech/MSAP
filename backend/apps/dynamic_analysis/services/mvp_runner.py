@@ -437,7 +437,7 @@ class DynamicMvpRunner:
     def _start_job(self, job_id: int) -> DynamicAnalysisJob:
         with transaction.atomic():
             job = (
-                DynamicAnalysisJob.objects.select_for_update()
+                DynamicAnalysisJob.objects.select_for_update(of=("self",))
                 .select_related("audit", "apk", "requested_by", "requested_device_pool")
                 .get(pk=job_id)
             )

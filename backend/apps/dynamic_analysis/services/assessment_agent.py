@@ -60,6 +60,13 @@ from apps.dynamic_analysis.services.assessment_executor import (
     AssessmentExecutor,
 )
 from apps.dynamic_analysis.services.assessment_planner import PlannerProviderError
+from apps.dynamic_analysis.services.openai_budget import (
+    KIND_DECISION,
+    OpenAIBudgetExhausted,
+    record_response_id,
+    release_call,
+    reserve_call,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -308,6 +315,7 @@ class AssessmentAgent:
                     ),
                     termination_reason=budget_reason,
                 )
+            provider_call_was_reserved = False
             try:
                 state = build_agent_state_context(run)
                 state_hash = _json_hash(state)
@@ -317,7 +325,19 @@ class AssessmentAgent:
                         updated_at=timezone.now(),
                     )
                     run.model_call_count += 1
+                # The backend-enforced OpenAI budget is the authoritative cap.
+                # Reservations are made before the request is sent and rolled
+                # back only when a local schema preflight proves no request was
+                # sent. Provider failures, schema rejections, and invalid
+                # outputs after a real request still count against the budget.
+                if provider.name == "OPENAI":
+                    reserve_call(KIND_DECISION)
+                    provider_call_was_reserved = True
                 raw_decision = provider.next_action(state)
+                if provider_call_was_reserved:
+                    record_response_id(
+                        (provider.last_metadata or {}).get("response_id")
+                    )
                 decision = persist_validated_decision(
                     run=run,
                     decision=raw_decision,
@@ -326,11 +346,23 @@ class AssessmentAgent:
                     provider_metadata=provider.last_metadata,
                     decision_input_hash=state_hash,
                 )
+            except OpenAIBudgetExhausted as exc:
+                if provider_call_was_reserved:
+                    release_call(KIND_DECISION)
+                return self._finish(
+                    run,
+                    status=AgentRun.Status.FAILED,
+                    termination_reason="OPENAI_BUDGET_EXHAUSTED",
+                    message=str(exc),
+                )
             except PlannerProviderError as exc:
                 if (
                     exc.code == "PROVIDER_SCHEMA_LOCAL_REJECTED"
                     and provider.last_metadata.get("provider_request_sent") is False
                 ):
+                    if provider_call_was_reserved:
+                        release_call(KIND_DECISION)
+                        provider_call_was_reserved = False
                     run.model_call_count = max(0, run.model_call_count - 1)
                     run.save(update_fields=["model_call_count", "updated_at"])
                 return self._finish(
@@ -584,6 +616,8 @@ class AssessmentAgent:
             run.failure_category = (
                 AgentRun.FailureCategory.TIMEOUT
                 if status == AgentRun.Status.TIMEOUT
+                else AgentRun.FailureCategory.OPENAI_BUDGET_EXHAUSTED
+                if termination_reason == "OPENAI_BUDGET_EXHAUSTED"
                 else AgentRun.FailureCategory.AI_PROVIDER_FAILURE
                 if termination_reason == "PROVIDER_FAILURE"
                 and run.tool_call_count == 0

@@ -18,6 +18,8 @@ from apps.dynamic_analysis.services.agent_action_contract import (
 from apps.dynamic_analysis.services.agent_tools import (
     BUILTIN_FRIDA_UI_PROOF,
     TOOL_MANIFEST,
+    AgentToolError,
+    validate_agent_tool_arguments,
 )
 from apps.dynamic_analysis.services.assessment_plan_contract import EVIDENCE_TYPES
 from apps.dynamic_analysis.services.frida_scripts import APPROVED_FRIDA_SOURCE_IDENTIFIERS
@@ -297,6 +299,10 @@ class OpenAIAgentDecisionProvider(AgentDecisionProvider):
             fallback = _approved_sequence_action(state, len(recent))
             if fallback is not None:
                 return fallback
+            return _complete(
+                "The approved finding playbook sequence is exhausted; "
+                "no further bounded actions are available."
+            )
         schema = build_action_decision_schema(state)
         try:
             generated = self._transport.generate_structured(
@@ -332,25 +338,69 @@ class OpenAIAgentDecisionProvider(AgentDecisionProvider):
             self.last_metadata = deepcopy(self._transport.last_metadata)
 
 
+def _active_logcat_collector_ids(state: dict[str, Any]) -> set[str]:
+    """Collector ids currently live, derived from bounded observations only."""
+    collector_ids: set[str] = set()
+    for observation in state.get("UNTRUSTED_OBSERVATIONS", {}).get("recent", []):
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("tool_name") != "start_logcat":
+            continue
+        data = observation.get("data")
+        if isinstance(data, dict) and isinstance(data.get("collector_id"), str):
+            collector_ids.add(data["collector_id"])
+    return collector_ids
+
+
 def _approved_sequence_action(state: dict[str, Any], index: int) -> dict[str, Any] | None:
     sequence = state.get("TRUSTED_CONTROL", {}).get("approved_playbook_sequence", [])
-    if index >= len(sequence):
+    if not sequence:
         return None
-    next_step = sequence[index]
-    tool_name = next_step.get("tools", [""])[0]
-    arguments = next_step.get("arguments", {})
     hypotheses = state.get("TRUSTED_CONTROL", {}).get("hypotheses", [])
-    hypothesis_id = next_step.get("hypothesis_id") or (hypotheses[0].get("hypothesis_id") if hypotheses else None)
-    if not tool_name or not isinstance(arguments, dict) or not hypothesis_id:
-        return None
-    return _tool_decision(
-        hypothesis_id,
-        tool_name,
-        arguments,
-        "Continue the auditor-approved finding playbook sequence.",
-        str(next_step.get("objective") or "Capture the next bounded finding validation observation."),
-        list(next_step.get("evidence_requirements") or ["tool_output"]),
-    )
+    recent = state.get("UNTRUSTED_OBSERVATIONS", {}).get("recent", [])
+    executed_tools = {
+        observation.get("tool_name")
+        for observation in recent
+        if isinstance(observation, dict) and isinstance(observation.get("tool_name"), str)
+    }
+    live_collector_ids = _active_logcat_collector_ids(state)
+    candidate_indexes = [*range(index, len(sequence)), *range(0, index)]
+    for candidate_index in candidate_indexes:
+        next_step = sequence[candidate_index]
+        step_tools = next_step.get("tools", [])
+        if not isinstance(step_tools, list):
+            continue
+        hypothesis_id = next_step.get("hypothesis_id") or (
+            hypotheses[0].get("hypothesis_id") if hypotheses else None
+        )
+        if not hypothesis_id:
+            continue
+        plan_arguments = next_step.get("arguments", {})
+        if not isinstance(plan_arguments, dict):
+            plan_arguments = {}
+        for tool_name in step_tools:
+            if not isinstance(tool_name, str) or not tool_name:
+                continue
+            if tool_name in executed_tools:
+                continue
+            arguments = deepcopy(plan_arguments)
+            if tool_name in {"stop_logcat", "get_logcat_excerpt"}:
+                if not live_collector_ids:
+                    continue
+                arguments["collector_id"] = sorted(live_collector_ids)[0]
+            try:
+                validate_agent_tool_arguments(tool_name, arguments)
+            except AgentToolError:
+                continue
+            return _tool_decision(
+                hypothesis_id,
+                tool_name,
+                arguments,
+                "Continue the auditor-approved finding playbook sequence.",
+                str(next_step.get("objective") or "Capture the next bounded finding validation observation."),
+                list(next_step.get("evidence_requirements") or ["tool_output"]),
+            )
+    return None
 
 
 def configured_agent_decision_provider(

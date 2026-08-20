@@ -238,6 +238,13 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
     evidence = data.get("evidence", [])
     evidence_by_finding = _evidence_index(evidence, "finding_id")
     evidence_by_indicator = _evidence_index(evidence, "indicator_id")
+    dynamic = data.get("dynamic_assessments", {})
+    missions_by_finding = _evidence_index(
+        dynamic.get("finding_validation_missions", [])
+        if isinstance(dynamic, dict)
+        else [],
+        "finding_id",
+    )
 
     story = [
         Spacer(1, 20 * mm),
@@ -266,7 +273,7 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
     ]
 
     story.extend(_executive_summary(summary, findings, indicators, styles))
-    story.extend(_scope_and_methodology(styles))
+    story.extend(_scope_and_methodology(data, styles))
     story.extend(_apk_information(apk, audit, styles))
     story.extend(_risk_and_compliance(summary, styles))
     story.extend(_dynamic_assessments_section(data, styles))
@@ -275,6 +282,7 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
         _findings_section(
             findings,
             evidence_by_finding,
+            missions_by_finding,
             styles,
         )
     )
@@ -294,8 +302,12 @@ def _build_story(data: dict, styles: dict[str, ParagraphStyle]) -> list:
 def _dynamic_assessments_section(data, styles) -> list:
     dynamic = data.get("dynamic_assessments", {})
     runs = dynamic.get("items", []) if isinstance(dynamic, dict) else []
-    validations = dynamic.get("dynamic_validations", []) if isinstance(dynamic, dict) else []
-    if not runs and not validations:
+    missions = (
+        dynamic.get("finding_validation_missions", [])
+        if isinstance(dynamic, dict)
+        else []
+    )
+    if not runs and not missions:
         return []
     rows = []
     for run in runs[:10]:
@@ -357,13 +369,47 @@ def _dynamic_assessments_section(data, styles) -> list:
         ),
         table,
     ]
-    if validations:
-        validation_rows = [[Paragraph(_text(label), styles["table_header"]) for label in ("Finding", "Playbook", "Status", "Oracle", "Limitations")]]
-        validation_rows += [[Paragraph(_text(row.get(key)), styles["small"]) for key in ("rule_id", "playbook_id", "validation_status", "oracle_id", "limitations")] for row in validations[:25]]
-        content.extend([
-            Paragraph("Finding-driven dynamic validation", styles["section"]),
-            Table(validation_rows, colWidths=[25 * mm, 42 * mm, 25 * mm, 32 * mm, 55 * mm], repeatRows=1),
-        ])
+    if missions:
+        mission_rows = [
+            [
+                Paragraph(_text(label), styles["table_header"])
+                for label in (
+                    "Finding",
+                    "Playbook",
+                    "Status",
+                    "Evidence",
+                    "Final conclusion",
+                )
+            ]
+        ] + [
+            [
+                Paragraph(_text(str(value)), styles["small"])
+                for value in (
+                    mission.get("rule_id"),
+                    mission.get("playbook_id"),
+                    mission.get("status"),
+                    len(mission.get("evidence_ids") or []),
+                    mission.get("final_conclusion"),
+                )
+            ]
+            for mission in missions[:25]
+        ]
+        content.extend(
+            [
+                Paragraph("Finding-driven dynamic validation", styles["section"]),
+                Paragraph(
+                    "For each finding and expected playbook, only the latest "
+                    "mission is reported. Executed actions and troubleshooting "
+                    "steps are detailed under each finding.",
+                    styles["notice"],
+                ),
+                Table(
+                    mission_rows,
+                    colWidths=[25 * mm, 42 * mm, 20 * mm, 16 * mm, 56 * mm],
+                    repeatRows=1,
+                ),
+            ]
+        )
     return content
 
 
@@ -443,17 +489,36 @@ def _executive_summary(summary, findings, indicators, styles) -> list:
     return elements
 
 
-def _scope_and_methodology(styles) -> list:
-    return [
-        Paragraph("Scope and Methodology", styles["section"]),
-        Paragraph(
+def _scope_and_methodology(data, styles) -> list:
+    dynamic = data.get("dynamic_assessments", {})
+    has_dynamic_activity = bool(
+        isinstance(dynamic, dict)
+        and (
+            dynamic.get("items")
+            or dynamic.get("finding_validation_missions")
+            or dynamic.get("dynamic_validations")
+        )
+    )
+    if has_dynamic_activity:
+        methodology = (
+            "The assessment combines deterministic static analysis with "
+            "auditor-approved bounded dynamic validation where missions were "
+            "executed: manifest metadata extraction, deterministic evaluation "
+            "of the implemented OWASP MASVS rules, cautious MITRE ATT&amp;CK "
+            "Mobile triage, evidence capture, and transparent risk and "
+            "compliance scoring."
+        )
+    else:
+        methodology = (
             "The assessment performs static Android APK analysis: manifest "
             "metadata extraction, deterministic evaluation of the implemented "
             "OWASP MASVS rules, cautious MITRE ATT&amp;CK Mobile triage, evidence "
             "capture, and transparent risk and compliance scoring. The APK is not "
-            "executed and no runtime or dynamic behavior is observed.",
-            styles["body"],
-        ),
+            "executed and no runtime or dynamic behavior is observed."
+        )
+    return [
+        Paragraph("Scope and Methodology", styles["section"]),
+        Paragraph(methodology, styles["body"]),
     ]
 
 
@@ -532,7 +597,7 @@ def _coverage_section(coverage, styles) -> list:
     ]
 
 
-def _findings_section(findings, evidence_index, styles) -> list:
+def _findings_section(findings, evidence_index, missions_index, styles) -> list:
     elements = [Paragraph(f"Findings ({len(findings)})", styles["section"])]
     if not findings:
         elements.append(
@@ -601,6 +666,78 @@ def _findings_section(findings, evidence_index, styles) -> list:
         elements.extend(
             _finding_source_evidence(finding.get("source_evidence", []), styles)
         )
+        elements.extend(
+            _finding_dynamic_validation(
+                missions_index.get(finding.get("id"), []),
+                styles,
+            )
+        )
+    return elements
+
+
+def _finding_dynamic_validation(missions, styles) -> list:
+    """Per-finding dynamic validation evidence (PoC missions)."""
+    elements = [Paragraph("DYNAMIC VALIDATION EVIDENCE", styles["source_heading"])]
+    if not missions:
+        elements.append(
+            Paragraph(
+                "No dynamic validation mission was recorded for this finding.",
+                styles["small_muted"],
+            )
+        )
+        return elements
+    for mission in missions[:3]:
+        rows = [
+            ("Status", mission.get("status") or "Not recorded"),
+            (
+                "Hypothesis",
+                mission.get("hypothesis")
+                or "Not recorded",
+            ),
+            (
+                "PoC scenario",
+                mission.get("poc_scenario_summary")
+                or "Not recorded",
+            ),
+            (
+                "Final conclusion",
+                mission.get("final_conclusion")
+                or "Not recorded",
+            ),
+            ("Evidence records", len(mission.get("evidence_ids") or [])),
+            (
+                "Limitations",
+                mission.get("limitations")
+                or "Not recorded",
+            ),
+        ]
+        elements.append(_key_value_table(rows, styles))
+        actions = mission.get("executed_actions", [])
+        if actions:
+            action_rows = [
+                [
+                    Paragraph(_text(label), styles["table_header"])
+                    for label in ("Step", "Tool", "Status")
+                ]
+            ] + [
+                [
+                    Paragraph(_text(str(item.get("sequence"))), styles["small"]),
+                    Paragraph(_text(item.get("tool")), styles["small"]),
+                    Paragraph(_text(item.get("status")), styles["small"]),
+                ]
+                for item in actions[:20]
+            ]
+            elements.append(
+                Paragraph("EXECUTED ACTIONS", styles["source_heading"]),
+            )
+            elements.append(
+                Table(
+                    action_rows,
+                    colWidths=[15 * mm, 60 * mm, 50 * mm],
+                    repeatRows=1,
+                    style=_standard_table_style(),
+                )
+            )
     return elements
 
 
@@ -922,6 +1059,56 @@ def _technical_appendix(data, generated_at, styles) -> list:
     return [
         Paragraph("Technical Appendix", styles["section"]),
         _key_value_table(rows, styles),
+        *_debug_validation_trail(data, styles),
+    ]
+
+
+def _debug_validation_trail(data, styles) -> list:
+    dynamic = data.get("dynamic_assessments", {})
+    trail = (
+        dynamic.get("debug_raw_validation_trail", [])
+        if isinstance(dynamic, dict)
+        else []
+    )
+    if not trail:
+        return []
+    trail_rows = [
+        [
+            Paragraph(_text(label), styles["table_header"])
+            for label in (
+                "Finding",
+                "Playbook",
+                "Status",
+                "Oracle",
+                "Limitations",
+            )
+        ]
+    ] + [
+        [
+            Paragraph(_text(str(value)), styles["small"])
+            for value in (
+                row.get("rule_id"),
+                row.get("playbook_id"),
+                row.get("validation_status"),
+                row.get("oracle_id"),
+                row.get("limitations"),
+            )
+        ]
+        for row in trail[:25]
+    ]
+    return [
+        Paragraph("INTERNAL VALIDATION AUDIT TRAIL (DEBUG)", styles["source_heading"]),
+        Paragraph(
+            "Full raw DynamicValidationResult history, including superseded and "
+            "misplaced playbook runs. Not part of the finding-driven assessment; "
+            "retained for internal reconciliation only.",
+            styles["small_muted"],
+        ),
+        Table(
+            trail_rows,
+            colWidths=[25 * mm, 42 * mm, 25 * mm, 30 * mm, 57 * mm],
+            repeatRows=1,
+        ),
     ]
 
 

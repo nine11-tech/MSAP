@@ -68,6 +68,44 @@ def audit_with_apk(db):
     return audit, apk
 
 
+class _ReadyLabClient:
+    """Fake DynamicHostAgentClient with a healthy Windows-lab topology."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get_status(self):
+        return {
+            "connected": True,
+            "enabled": True,
+            "code": "HOST_AGENT_CONNECTED",
+            "detail": "Dynamic host agent is connected.",
+            "configured_url": "http://host.docker.internal:8765",
+            "agent": {"host_agent_status": "ok"},
+            "device": {
+                "serial": "emulator-5554",
+                "state": "device",
+                "root_uid": 0,
+                "api_level": 35,
+            },
+        }
+
+    def request_json(self, path, *, method="GET", body=None):
+        if path == "/actions/list-packages":
+            return {
+                "packages": [{"package_name": "owasp.sat.agoat"}],
+                "count": 1,
+                "truncated": False,
+            }
+        if path == "/actions/frida-status":
+            return {
+                "frida_client_installed": True,
+                "frida_server_reachable": True,
+                "frida_rpc": "CONNECTED",
+            }
+        raise AssertionError(f"unexpected lab request: {path}")
+
+
 @pytest.mark.django_db
 @override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
 def test_generate_mission_from_supported_static_finding(analyst_client, audit_with_apk):
@@ -176,6 +214,9 @@ def test_approval_and_start_require_analyst(
     ).status_code == 403
 
     with patch(
+        "apps.dynamic_analysis.services.finding_validation_missions.DynamicHostAgentClient",
+        return_value=_ReadyLabClient(),
+    ), patch(
         "apps.dynamic_analysis.views.execute_adaptive_assessment_run_task.delay",
         return_value=Mock(id="task-1"),
     ):
