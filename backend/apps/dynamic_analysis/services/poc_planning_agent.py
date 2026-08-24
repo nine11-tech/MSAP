@@ -39,12 +39,15 @@ from apps.dynamic_analysis.services.assessment_plan_contract import (
     UNSAFE_INSTRUCTION_PATTERNS,
 )
 from apps.dynamic_analysis.services.assessment_planner import (
+    COMPONENT_REACHABILITY_RULE_IDS,
+    FRIDA_PLAN_TOOLS,
     MAX_TOOLS_PER_STEP,
     OpenAIPlannerProvider,
     PlanValidationError,
     PlannerProviderError,
     _planner_capability_manifest,
     _replace_plan_steps,
+    _strip_disallowed_tools,
     configured_planner_provider,
     validate_generated_plan,
 )
@@ -578,19 +581,7 @@ def _manifest_components(audit_id: int) -> list[dict[str, Any]]:
     return components if isinstance(components, list) else []
 
 
-FRIDA_POC_CAPABILITIES = {
-    "frida_status",
-    "frida_ps",
-    "frida_attach",
-    "frida_run_js",
-    "frida_setup",
-}
-
-COMPONENT_REACHABILITY_RULE_IDS = {
-    "MSAP-AND-004",  # exported activity
-    "MSAP-AND-006",  # exported receiver
-    "MSAP-AND-007",  # exported provider
-}
+FRIDA_POC_CAPABILITIES = FRIDA_PLAN_TOOLS
 
 
 def _poc_allowed_capabilities(
@@ -736,6 +727,7 @@ def _deterministic_poc_plan(
     component_step = _component_step(
         audit=audit,
         target_package=target_package,
+        finding=finding,
         allowed=allowed,
         dependencies=[steps[-1]["step_id"]] if steps else [],
     )
@@ -809,42 +801,95 @@ def _component_step(
     *,
     audit,
     target_package: str,
+    finding: Finding,
     allowed: set[str],
     dependencies: list[str],
 ) -> dict[str, Any] | None:
     if not (allowed & {"launch_exported_activity", "send_explicit_broadcast", "query_exported_provider"}):
         return None
     components = _manifest_components(audit.pk)
-    exported_activity = next(
+    rule_id = str(getattr(finding, "rule_id", "") or "").upper()
+    component_preferences = {
+        "MSAP-AND-004": ("launch_exported_activity", "activity"),
+        "MSAP-AND-006": ("send_explicit_broadcast", "receiver"),
+        "MSAP-AND-007": ("query_exported_provider", "provider"),
+    }
+    preferred = component_preferences.get(rule_id)
+    if preferred is None:
+        preferred = ("launch_exported_activity", "activity")
+    tool_name, component_type = preferred
+    if tool_name not in allowed:
+        return None
+    component = next(
         (
-            item.get("name")
+            item
             for item in components
-            if item.get("type") == "activity" and item.get("exported") is True
+            if item.get("type") == component_type and item.get("exported") is True
         ),
         None,
     )
-    if exported_activity is None or "launch_exported_activity" not in allowed:
+    if component is None:
         return None
+    component_name = component.get("name")
+    arguments: dict[str, Any] = {}
+    if tool_name == "launch_exported_activity":
+        arguments = {"component_name": component_name}
+        objective = "Invoke the exported manifest activity declared by the target."
+        expected = "The exported activity responds on the managed device."
+        requirements = ["tool_output", "ui_hierarchy"]
+    elif tool_name == "send_explicit_broadcast":
+        action = _receiver_action(component, target_package)
+        arguments = {"receiver_name": component_name, "action": action}
+        objective = "Send an explicit broadcast to the exported manifest receiver."
+        expected = "The exported receiver reports delivery or target-correlated behavior."
+        requirements = ["tool_output"]
+    else:
+        authority = _provider_authority(component)
+        if not authority:
+            return None
+        arguments = {"authority": authority}
+        objective = "Query the exported manifest provider through its declared authority."
+        expected = "The exported provider returns metadata, rows, or a clear permission result."
+        requirements = ["tool_output"]
     return {
         "step_id": "invoke_exported_component",
-        "objective": "Invoke the exported manifest component declared by the target.",
+        "objective": objective,
         "rationale": "The manifest declares an exported component; invocation on the managed device is bounded and authorized.",
         "tools": [
             {
-                "name": "launch_exported_activity",
+                "name": tool_name,
                 "arguments": _normalize_tool_arguments(
-                    "launch_exported_activity",
-                    {"component_name": exported_activity},
+                    tool_name,
+                    arguments,
                     target_package=target_package,
                     audit_id=audit.pk,
                 ),
             }
         ],
-        "expected_observation": "The exported activity responds on the managed device.",
+        "expected_observation": expected,
         "success_condition": "The component invocation completes without target modification.",
-        "evidence_requirements": ["tool_output", "ui_hierarchy"],
+        "evidence_requirements": requirements,
         "dependencies": dependencies,
     }
+
+
+def _receiver_action(component: dict[str, Any], target_package: str) -> str:
+    for intent_filter in component.get("intent_filters") or []:
+        if not isinstance(intent_filter, dict):
+            continue
+        for action in intent_filter.get("actions") or []:
+            if isinstance(action, str) and action:
+                return action
+    return f"{target_package}.MSAP_DYNAMIC_VALIDATION"
+
+
+def _provider_authority(component: dict[str, Any]) -> str:
+    authorities = str(component.get("authorities") or "")
+    for authority in authorities.split(";"):
+        authority = authority.strip()
+        if authority:
+            return authority
+    return ""
 
 
 def _plan_intent_from_poc(
@@ -863,6 +908,24 @@ def _plan_intent_from_poc(
             audit_id=audit_id,
         ),
     }
+
+
+def _bounded_intent_with_allowed_tools(
+    intent: dict[str, Any],
+    allowed_capabilities: list[str],
+) -> dict[str, Any]:
+    """Deterministically remove any tool outside the allowed capability set.
+
+    The provider only sees the bounded manifest, but a malformed or
+    non-compliant response must still never smuggle an extra capability into
+    the persisted PoC plan (e.g. Frida for component-reachability findings).
+    """
+    allowed = set(allowed_capabilities)
+    steps = intent.get("steps", [])
+    filtered = _strip_disallowed_tools(steps, allowed)
+    if filtered == steps:
+        return intent
+    return {**intent, "steps": filtered}
 
 
 def _scenario_steps_from_plan(
@@ -968,6 +1031,7 @@ def build_poc_plan(
                 target_package=target_package,
                 audit_id=audit.pk,
             )
+            intent = _bounded_intent_with_allowed_tools(intent, allowed_capabilities)
             canonical = validate_generated_plan(
                 intent,
                 audit=audit,
@@ -1009,6 +1073,7 @@ def build_poc_plan(
             target_package=target_package,
             audit_id=audit.pk,
         )
+        intent = _bounded_intent_with_allowed_tools(intent, allowed_capabilities)
         try:
             canonical = validate_generated_plan(
                 intent,

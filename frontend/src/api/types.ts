@@ -189,6 +189,38 @@ export interface FindingValidationMission {
   updated_at: string;
 }
 
+export interface FridaScriptProposal {
+  id: number;
+  run: number;
+  audit: number;
+  finding: number | null;
+  mission: number | null;
+  hypothesis: number | null;
+  hypothesis_identifier?: string | null;
+  title: string;
+  rationale: string;
+  expected_evidence: string[];
+  source_identifier: string;
+  source_sha256: string;
+  source_code: string;
+  source_size_bytes: number;
+  generator_provider: string;
+  generator_model: string;
+  provider_metadata: Record<string, unknown>;
+  validation_warnings: string[];
+  status: string;
+  created_by: number | null;
+  created_by_username?: string | null;
+  approved_by: number | null;
+  approved_by_username?: string | null;
+  approved_at: string | null;
+  executed_at: string | null;
+  last_error: string;
+  suggested_fix: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export type CorrelationClassification =
   | "RECOMMENDED_DYNAMIC_VALIDATION"
   | "OPTIONAL_DYNAMIC_VALIDATION"
@@ -408,6 +440,14 @@ export interface Evidence {
   evidence_type: string;
   source: string;
   snippet: string;
+  ai_explanation: string;
+  ai_conclusion: string;
+  ai_security_impact: string;
+  ai_evidence_strength: string;
+  ai_explanation_status: string;
+  ai_explanation_provider: string;
+  ai_explanation_model: string;
+  ai_explanation_metadata: Record<string, unknown>;
   redacted: boolean;
   sha256: string;
   provenance: Record<string, unknown>;
@@ -811,9 +851,18 @@ export interface DynamicHostAgentStatus {
   agent?: {
     status: string;
     version: string;
+    host_agent_status?: string;
+    host_agent_version?: string;
     dynamic_env_detected: boolean;
     adb_path_present: boolean;
     serial: string;
+    emulator_connected?: boolean;
+    emulator_serial?: string;
+    frida_client_available?: boolean;
+    frida_server_status?: string;
+    frida_port_status?: string;
+    lab_mode?: string;
+    target_package_installed?: boolean;
   };
   device?: DynamicHostAgentDevice | null;
   synced_device_id?: number;
@@ -824,9 +873,11 @@ export interface OpenAIBudgetStatus {
   scope: string;
   max_mission_generation_calls: number;
   max_adaptive_decision_calls: number;
+  max_evidence_explanation_calls: number;
   max_total_openai_calls: number;
   mission_generation_call_count: number;
   adaptive_decision_call_count: number;
+  evidence_explanation_call_count: number;
   current_openai_call_count: number;
   remaining_total_calls: number;
   provider_response_ids: string[];

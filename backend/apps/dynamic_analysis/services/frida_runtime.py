@@ -274,6 +274,7 @@ class FridaRuntime:
     def attach(self, package_name: str, mode: str, timeout_seconds: int) -> dict:
         self._require_device()
         self._require_installed_package(package_name)
+        self._ensure_runtime_ready(package_name)
         timeout_seconds = _bounded_int(timeout_seconds, 1, 30, "timeout")
         if mode not in {"attach", "spawn"}:
             raise FridaRuntimeError("Frida attach mode must be attach or spawn.")
@@ -332,6 +333,7 @@ class FridaRuntime:
     ) -> dict:
         self._require_device()
         self._require_installed_package(package_name)
+        self._ensure_runtime_ready(package_name)
         timeout_seconds = _bounded_int(timeout_seconds, 1, 30, "timeout")
         if mode not in {"attach", "spawn"}:
             raise FridaRuntimeError("Frida script mode must be attach or spawn.")
@@ -347,7 +349,10 @@ class FridaRuntime:
         if not isinstance(capture_logcat, bool) or not isinstance(capture_screenshot, bool):
             raise FridaRuntimeError("Frida evidence capture flags must be booleans.")
 
-        if "root_detection_native_hooks_installed" in source:
+        if (
+            "root_detection_native_hooks_installed" in source
+            or "root_detection_bypass_hooks_installed" in source
+        ):
             # The managed emulator is root-capable, but AndroGoat's native
             # RootBeer build does not expose a Java bridge in this lab image.
             # Create one fixed, temporary lab signal before the real Frida
@@ -462,6 +467,25 @@ class FridaRuntime:
                 "redaction_applied": bool(logcat_redaction_applied),
             },
         }
+
+    def _ensure_runtime_ready(self, package_name: str) -> None:
+        state = self.status(package_name, verify_attach=False)
+        if state.get("frida_client_installed") is not True:
+            raise FridaRuntimeError(
+                "Frida client is not installed in the host-agent environment.",
+                status_code=503,
+            )
+        if state.get("frida_server_version") in {"", None}:
+            raise FridaRuntimeError(
+                f"Managed Frida server binary is missing or not executable at {FRIDA_SERVER_PATH}.",
+                status_code=503,
+            )
+        if (
+            state.get("frida_server_reachable") is True
+            and state.get("version_agreement") is True
+        ):
+            return
+        self.setup(package_name)
 
     def _run_script(
         self,

@@ -95,6 +95,8 @@ def _resolve_playbook_validations(run: AgentRun) -> list[dict[str, Any]]:
     lab_sources = {
         "__MSAP_ROOT_DETECTION_LAB_BYPASS_TEMPLATE__": "ROOT_DETECTION_LAB_BYPASS",
         "__MSAP_EMULATOR_DETECTION_LAB_BYPASS_TEMPLATE__": "EMULATOR_DETECTION_LAB_BYPASS",
+        "__MSAP_ROOT_DETECTION_NATIVE_HOOK_TEMPLATE__": "ROOT_DETECTION_SCREEN_VALIDATION",
+        "__MSAP_TLS_PINNING_OKHTTP_BYPASS_TEMPLATE__": "TLS_PINNING_FRIDA_BYPASS",
     }
     results: list[dict[str, Any]] = []
     for tool_name, playbook_id in mapping.items():
@@ -112,10 +114,27 @@ def _resolve_playbook_validations(run: AgentRun) -> list[dict[str, Any]]:
         step = run.steps.filter(tool_name=tool_name).order_by("-sequence_number").first()
         evidence = {}
         for candidate in run.steps.order_by("sequence_number"):
+            if candidate.status != AgentRunStep.Status.SUCCEEDED:
+                continue
             if isinstance(candidate.output_summary, dict):
                 evidence.update(candidate.output_summary)
             if isinstance(candidate.observation, dict):
                 evidence.update(candidate.observation)
+            if candidate.tool_name == "dump_ui" and isinstance(candidate.output_summary, dict):
+                values = candidate.output_summary.get("text_values", [])
+                if candidate.plan_step_identifier == "capture_rooted_before":
+                    evidence["root_before_text_values"] = values
+                elif candidate.plan_step_identifier == "capture_not_rooted_after":
+                    evidence["root_after_text_values"] = values
+            if candidate.tool_name in {"stop_proxy_capture", "get_proxy_flows"} and isinstance(candidate.output_summary, dict):
+                phase = candidate.output_summary.get("phase")
+                if phase == "pinning_baseline":
+                    evidence["tls_baseline_flow_count"] = candidate.output_summary.get("flow_count", 0)
+                    evidence["tls_baseline_successful_flow_count"] = candidate.output_summary.get("successful_tls_flow_count", 0)
+                elif phase == "pinning_bypass":
+                    evidence["tls_bypass_flow_count"] = candidate.output_summary.get("flow_count", 0)
+                    evidence["tls_bypass_successful_flow_count"] = candidate.output_summary.get("successful_tls_flow_count", 0)
+                    evidence["target_network_flow_exercised"] = True
         screenshots = [
             step.output_summary
             for step in run.steps.filter(tool_name="take_screenshot", status=AgentRunStep.Status.SUCCEEDED).order_by("sequence_number")
@@ -124,8 +143,16 @@ def _resolve_playbook_validations(run: AgentRun) -> list[dict[str, Any]]:
         if len(screenshots) >= 2:
             evidence["before_screenshot_sha256"] = screenshots[0]["sha256"]
             evidence["after_screenshot_sha256"] = screenshots[-1]["sha256"]
-        if step and isinstance(step.output_summary, dict):
-            evidence.update(step.output_summary)
+        if (
+            step
+            and step.status == AgentRunStep.Status.SUCCEEDED
+            and isinstance(step.output_summary, dict)
+        ):
+            step_output = dict(step.output_summary)
+            for key in ("before_screenshot_sha256", "after_screenshot_sha256"):
+                if not step_output.get(key):
+                    step_output.pop(key, None)
+            evidence.update(step_output)
         existing = DynamicValidationResult.objects.filter(agent_run=run, finding=finding, playbook_id=playbook_id).first()
         if existing:
             result = existing

@@ -27,6 +27,34 @@ async function browserApiGet(page: Page, endpoint: string): Promise<JsonRecord |
   );
 }
 
+async function browserApiPost(page: Page, endpoint: string, body: JsonRecord = {}): Promise<JsonRecord> {
+  return page.evaluate(
+    async ({ url, payload }) => {
+      const csrfResponse = await fetch(`${url.origin}/api/auth/csrf/`, { credentials: "include" });
+      if (!csrfResponse.ok) throw new Error(`CSRF returned ${csrfResponse.status}: ${await csrfResponse.text()}`);
+      const csrf = await csrfResponse.json();
+      const response = await fetch(`${url.origin}/api/${url.endpoint}`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": String(csrf.csrfToken || ""),
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error(`POST ${url.endpoint} returned ${response.status}: ${await response.text()}`);
+      return response.json();
+    },
+    {
+      url: {
+        origin: new URL(apiBase).origin,
+        endpoint,
+      },
+      payload: body,
+    },
+  );
+}
+
 async function capture(page: Page, name: string) {
   await page.screenshot({ path: path.join(evidenceDirectory, name), fullPage: true });
 }
@@ -145,9 +173,19 @@ test("real static finding becomes approved mission, agent execution, evidence, a
     expect(startPayload.run.execution_mode).toBe("ADAPTIVE_AGENT");
     await capture(page, "fv-04-live-poc-started.png");
   } else {
-    const mission = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/`)) as JsonRecord;
+    let mission = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/`)) as JsonRecord;
     expect(mission.provider).toBe("OPENAI");
     expect(mission.model).toBe("gpt-5.6-luna");
+    if (!runId && mission.status === "VALIDATED") {
+      mission = await browserApiPost(page, `dynamic/finding-validations/${missionId}/approve/`);
+      expect(mission.status).toBe("APPROVED");
+    }
+    if (!runId && mission.status === "APPROVED") {
+      const started = await browserApiPost(page, `dynamic/finding-validations/${missionId}/start/`) as { run: JsonRecord; mission: JsonRecord };
+      mission = started.mission;
+      runId = Number(started.run.id);
+      expect(started.run.execution_mode).toBe("ADAPTIVE_AGENT");
+    }
     runId = runId || Number(mission.agent_run);
     expect(runId).toBeGreaterThan(0);
     await capture(page, "fv-02-existing-mission.png");
@@ -165,8 +203,13 @@ test("real static finding becomes approved mission, agent execution, evidence, a
   const timeline = (await browserApiGet(page, `dynamic/finding-validations/${missionId}/timeline/`)) as JsonRecord;
   const run = (await browserApiGet(page, `dynamic/agent/runs/${runId}/`)) as JsonRecord;
   const steps = (await browserApiGet(page, `dynamic/agent/runs/${runId}/steps/`)) as JsonRecord[];
-  const results = (await browserApiGet(page, `dynamic/validation-results/?audit=${auditId}`)) as JsonRecord[];
-  const missionResult = results.find((item) => Number(item.agent_run) === runId && Number(item.finding) === Number(selectedFinding!.id));
+  const missionResult = terminalMission.dynamic_validation_result
+    ? (await browserApiGet(
+        page,
+        `dynamic/validation-results/${Number(terminalMission.dynamic_validation_result)}/`,
+      )) as JsonRecord
+    : ((await browserApiGet(page, `dynamic/validation-results/?audit=${auditId}`)) as JsonRecord[])
+        .find((item) => Number(item.agent_run) === runId && Number(item.finding) === Number(selectedFinding!.id));
 
   expect(run.status).toBe("SUCCEEDED");
   expect(steps.filter((step) => step.status === "SUCCEEDED").length).toBeGreaterThanOrEqual(2);

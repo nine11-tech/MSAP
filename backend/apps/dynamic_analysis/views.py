@@ -35,6 +35,7 @@ from apps.dynamic_analysis.models import (
     DynamicSessionStage,
     DynamicValidationResult,
     FindingValidationMission,
+    FridaScriptProposal,
 )
 from apps.dynamic_analysis.authentication import (
     AgentRunTokenAuthentication,
@@ -77,7 +78,10 @@ from apps.dynamic_analysis.serializers import (
     DynamicSessionTransitionSerializer,
     CorrelationCandidateStartPocRequestSerializer,
     CorrelationCandidateStartPocSerializer,
+    CorrelationPlaybookStartRequestSerializer,
     FindingMissionEvidenceSerializer,
+    FridaScriptProposalGenerateSerializer,
+    FridaScriptProposalSerializer,
     StaticDynamicCorrelationSerializer,
 )
 from apps.dynamic_analysis.renderers import PNGRenderer
@@ -149,8 +153,15 @@ from apps.dynamic_analysis.services.openai_budget import (
 from apps.dynamic_analysis.services.finding_validation_missions import (
     FindingValidationMissionError,
     approve_finding_validation_mission,
+    get_or_create_selected_playbook_mission,
     refresh_mission_from_run,
     start_finding_validation_mission,
+)
+from apps.dynamic_analysis.services.generated_frida_scripts import (
+    FridaScriptProposalError,
+    approve_frida_script_proposal,
+    generate_frida_script_proposal,
+    reject_frida_script_proposal,
 )
 from apps.dynamic_analysis.services.static_dynamic_correlation import (
     friendly_action_label,
@@ -680,7 +691,10 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                 status=exc.http_status,
             )
         try:
-            async_result = execute_assessment_plan_run_task.delay(run.id)
+            if run.execution_mode == AgentRun.ExecutionMode.SEQUENTIAL_PLAN:
+                async_result = execute_assessment_plan_run_task.delay(run.id)
+            else:
+                async_result = execute_adaptive_assessment_run_task.delay(run.id)
         except Exception as exc:
             logger.warning(
                 "finding_validation_enqueue_failed mission_id=%s run_id=%s error_type=%s",
@@ -688,7 +702,12 @@ class FindingValidationMissionViewSet(DynamicFilterMixin, viewsets.ReadOnlyModel
                 run.id,
                 type(exc).__name__,
             )
-            run = AssessmentExecutor.mark_enqueue_failed(run)
+            run = AssessmentAgent._finish(
+                run,
+                status=AgentRun.Status.FAILED,
+                termination_reason="ADAPTIVE_ASSESSMENT_ENQUEUE_FAILED",
+                message="The finding validation agent could not be queued.",
+            )
             refresh_mission_from_run(run)
             return Response(
                 {
@@ -847,7 +866,7 @@ class StaticDynamicCorrelationViewSet(viewsets.GenericViewSet):
     def get_permissions(self):
         permission_classes = (
             [IsMSAPAnalystOrAdmin]
-            if self.action in {"start", "start_poc"}
+            if self.action in {"start", "start_poc", "start_playbook"}
             else [IsMSAPViewerOrAbove]
         )
         return [permission() for permission in permission_classes]
@@ -942,6 +961,53 @@ class StaticDynamicCorrelationViewSet(viewsets.GenericViewSet):
                 "next_step": result["next_step"],
             },
             status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        request=CorrelationPlaybookStartRequestSerializer,
+        responses={201: CorrelationCandidateStartPocSerializer},
+    )
+    @action(detail=True, methods=["post"], url_path="start-playbook")
+    def start_playbook(self, request, pk=None):
+        audit = self._get_audit(request)
+        if audit is None:
+            return Response(
+                {"detail": "Audit not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = CorrelationPlaybookStartRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            mission, created = get_or_create_selected_playbook_mission(
+                audit_id=audit.id,
+                playbook_id=serializer.validated_data["playbook_id"],
+                requested_by=request.user,
+            )
+        except FindingValidationMissionError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            {
+                "mission": FindingValidationMissionSerializer(
+                    mission,
+                    context={"request": request},
+                ).data,
+                "next_step": (
+                    "result"
+                    if mission.status in {
+                        FindingValidationMission.Status.CONFIRMED,
+                        FindingValidationMission.Status.NOT_REPRODUCED,
+                    }
+                    else "monitor"
+                    if mission.status == FindingValidationMission.Status.RUNNING
+                    else "run"
+                    if mission.status == FindingValidationMission.Status.APPROVED
+                    else "approve"
+                ),
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
 
@@ -1170,6 +1236,10 @@ class AgentRunViewSet(
             "cancel_execution",
             "retry_adaptive",
             "recommend_next_assessment",
+            "frida_script_proposals",
+            "approve_frida_script_proposal",
+            "reject_frida_script_proposal",
+            "resume_adaptive",
         }:
             permission_classes = [IsMSAPAnalystOrAdmin]
         else:
@@ -1265,6 +1335,161 @@ class AgentRunViewSet(
                 run.action_decisions.select_related("hypothesis", "run_step").all(),
                 many=True,
             ).data
+        )
+
+    @extend_schema(
+        request=FridaScriptProposalGenerateSerializer,
+        responses={200: FridaScriptProposalSerializer(many=True), 201: FridaScriptProposalSerializer},
+    )
+    @action(detail=True, methods=["get", "post"], url_path="frida-script-proposals")
+    def frida_script_proposals(self, request, pk=None):
+        run = self.get_object()
+        if request.method == "GET":
+            return Response(
+                FridaScriptProposalSerializer(
+                    run.frida_script_proposals.select_related(
+                        "audit",
+                        "finding",
+                        "mission",
+                        "hypothesis",
+                        "created_by",
+                        "approved_by",
+                    ).all(),
+                    many=True,
+                ).data
+            )
+        serializer = FridaScriptProposalGenerateSerializer(
+            data=request.data,
+            context={"run": run},
+        )
+        serializer.is_valid(raise_exception=True)
+        hypothesis = serializer.validated_data.get("hypothesis")
+        try:
+            proposal = generate_frida_script_proposal(
+                run=run,
+                requested_by=request.user,
+                hypothesis_id=hypothesis.id if hypothesis else None,
+            )
+        except FridaScriptProposalError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(
+            FridaScriptProposalSerializer(proposal).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: FridaScriptProposalSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"frida-script-proposals/(?P<proposal_id>[0-9]+)/approve",
+    )
+    def approve_frida_script_proposal(self, request, pk=None, proposal_id=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = self.get_object()
+        proposal = FridaScriptProposal.objects.filter(pk=proposal_id, run=run).first()
+        if proposal is None:
+            return Response(
+                {"code": "FRIDA_SCRIPT_PROPOSAL_NOT_FOUND", "detail": "Frida script proposal not found for this AgentRun."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            proposal = approve_frida_script_proposal(
+                proposal=proposal,
+                approved_by=request.user,
+            )
+        except FridaScriptProposalError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(FridaScriptProposalSerializer(proposal).data)
+
+    @extend_schema(request=StrictEmptySerializer, responses={200: FridaScriptProposalSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path=r"frida-script-proposals/(?P<proposal_id>[0-9]+)/reject",
+    )
+    def reject_frida_script_proposal(self, request, pk=None, proposal_id=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = self.get_object()
+        proposal = FridaScriptProposal.objects.filter(pk=proposal_id, run=run).first()
+        if proposal is None:
+            return Response(
+                {"code": "FRIDA_SCRIPT_PROPOSAL_NOT_FOUND", "detail": "Frida script proposal not found for this AgentRun."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        try:
+            proposal = reject_frida_script_proposal(
+                proposal=proposal,
+                rejected_by=request.user,
+            )
+        except FridaScriptProposalError as exc:
+            return Response(
+                {"code": exc.code, "detail": str(exc)},
+                status=exc.http_status,
+            )
+        return Response(FridaScriptProposalSerializer(proposal).data)
+
+    @extend_schema(request=StrictEmptySerializer, responses={202: AgentRunSerializer})
+    @action(detail=True, methods=["post"], url_path="resume-adaptive")
+    def resume_adaptive(self, request, pk=None):
+        serializer = StrictEmptySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        run = self.get_object()
+        if (
+            run.status != AgentRun.Status.PAUSED
+            or run.execution_mode != AgentRun.ExecutionMode.ADAPTIVE_AGENT
+        ):
+            return Response(
+                {
+                    "code": "AGENT_RUN_NOT_PAUSED",
+                    "detail": "Only paused adaptive AgentRuns can be resumed.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        AgentRun.objects.filter(pk=run.pk, status=AgentRun.Status.PAUSED).update(
+            status=AgentRun.Status.QUEUED,
+            finished_at=None,
+            termination_reason="",
+            failure_message="",
+            updated_at=timezone.now(),
+        )
+        run.refresh_from_db()
+        try:
+            async_result = execute_adaptive_assessment_run_task.delay(run.id)
+        except Exception as exc:
+            logger.warning(
+                "adaptive_assessment_resume_enqueue_failed run_id=%s error_type=%s",
+                run.id,
+                type(exc).__name__,
+            )
+            run = AssessmentAgent._finish(
+                run,
+                status=AgentRun.Status.FAILED,
+                termination_reason="ADAPTIVE_ASSESSMENT_RESUME_ENQUEUE_FAILED",
+                message="The paused assessment could not be resumed.",
+            )
+            return Response(
+                {
+                    "code": "ADAPTIVE_ASSESSMENT_RESUME_ENQUEUE_FAILED",
+                    "detail": "The paused assessment could not be resumed.",
+                    "run": AgentRunSerializer(run, context={"request": request}).data,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(
+            {
+                "run": AgentRunSerializer(run, context={"request": request}).data,
+                "task_id": getattr(async_result, "id", None),
+                "execution_mode": run.execution_mode,
+            },
+            status=status.HTTP_202_ACCEPTED,
         )
 
     @extend_schema(responses={200: AgentHypothesisSerializer(many=True)})

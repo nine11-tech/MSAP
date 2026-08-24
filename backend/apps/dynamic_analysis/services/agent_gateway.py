@@ -29,12 +29,18 @@ from apps.dynamic_analysis.services.agent_capability_envelope import (
 )
 from apps.dynamic_analysis.services.agent_controller import (
     AgentController,
+    RuntimePlaceholderError,
+    resolve_approved_plan_arguments,
     resolve_runtime_arguments,
 )
 from apps.dynamic_analysis.services.agent_tools import (
     AgentToolError,
     TOOL_MANIFEST,
     execute_agent_tool,
+)
+from apps.dynamic_analysis.services.generated_frida_scripts import (
+    is_generated_frida_source_identifier,
+    mark_frida_script_execution,
 )
 from apps.dynamic_analysis.services.assessment_execution_contract import (
     AssessmentExecutionContractError,
@@ -184,7 +190,22 @@ def execute_run_tool_call(
                         "The materialized tool call does not match the approved plan.",
                         code="APPROVED_TOOL_CALL_MISMATCH",
                     )
-                expected_arguments = approved_call["arguments"]
+                try:
+                    expected_arguments = resolve_approved_plan_arguments(
+                        approved_call["arguments"],
+                        {
+                            step.tool_name: step.output_summary
+                            for step in steps
+                            if step.status == AgentRunStep.Status.SUCCEEDED
+                            and isinstance(step.output_summary, dict)
+                        },
+                    )
+                except RuntimePlaceholderError as exc:
+                    raise AgentGatewayRequestError(
+                        str(exc),
+                        code=exc.code,
+                        http_status=409,
+                    ) from None
             else:
                 completed_outputs = {
                     step.tool_name: step.output_summary
@@ -230,6 +251,14 @@ def execute_run_tool_call(
             )
             break
         except AgentToolError as exc:
+            if tool_name == "frida_run_js" and is_generated_frida_source_identifier(
+                expected_arguments.get("source") if isinstance(expected_arguments, dict) else ""
+            ):
+                mark_frida_script_execution(
+                    expected_arguments["source"],
+                    succeeded=False,
+                    error=str(exc),
+                )
             step_state = AgentRunStep.objects.get(pk=step_id)
             retryable = (
                 run.assessment_plan_id
@@ -322,6 +351,10 @@ def execute_run_tool_call(
                 execution_status=AgentActionDecision.ExecutionStatus.SUCCEEDED,
                 executed_at=timezone.now(),
             )
+        if tool_name == "frida_run_js" and is_generated_frida_source_identifier(
+            expected_arguments.get("source") if isinstance(expected_arguments, dict) else ""
+        ):
+            mark_frida_script_execution(expected_arguments["source"], succeeded=True)
         AgentController._record_tool_artifact(run, step, output)
         if tool_name == "get_device_status" and output.get("serial"):
             run.device = DynamicDevice.objects.filter(serial=output["serial"]).first()

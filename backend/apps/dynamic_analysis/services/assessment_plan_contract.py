@@ -28,6 +28,7 @@ EVIDENCE_TYPES = (
     "ui_hierarchy",
     "logcat",
     "frida_events",
+    "network_flow",
     "tool_output",
     "before_after_comparison",
 )

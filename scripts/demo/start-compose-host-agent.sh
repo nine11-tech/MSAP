@@ -56,6 +56,15 @@ listener_pid() {
     head -1
 }
 
+health_probe() {
+  local token
+  token="$(backend_token 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 2
+  curl --fail --silent --show-error --max-time 2 \
+    -H "X-MSAP-Agent-Token: $token" \
+    "http://127.0.0.1:$PORT/health" >/dev/null
+}
+
 stop_agent() {
   local pid
   if pid="$(managed_pid)"; then
@@ -108,12 +117,14 @@ start_agent() {
 
 status_agent() {
   local pid
-  if pid="$(listener_pid)" && [[ -n "$pid" ]]; then
+  if health_probe; then
+    printf 'Host Agent process: RUNNING health=PASS\n'
+  elif pid="$(listener_pid)" && [[ -n "$pid" ]]; then
     printf 'Host Agent process: RUNNING pid=%s\n' "$pid"
   elif pid="$(managed_pid)"; then
     printf 'Host Agent process: STARTING pid=%s\n' "$pid"
   else
-    printf 'Host Agent process: STOPPED\n'
+    printf 'Host Agent process: STOPPED_OR_UNREACHABLE\n'
   fi
   if [[ -r "$LOG_FILE" ]]; then
     printf 'Log: %s\n' "$LOG_FILE"

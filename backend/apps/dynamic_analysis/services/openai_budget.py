@@ -27,11 +27,13 @@ KIND_GENERATION = "generation"
 KIND_DECISION = "decision"
 KIND_CORRELATION = "correlation"
 KIND_POC_PLANNING = "poc_planning"
+KIND_EVIDENCE_EXPLANATION = "evidence_explanation"
 VALID_KINDS = {
     KIND_GENERATION,
     KIND_DECISION,
     KIND_CORRELATION,
     KIND_POC_PLANNING,
+    KIND_EVIDENCE_EXPLANATION,
 }
 
 
@@ -54,6 +56,9 @@ def _settings_defaults() -> dict[str, int]:
         ),
         "max_poc_planning_calls": int(
             settings.MSAP_OPENAI_MAX_POC_PLANNING_CALLS
+        ),
+        "max_evidence_explanation_calls": int(
+            settings.MSAP_OPENAI_MAX_EVIDENCE_EXPLANATION_CALLS
         ),
         "max_total_openai_calls": int(settings.MSAP_OPENAI_MAX_TOTAL_CALLS),
     }
@@ -83,11 +88,13 @@ def budget_status(scope: str = GLOBAL_SCOPE) -> dict[str, Any]:
         "scope": budget.scope,
         "max_mission_generation_calls": budget.max_mission_generation_calls,
         "max_adaptive_decision_calls": budget.max_adaptive_decision_calls,
+        "max_evidence_explanation_calls": budget.max_evidence_explanation_calls,
         "max_total_openai_calls": budget.max_total_openai_calls,
         "mission_generation_call_count": budget.mission_generation_call_count,
         "adaptive_decision_call_count": budget.adaptive_decision_call_count,
         "correlation_call_count": budget.correlation_call_count,
         "poc_planning_call_count": budget.poc_planning_call_count,
+        "evidence_explanation_call_count": budget.evidence_explanation_call_count,
         "current_openai_call_count": budget.current_openai_call_count,
         "remaining_total_calls": max(
             0, budget.max_total_openai_calls - budget.current_openai_call_count
@@ -135,6 +142,8 @@ def reserve_call(
             budget.correlation_call_count += 1
         elif kind == KIND_POC_PLANNING:
             budget.poc_planning_call_count += 1
+        elif kind == KIND_EVIDENCE_EXPLANATION:
+            budget.evidence_explanation_call_count += 1
         else:
             budget.adaptive_decision_call_count += 1
         budget.budget_exhausted_reason = ""
@@ -145,6 +154,7 @@ def reserve_call(
                 "adaptive_decision_call_count",
                 "correlation_call_count",
                 "poc_planning_call_count",
+                "evidence_explanation_call_count",
                 "budget_exhausted_reason",
                 "updated_at",
             ]
@@ -199,6 +209,11 @@ def release_call(
             budget.correlation_call_count -= 1
         if kind == KIND_POC_PLANNING and budget.poc_planning_call_count > 0:
             budget.poc_planning_call_count -= 1
+        if (
+            kind == KIND_EVIDENCE_EXPLANATION
+            and budget.evidence_explanation_call_count > 0
+        ):
+            budget.evidence_explanation_call_count -= 1
         if budget.current_openai_call_count > 0:
             budget.current_openai_call_count -= 1
         budget.save(
@@ -208,6 +223,7 @@ def release_call(
                 "adaptive_decision_call_count",
                 "correlation_call_count",
                 "poc_planning_call_count",
+                "evidence_explanation_call_count",
                 "updated_at",
             ]
         )
@@ -238,12 +254,16 @@ def reset_budget(scope: str = GLOBAL_SCOPE) -> OpenAICallBudget:
         budget.max_adaptive_decision_calls = defaults["max_adaptive_decision_calls"]
         budget.max_correlation_calls = defaults["max_correlation_calls"]
         budget.max_poc_planning_calls = defaults["max_poc_planning_calls"]
+        budget.max_evidence_explanation_calls = defaults[
+            "max_evidence_explanation_calls"
+        ]
         budget.max_total_openai_calls = defaults["max_total_openai_calls"]
 
         budget.mission_generation_call_count = 0
         budget.adaptive_decision_call_count = 0
         budget.correlation_call_count = 0
         budget.poc_planning_call_count = 0
+        budget.evidence_explanation_call_count = 0
         budget.current_openai_call_count = 0
         budget.provider_response_ids = []
         budget.budget_exhausted_reason = ""
@@ -253,11 +273,13 @@ def reset_budget(scope: str = GLOBAL_SCOPE) -> OpenAICallBudget:
                 "max_adaptive_decision_calls",
                 "max_correlation_calls",
                 "max_poc_planning_calls",
+                "max_evidence_explanation_calls",
                 "max_total_openai_calls",
                 "mission_generation_call_count",
                 "adaptive_decision_call_count",
                 "correlation_call_count",
                 "poc_planning_call_count",
+                "evidence_explanation_call_count",
                 "current_openai_call_count",
                 "provider_response_ids",
                 "budget_exhausted_reason",
@@ -274,6 +296,8 @@ def _is_exhausted(budget: OpenAICallBudget) -> bool:
         or budget.adaptive_decision_call_count >= budget.max_adaptive_decision_calls
         or budget.correlation_call_count >= budget.max_correlation_calls
         or budget.poc_planning_call_count >= budget.max_poc_planning_calls
+        or budget.evidence_explanation_call_count
+        >= budget.max_evidence_explanation_calls
     )
 
 
@@ -306,6 +330,14 @@ def _assert_not_exhausted(budget: OpenAICallBudget, kind: str) -> None:
         raise OpenAIBudgetExhausted(
             "AI call budget reached. Evidence collected so far was preserved.",
             reason="OPENAI_BUDGET_EXHAUSTED",
+        )
+    if kind == KIND_EVIDENCE_EXPLANATION and (
+        budget.evidence_explanation_call_count
+        >= budget.max_evidence_explanation_calls
+    ):
+        raise OpenAIBudgetExhausted(
+            "AI evidence explanation budget reached. Evidence was preserved without AI explanation.",
+            reason="OPENAI_EVIDENCE_EXPLANATION_BUDGET_EXHAUSTED",
         )
     if budget.current_openai_call_count >= budget.max_total_openai_calls:
         raise OpenAIBudgetExhausted(

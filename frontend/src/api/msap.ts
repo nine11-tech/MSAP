@@ -36,6 +36,7 @@ import type {
   DynamicValidationResult,
   FindingValidationMission,
   FindingValidationTimeline,
+  FridaScriptProposal,
   Evidence,
   Finding,
   FindingSourceReference,
@@ -170,6 +171,16 @@ export const startCorrelationCandidatePoc = (
     `dynamic/static-dynamic-correlation/${auditId}/start-poc/`,
     { finding_id: findingId },
   );
+export const startCorrelationPlaybook = (
+  auditId: number,
+  playbookId: "ROOT_DETECTION_SCREEN_VALIDATION" | "TLS_PINNING_FRIDA_BYPASS",
+) =>
+  apiPost<
+    CorrelationStartPocResponse,
+    { playbook_id: "ROOT_DETECTION_SCREEN_VALIDATION" | "TLS_PINNING_FRIDA_BYPASS" }
+  >(`dynamic/static-dynamic-correlation/${auditId}/start-playbook/`, {
+    playbook_id: playbookId,
+  });
 export const getCorrelationCapabilityGaps = (auditId: number) =>
   apiGet<CapabilityGapReport>(
     `dynamic/static-dynamic-correlation/${auditId}/capability-gaps/`,
@@ -178,6 +189,28 @@ export const listFindingValidationEvidence = (missionId: number) =>
   apiGet<Evidence[]>(`dynamic/finding-validations/${missionId}/evidence/`);
 export const getFindingValidationTimeline = (missionId: number) =>
   apiGet<FindingValidationTimeline>(`dynamic/finding-validations/${missionId}/timeline/`);
+export const listFridaScriptProposals = (runId: number) =>
+  apiGet<FridaScriptProposal[]>(`dynamic/agent/runs/${runId}/frida-script-proposals/`);
+export const generateFridaScriptProposal = (runId: number) =>
+  apiPost<FridaScriptProposal, Record<string, never>>(
+    `dynamic/agent/runs/${runId}/frida-script-proposals/`,
+    {},
+  );
+export const approveFridaScriptProposal = (runId: number, proposalId: number) =>
+  apiPost<FridaScriptProposal, Record<string, never>>(
+    `dynamic/agent/runs/${runId}/frida-script-proposals/${proposalId}/approve/`,
+    {},
+  );
+export const rejectFridaScriptProposal = (runId: number, proposalId: number) =>
+  apiPost<FridaScriptProposal, Record<string, never>>(
+    `dynamic/agent/runs/${runId}/frida-script-proposals/${proposalId}/reject/`,
+    {},
+  );
+export const resumeAdaptiveAgentRun = (runId: number) =>
+  apiPost<{ run: AgentRun; task_id?: string | null; execution_mode: string }, Record<string, never>>(
+    `dynamic/agent/runs/${runId}/resume-adaptive/`,
+    {},
+  );
 export const getOpenAIBudgetStatus = () =>
   apiGet<OpenAIBudgetStatus>("dynamic/finding-validations/budget-status/");
 export const resetOpenAIBudget = () =>

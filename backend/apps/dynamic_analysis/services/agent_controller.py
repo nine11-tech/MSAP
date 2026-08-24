@@ -40,6 +40,25 @@ security_logger = logging.getLogger("msap.security")
 
 PACKAGE_FROM_INSTALL = "__MSAP_PACKAGE_FROM_INSTALL__"
 COLLECTOR_FROM_START = "__MSAP_COLLECTOR_FROM_START__"
+COLLECTOR_FROM_PREVIOUS_STEP = "collector_from_previous_step"
+PROXY_CAPTURE_FROM_PREVIOUS_STEP = "proxy_capture_from_previous_step"
+
+KNOWN_RUNTIME_PLACEHOLDERS = frozenset(
+    {
+        PACKAGE_FROM_INSTALL,
+        COLLECTOR_FROM_START,
+        COLLECTOR_FROM_PREVIOUS_STEP,
+        PROXY_CAPTURE_FROM_PREVIOUS_STEP,
+    }
+)
+
+
+class RuntimePlaceholderError(RuntimeError):
+    """A plan references a run-scoped value that no earlier approved step produced."""
+
+    def __init__(self, message: str, *, code: str = "RUNTIME_PLACEHOLDER_UNRESOLVED"):
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -230,9 +249,60 @@ def resolve_runtime_arguments(arguments: dict, outputs: dict[str, dict]) -> dict
     for key, value in tuple(resolved.items()):
         if value == PACKAGE_FROM_INSTALL:
             value = outputs.get("install_verified_apk", {}).get("package_name")
-        elif value == COLLECTOR_FROM_START:
+        elif value in {COLLECTOR_FROM_START, COLLECTOR_FROM_PREVIOUS_STEP}:
             value = outputs.get("start_logcat", {}).get("collector_id")
         resolved[key] = value
+    return resolved
+
+
+def resolve_approved_plan_arguments(
+    arguments: dict,
+    completed_outputs: dict[str, dict],
+) -> dict:
+    """Resolve only the closed set of run-scoped placeholders in plan arguments.
+
+    No arbitrary variable interpolation is performed: a value must exactly equal
+    a known placeholder constant, and the replacement value is read only from a
+    bounded completed tool output of the same AgentRun. Any other value is
+    preserved verbatim. An unresolved placeholder fails with a deterministic
+    ``RuntimePlaceholderError`` so no model- or plan-supplied value can ever be
+    interpreted as a dynamic reference into unrelated data.
+    """
+    resolved = dict(arguments)
+    for key, value in tuple(resolved.items()):
+        if value not in KNOWN_RUNTIME_PLACEHOLDERS:
+            continue
+        if value == PACKAGE_FROM_INSTALL:
+            package_name = (completed_outputs.get("install_verified_apk") or {}).get(
+                "package_name"
+            )
+            if not isinstance(package_name, str) or not package_name:
+                raise RuntimePlaceholderError(
+                    "The approved plan references the installed package, but no "
+                    "earlier approved step produced one (argument '%s')." % key
+                )
+            resolved[key] = package_name
+            continue
+        if value == PROXY_CAPTURE_FROM_PREVIOUS_STEP:
+            capture_id = (completed_outputs.get("start_proxy_capture") or {}).get(
+                "capture_id"
+            )
+            if not isinstance(capture_id, str) or not capture_id:
+                raise RuntimePlaceholderError(
+                    "The approved plan references a proxy capture, but no earlier "
+                    "approved step produced one (argument '%s')." % key
+                )
+            resolved[key] = capture_id
+            continue
+        collector_id = (completed_outputs.get("start_logcat") or {}).get(
+            "collector_id"
+        )
+        if not isinstance(collector_id, str) or not collector_id:
+            raise RuntimePlaceholderError(
+                "The approved plan references a logcat collector, but no earlier "
+                "approved step produced one (argument '%s')." % key
+            )
+        resolved[key] = collector_id
     return resolved
 
 

@@ -29,6 +29,7 @@ from apps.dynamic_analysis.models import (
     DynamicSessionStage,
     DynamicValidationResult,
     FindingValidationMission,
+    FridaScriptProposal,
 )
 from apps.dynamic_analysis.services.assessment_planner import (
     OPENAI_MODEL_PROFILE_CHOICES,
@@ -115,9 +116,11 @@ class OpenAIBudgetStatusSerializer(serializers.Serializer):
     scope = serializers.CharField()
     max_mission_generation_calls = serializers.IntegerField()
     max_adaptive_decision_calls = serializers.IntegerField()
+    max_evidence_explanation_calls = serializers.IntegerField()
     max_total_openai_calls = serializers.IntegerField()
     mission_generation_call_count = serializers.IntegerField()
     adaptive_decision_call_count = serializers.IntegerField()
+    evidence_explanation_call_count = serializers.IntegerField()
     current_openai_call_count = serializers.IntegerField()
     remaining_total_calls = serializers.IntegerField()
     provider_response_ids = serializers.ListField(child=serializers.CharField())
@@ -157,6 +160,30 @@ class AdaptiveAssessmentExecutionSerializer(serializers.Serializer):
                 {key: "This field is not permitted." for key in unexpected}
             )
         return super().to_internal_value(data)
+
+
+class FridaScriptProposalGenerateSerializer(serializers.Serializer):
+    hypothesis = serializers.PrimaryKeyRelatedField(
+        queryset=AgentHypothesis.objects.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def to_internal_value(self, data):
+        if not isinstance(data, dict):
+            raise serializers.ValidationError("Request body must be a JSON object.")
+        unexpected = sorted(set(data) - {"hypothesis"})
+        if unexpected:
+            raise serializers.ValidationError(
+                {key: "This field is not permitted." for key in unexpected}
+            )
+        return super().to_internal_value(data)
+
+    def validate_hypothesis(self, value):
+        run = self.context.get("run")
+        if value is not None and run is not None and value.run_id != run.id:
+            raise serializers.ValidationError("Hypothesis does not belong to this AgentRun.")
+        return value
 
 
 class DynamicHostAgentPackageActionSerializer(serializers.Serializer):
@@ -674,6 +701,59 @@ class AgentActionDecisionSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class FridaScriptProposalSerializer(serializers.ModelSerializer):
+    created_by_username = serializers.CharField(
+        source="created_by.username",
+        read_only=True,
+        allow_null=True,
+    )
+    approved_by_username = serializers.CharField(
+        source="approved_by.username",
+        read_only=True,
+        allow_null=True,
+    )
+    hypothesis_identifier = serializers.CharField(
+        source="hypothesis.hypothesis_id",
+        read_only=True,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = FridaScriptProposal
+        fields = [
+            "id",
+            "run",
+            "audit",
+            "finding",
+            "mission",
+            "hypothesis",
+            "hypothesis_identifier",
+            "title",
+            "rationale",
+            "expected_evidence",
+            "source_identifier",
+            "source_sha256",
+            "source_code",
+            "source_size_bytes",
+            "generator_provider",
+            "generator_model",
+            "provider_metadata",
+            "validation_warnings",
+            "status",
+            "created_by",
+            "created_by_username",
+            "approved_by",
+            "approved_by_username",
+            "approved_at",
+            "executed_at",
+            "last_error",
+            "suggested_fix",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
 class AgentRunStepSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentRunStep
@@ -1012,6 +1092,15 @@ class CorrelationCandidateStartPocRequestSerializer(serializers.Serializer):
 class CorrelationCandidateStartPocSerializer(serializers.Serializer):
     mission = FindingValidationMissionSerializer()
     next_step = serializers.CharField()
+
+
+class CorrelationPlaybookStartRequestSerializer(serializers.Serializer):
+    playbook_id = serializers.ChoiceField(
+        choices=[
+            "ROOT_DETECTION_SCREEN_VALIDATION",
+            "TLS_PINNING_FRIDA_BYPASS",
+        ]
+    )
 
 
 class FindingMissionEvidenceSerializer(EvidenceSerializer):

@@ -1,18 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  approveFridaScriptProposal,
   approveFindingValidationMission,
   downloadPdfReport,
+  generateFridaScriptProposal,
   getCorrelationCapabilityGaps,
   getDynamicHostAgentStatus,
   getFindingValidationMission,
   getFindingValidationTimeline,
   getOpenAIBudgetStatus,
+  listFridaScriptProposals,
   listAgentRunArtifacts,
   listApkFiles,
   listAudits,
   listFindingValidationEvidence,
   listFindings,
+  rejectFridaScriptProposal,
+  resumeAdaptiveAgentRun,
+  startCorrelationPlaybook,
   startCorrelationCandidatePoc,
   startFindingValidationMission,
   startStaticDynamicCorrelation,
@@ -25,6 +31,7 @@ import type {
   CorrelationCandidate,
   CorrelationClassification,
   Evidence,
+  FridaScriptProposal,
   FindingValidationMission,
   FindingValidationTimeline,
   OpenAIBudgetStatus,
@@ -158,9 +165,35 @@ const EVIDENCE_TYPE_LABELS: Record<string, string> = {
   dynamic_frida_processes: "Frida process list",
   dynamic_frida_attach: "Frida attach result",
   dynamic_frida_events: "Frida events",
+  network_flow: "Network flow summary",
   dynamic_tool_observation: "Tool observation",
   assessment_plan_control_observation: "Plan control observation",
 };
+
+const AUDITOR_PLAYBOOKS = [
+  {
+    id: "ROOT_DETECTION_SCREEN_VALIDATION" as const,
+    title: "Root detection manipulation",
+    summary:
+      "Show AndroGoat reporting a rooted device first, then use approved Frida instrumentation to make the same screen report that the device is not rooted.",
+    evidence: [
+      "Before screenshot showing Device is rooted",
+      "After screenshot showing Device is not rooted",
+      "Frida hook events and UI evidence",
+    ],
+  },
+  {
+    id: "TLS_PINNING_FRIDA_BYPASS" as const,
+    title: "TLS pinning bypass",
+    summary:
+      "Show the pinned OkHttp request failing to produce a decrypted proxy flow before instrumentation, then bypass pinning with approved Frida hooks and capture the decrypted target-host flow.",
+    evidence: [
+      "Baseline bounded proxy capture",
+      "Bypass bounded proxy flow summary",
+      "Frida hook events and exercised UI evidence",
+    ],
+  },
+];
 
 function evidenceTypeLabel(value?: string | null): string {
   const raw = (value || "").trim();
@@ -229,6 +262,9 @@ function screenshotMetadata(item: Evidence): Record<string, string> {
 }
 
 function humanEvidenceSummary(item: Evidence): string {
+  if (item.ai_explanation && item.ai_explanation.trim()) {
+    return item.ai_explanation.trim();
+  }
   const observation = parseEvidenceJson(item);
   if (!observation) return boundedSnippet(item.snippet);
   const data =
@@ -303,6 +339,10 @@ function friendlyToolLabel(toolName: string): string {
     launch_exported_activity: "Launch exported activity",
     send_explicit_broadcast: "Send approved broadcast",
     query_exported_provider: "Query exported provider",
+    prepare_root_detection_demo: "Prepare rooted baseline",
+    start_proxy_capture: "Start bounded proxy capture",
+    stop_proxy_capture: "Stop bounded proxy capture",
+    get_proxy_flows: "Inspect bounded proxy flows",
   }[toolName] || toolName;
 }
 
@@ -424,6 +464,7 @@ export function DynamicValidationHome() {
   const [nextStep, setNextStep] = useState("");
   const [timeline, setTimeline] = useState<FindingValidationTimeline | null>(null);
   const [evidence, setEvidence] = useState<Evidence[]>([]);
+  const [fridaScriptProposals, setFridaScriptProposals] = useState<FridaScriptProposal[]>([]);
   const [activeTab, setActiveTab] = useState<ResultTab>("RECOMMENDED");
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState("");
@@ -476,10 +517,14 @@ export function DynamicValidationHome() {
         })),
       );
       setLabReady(Boolean(hostData?.connected && hostData.device?.state === "device"));
+      const fridaReady = Boolean(
+        hostData?.agent?.frida_client_available &&
+          hostData.agent.frida_server_status === "REACHABLE",
+      );
       setLabDetail(
         hostData?.connected
           ? hostData.device?.state === "device"
-            ? `Emulator ready · ${hostData.device.android_version || "Android"}`
+            ? `Emulator ready · ${hostData.device.android_version || "Android"}${fridaReady ? " · Frida ready" : ""}`
             : `Host agent online · emulator ${hostData.device?.state || "unavailable"}`
           : "Host agent offline",
       );
@@ -543,6 +588,13 @@ export function DynamicValidationHome() {
         setMission(currentMission);
         setTimeline(currentTimeline);
         setEvidence(currentEvidence);
+        if (currentMission.agent_run) {
+          void listFridaScriptProposals(currentMission.agent_run)
+            .then(setFridaScriptProposals)
+            .catch(() => null);
+        } else {
+          setFridaScriptProposals([]);
+        }
         const missionTerminal = TERMINAL_MISSION_STATUSES.includes(
           currentMission.status,
         );
@@ -566,6 +618,11 @@ export function DynamicValidationHome() {
                   setMission(finalMission);
                   setTimeline(finalTimeline);
                   setEvidence(finalEvidence);
+                  if (finalMission.agent_run) {
+                    void listFridaScriptProposals(finalMission.agent_run)
+                      .then(setFridaScriptProposals)
+                      .catch(() => null);
+                  }
                 })
                 .catch(() => null);
             }, 1000);
@@ -596,6 +653,7 @@ export function DynamicValidationHome() {
       setNextStep(nextAction);
       setTimeline(null);
       setEvidence([]);
+      setFridaScriptProposals([]);
       if (nextMission.status === "RUNNING") {
         startPolling(nextMission.id);
       } else if (TERMINAL_MISSION_STATUSES.includes(nextMission.status)) {
@@ -623,6 +681,7 @@ export function DynamicValidationHome() {
     setNotice("");
     setCorrelation(null);
     setMission(null);
+    setFridaScriptProposals([]);
     setGapReport(null);
     setActiveTab("RECOMMENDED");
     try {
@@ -690,6 +749,26 @@ export function DynamicValidationHome() {
     }
   }
 
+  async function handleStartPlaybook(
+    playbookId: "ROOT_DETECTION_SCREEN_VALIDATION" | "TLS_PINNING_FRIDA_BYPASS",
+  ) {
+    if (!selectedAuditId || !canOperate) return;
+    setWorking(`playbook-${playbookId}`);
+    setError("");
+    setNotice("");
+    try {
+      const response = await startCorrelationPlaybook(selectedAuditId, playbookId);
+      applyMission(response.mission, response.next_step);
+      setNotice(
+        "The bounded assessment playbook was prepared. Review and approve it before execution.",
+      );
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
   async function handleViewCandidateEvidence(candidate: CorrelationCandidate) {
     if (!selectedAuditId || !canOperate) return;
     setWorking(`evidence-${candidate.finding_id}`);
@@ -739,12 +818,94 @@ export function DynamicValidationHome() {
       setMission(started);
       setNextStep("monitor");
       setNotice("The agent is executing the approved PoC. Evidence appears live.");
+      if (started.agent_run) {
+        void listFridaScriptProposals(started.agent_run)
+          .then(setFridaScriptProposals)
+          .catch(() => null);
+      }
       startPolling(started.id);
     } catch (requestError) {
       setError(errorMessage(requestError));
     } finally {
       setWorking("");
       refreshBudget();
+    }
+  }
+
+  async function handleGenerateFridaScriptProposal() {
+    if (!mission?.agent_run) return;
+    setWorking("frida-generate");
+    setError("");
+    setNotice("");
+    try {
+      const proposal = await generateFridaScriptProposal(mission.agent_run);
+      setFridaScriptProposals((items) => [
+        proposal,
+        ...items.filter((item) => item.id !== proposal.id),
+      ]);
+      setNotice("Frida script proposal generated. Review and approve it before hook execution.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+      refreshBudget();
+    }
+  }
+
+  async function handleApproveFridaScriptProposal(proposalId: number) {
+    if (!mission?.agent_run) return;
+    setWorking(`frida-approve-${proposalId}`);
+    setError("");
+    setNotice("");
+    try {
+      const proposal = await approveFridaScriptProposal(mission.agent_run, proposalId);
+      setFridaScriptProposals((items) => [
+        proposal,
+        ...items.filter((item) => item.id !== proposal.id),
+      ]);
+      setNotice("Frida script approved. Resume the agent when you are ready.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleRejectFridaScriptProposal(proposalId: number) {
+    if (!mission?.agent_run) return;
+    setWorking(`frida-reject-${proposalId}`);
+    setError("");
+    setNotice("");
+    try {
+      const proposal = await rejectFridaScriptProposal(mission.agent_run, proposalId);
+      setFridaScriptProposals((items) => [
+        proposal,
+        ...items.filter((item) => item.id !== proposal.id),
+      ]);
+      setNotice("Frida script rejected. Generate a revised proposal if instrumentation is still needed.");
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
+    }
+  }
+
+  async function handleResumeAdaptiveRun() {
+    if (!mission?.agent_run) return;
+    setWorking("frida-resume");
+    setError("");
+    setNotice("");
+    try {
+      await resumeAdaptiveAgentRun(mission.agent_run);
+      const refreshed = await getFindingValidationMission(mission.id);
+      setMission(refreshed);
+      setNextStep("monitor");
+      setNotice("Agent resumed with the approved assessment boundary.");
+      startPolling(mission.id);
+    } catch (requestError) {
+      setError(errorMessage(requestError));
+    } finally {
+      setWorking("");
     }
   }
 
@@ -905,6 +1066,7 @@ export function DynamicValidationHome() {
         <CorrelationResults
           correlation={correlation}
           gapReport={gapReport}
+          selectedPackage={selectedPackage}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           canOperate={canOperate}
@@ -912,6 +1074,7 @@ export function DynamicValidationHome() {
           correlating={correlating}
           staticFindingCount={staticFindingCount}
           onStartPoc={(candidate) => void handleStartPoc(candidate)}
+          onStartPlaybook={(playbookId) => void handleStartPlaybook(playbookId)}
           onViewCandidateEvidence={(candidate) =>
             void handleViewCandidateEvidence(candidate)
           }
@@ -928,6 +1091,19 @@ export function DynamicValidationHome() {
           onApprove={() => void handleApprovePoc()}
           onRun={() => void handleRunPoc()}
           onBack={handleBackToCandidates}
+        />
+      ) : null}
+
+      {mission?.agent_run && mission.allowed_capabilities.includes("frida_run_js") ? (
+        <PocFridaApprovalPanel
+          mission={mission}
+          proposals={fridaScriptProposals}
+          canOperate={canOperate}
+          working={working}
+          onGenerate={() => void handleGenerateFridaScriptProposal()}
+          onApprove={(proposalId) => void handleApproveFridaScriptProposal(proposalId)}
+          onReject={(proposalId) => void handleRejectFridaScriptProposal(proposalId)}
+          onResume={() => void handleResumeAdaptiveRun()}
         />
       ) : null}
 
@@ -983,6 +1159,7 @@ export function DynamicValidationHome() {
 function CorrelationResults({
   correlation,
   gapReport,
+  selectedPackage,
   activeTab,
   onTabChange,
   canOperate,
@@ -990,11 +1167,13 @@ function CorrelationResults({
   correlating,
   staticFindingCount,
   onStartPoc,
+  onStartPlaybook,
   onViewCandidateEvidence,
   onReanalyze,
 }: {
   correlation: StaticDynamicCorrelation;
   gapReport: CapabilityGapReport | null;
+  selectedPackage: string;
   activeTab: ResultTab;
   onTabChange: (tab: ResultTab) => void;
   canOperate: boolean;
@@ -1002,6 +1181,9 @@ function CorrelationResults({
   correlating: boolean;
   staticFindingCount: number | null;
   onStartPoc: (candidate: CorrelationCandidate) => void;
+  onStartPlaybook: (
+    playbookId: "ROOT_DETECTION_SCREEN_VALIDATION" | "TLS_PINNING_FRIDA_BYPASS",
+  ) => void;
   onViewCandidateEvidence: (candidate: CorrelationCandidate) => void;
   onReanalyze: () => void;
 }) {
@@ -1088,6 +1270,13 @@ function CorrelationResults({
           gapReport={gapReport}
         />
       ) : null}
+
+      <AuditorPlaybooksPanel
+        selectedPackage={selectedPackage}
+        canOperate={canOperate}
+        working={working}
+        onStartPlaybook={onStartPlaybook}
+      />
     </section>
   );
 }
@@ -1126,6 +1315,73 @@ function CapabilityGapsPanel({
           ) : null}
         </div>
       ) : null}
+    </Card>
+  );
+}
+
+function AuditorPlaybooksPanel({
+  selectedPackage,
+  canOperate,
+  working,
+  onStartPlaybook,
+}: {
+  selectedPackage: string;
+  canOperate: boolean;
+  working: string;
+  onStartPlaybook: (
+    playbookId: "ROOT_DETECTION_SCREEN_VALIDATION" | "TLS_PINNING_FRIDA_BYPASS",
+  ) => void;
+}) {
+  const supported = selectedPackage === "owasp.sat.agoat";
+  return (
+    <Card className="dynamic-home-gaps-card" title="Live assessment playbooks">
+      <p className="muted">
+        Auditor-selectable live assessments that exercise Frida-backed runtime manipulation with bounded evidence collection.
+      </p>
+      {!supported ? (
+        <div className="agent-waiting-state">
+          <strong>AndroGoat demo package required</strong>
+          <p>These two playbooks are currently restricted to the authorized AndroGoat demo application.</p>
+        </div>
+      ) : null}
+      <div className="dynamic-candidate-grid">
+        {AUDITOR_PLAYBOOKS.map((playbook) => (
+          <article className="dynamic-candidate-card" key={playbook.id}>
+            <header>
+              <span className="classification-chip classification-optional">
+                Live playbook
+              </span>
+              <strong>{playbook.title}</strong>
+              <small>{playbook.id}</small>
+            </header>
+            <div className="candidate-detail">
+              <span className="eyebrow">What the agent proves</span>
+              <p>{playbook.summary}</p>
+            </div>
+            <div className="candidate-detail">
+              <span className="eyebrow">Expected evidence</span>
+              <div className="planner-chip-list">
+                {playbook.evidence.map((item) => (
+                  <span key={item} className="planner-evidence-chip">
+                    {item}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="candidate-actions">
+              <button
+                className="button button-primary"
+                onClick={() => onStartPlaybook(playbook.id)}
+                disabled={!supported || !canOperate || Boolean(working)}
+              >
+                {working === `playbook-${playbook.id}`
+                  ? "Preparing assessment…"
+                  : "Start assessment"}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
     </Card>
   );
 }
@@ -1302,13 +1558,19 @@ function PocMissionReview({
   const evidenceTypes = Array.isArray(contract.required_evidence_types)
     ? (contract.required_evidence_types as string[])
     : [];
+  const missionTitle =
+    mission.playbook_id === "ROOT_DETECTION_SCREEN_VALIDATION"
+      ? "Root detection manipulation"
+      : mission.playbook_id === "TLS_PINNING_FRIDA_BYPASS"
+        ? "TLS pinning bypass"
+        : mission.finding_title;
   return (
     <Card className="dynamic-home-review-card" title="Step 3 · Review the PoC">
       <div className="mission-review-card">
         <span className={`validation-status-badge status-${mission.status.toLowerCase()}`}>
           {mission.result_label || mission.status}
         </span>
-        <h3>{mission.finding_title}</h3>
+        <h3>{missionTitle}</h3>
         <p>{mission.hypothesis || "The PoC planning agent prepared a bounded validation plan for this finding."}</p>
         <dl className="dynamic-home-facts">
           <div><dt>Finding</dt><dd>{mission.finding_rule_id} · {mission.finding_severity}</dd></div>
@@ -1380,6 +1642,139 @@ function PocMissionReview({
         <button className="button button-secondary" onClick={onBack}>
           Back to candidates
         </button>
+      </div>
+    </Card>
+  );
+}
+
+function PocFridaApprovalPanel({
+  mission,
+  proposals,
+  canOperate,
+  working,
+  onGenerate,
+  onApprove,
+  onReject,
+  onResume,
+}: {
+  mission: FindingValidationMission;
+  proposals: FridaScriptProposal[];
+  canOperate: boolean;
+  working: string;
+  onGenerate: () => void;
+  onApprove: (proposalId: number) => void;
+  onReject: (proposalId: number) => void;
+  onResume: () => void;
+}) {
+  const latest = proposals[0] || null;
+  const approved = proposals.find((proposal) => proposal.status === "APPROVED");
+  const failed = proposals.find((proposal) => proposal.status === "FAILED");
+  const pausedForReview = mission.agent_run_status === "PAUSED";
+  return (
+    <Card className="dynamic-home-review-card frida-approval-card" title="Frida instrumentation approval">
+      <div className="mission-review-card">
+        <span className={`validation-status-badge status-${(latest?.status || "generated").toLowerCase()}`}>
+          {latest ? titleCaseLabel(latest.status) : "No script proposal"}
+        </span>
+        <h3>Auditor-approved Frida hook required for generated scripts</h3>
+        <p>
+          The agent may propose Frida JavaScript, but MSAP will not run generated
+          hooks until an auditor approves the exact script hash.
+        </p>
+        <dl className="dynamic-home-facts">
+          <div><dt>Target</dt><dd className="mono">{mission.target_package}</dd></div>
+          <div><dt>Run</dt><dd>{mission.agent_run ? `#${mission.agent_run}` : "Not started"}</dd></div>
+          <div><dt>Approved script</dt><dd>{approved ? approved.source_sha256.slice(0, 16) + "…" : "None"}</dd></div>
+          <div><dt>Run state</dt><dd>{mission.agent_run_status || mission.status}</dd></div>
+        </dl>
+      </div>
+
+      {failed ? (
+        <div className="alert alert-warning" role="status">
+          <strong>Generated Frida script failed during execution.</strong>
+          <span>{failed.last_error || "The gateway recorded a bounded Frida execution failure."}</span>
+          <span>{failed.suggested_fix || "Generate a narrower script and approve the revised hook."}</span>
+        </div>
+      ) : null}
+
+      {latest ? (
+        <div className="mission-review-grid">
+          <section>
+            <h4>{latest.title}</h4>
+            <p>{latest.rationale}</p>
+            <dl className="dynamic-home-facts">
+              <div><dt>Provider</dt><dd>{latest.generator_provider} {latest.generator_model ? `· ${latest.generator_model}` : ""}</dd></div>
+              <div><dt>Hash</dt><dd className="mono">{latest.source_sha256.slice(0, 24)}…</dd></div>
+              <div><dt>Size</dt><dd>{latest.source_size_bytes} bytes</dd></div>
+              <div><dt>Status</dt><dd>{titleCaseLabel(latest.status)}</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h4>Expected evidence</h4>
+            <ul className="poc-plan-list">
+              {(latest.expected_evidence || []).length
+                ? latest.expected_evidence.map((item) => <li key={item}>{item}</li>)
+                : <li>Bounded Frida event and script hash.</li>}
+            </ul>
+            {latest.validation_warnings.length ? (
+              <>
+                <h4>Warnings</h4>
+                <ul className="poc-plan-list">
+                  {latest.validation_warnings.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </>
+            ) : null}
+          </section>
+        </div>
+      ) : (
+        <div className="agent-waiting-state">
+          <strong>No generated Frida script proposal yet</strong>
+          <p>Generate a proposal when the running assessment needs custom instrumentation.</p>
+        </div>
+      )}
+
+      {latest ? (
+        <details className="plan-details-disclosure">
+          <summary>Review script before approval</summary>
+          <pre>{latest.source_code}</pre>
+        </details>
+      ) : null}
+
+      <div className="auditor-stage-actions">
+        <button
+          className="button button-secondary"
+          onClick={onGenerate}
+          disabled={!canOperate || Boolean(working) || !mission.agent_run}
+        >
+          {working === "frida-generate" ? "Generating…" : latest ? "Generate Revised Script" : "Generate Frida Script"}
+        </button>
+        {latest?.status === "GENERATED" ? (
+          <>
+            <button
+              className="button button-primary button-prominent"
+              onClick={() => onApprove(latest.id)}
+              disabled={!canOperate || Boolean(working)}
+            >
+              {working === `frida-approve-${latest.id}` ? "Approving…" : "Approve Script Hook"}
+            </button>
+            <button
+              className="button button-secondary"
+              onClick={() => onReject(latest.id)}
+              disabled={!canOperate || Boolean(working)}
+            >
+              {working === `frida-reject-${latest.id}` ? "Rejecting…" : "Reject Script"}
+            </button>
+          </>
+        ) : null}
+        {pausedForReview && approved ? (
+          <button
+            className="button button-primary button-prominent"
+            onClick={onResume}
+            disabled={!canOperate || Boolean(working)}
+          >
+            {working === "frida-resume" ? "Resuming…" : "Resume Agent"}
+          </button>
+        ) : null}
       </div>
     </Card>
   );
@@ -1590,6 +1985,11 @@ function EvidenceCard({
   if (sha && kind !== "screenshot") genericRows.push(["SHA-256", sha]);
 
   const title = item.evidence_title || evidenceTypeLabel(item.evidence_type);
+  const aiConclusion = (item.ai_conclusion || "").trim();
+  const aiImpact = (item.ai_security_impact || "").trim();
+  const aiStrength = (item.ai_evidence_strength || "").trim();
+  const aiStatus = (item.ai_explanation_status || "").trim();
+  const aiProvider = (item.ai_explanation_provider || "").trim();
 
   return (
     <article className="evidence-card">
@@ -1632,6 +2032,23 @@ function EvidenceCard({
       ) : null}
 
       <p className="evidence-summary">{humanEvidenceSummary(item)}</p>
+      {aiConclusion ? (
+        <p className="evidence-ai-conclusion">
+          <strong>Conclusion:</strong> {aiConclusion}
+        </p>
+      ) : null}
+      {aiImpact ? (
+        <p className="evidence-ai-impact">
+          <strong>Why it matters:</strong> {aiImpact}
+        </p>
+      ) : null}
+      {aiStatus ? (
+        <p className="muted evidence-ai-meta">
+          AI explanation: {aiStatus.toLowerCase()}
+          {aiProvider ? ` · ${aiProvider}` : ""}
+          {aiStrength ? ` · ${titleCaseLabel(aiStrength.toLowerCase())}` : ""}
+        </p>
+      ) : null}
       {toolName ? (
         <p className="muted evidence-tool">Related tool: {toolName}</p>
       ) : null}

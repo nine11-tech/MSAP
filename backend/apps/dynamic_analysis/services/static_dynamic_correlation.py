@@ -236,14 +236,31 @@ def scenario_summary_for_mission(mission: FindingValidationMission) -> str:
     return f"{len(steps)}-step PoC with approved Tool Gateway capabilities."
 
 
-def _latest_mission_for_finding(
+def _best_mission_for_finding(
     missions: list[FindingValidationMission],
     finding_id: int,
+    playbook_id: str = "",
 ) -> FindingValidationMission | None:
-    for mission in missions:
-        if mission.finding_id == finding_id:
-            return mission
-    return None
+    relevant = [mission for mission in missions if mission.finding_id == finding_id]
+    if playbook_id:
+        matched = [mission for mission in relevant if mission.playbook_id == playbook_id]
+        if matched:
+            relevant = matched
+    if not relevant:
+        return None
+
+    terminal_confirmed = [
+        mission
+        for mission in relevant
+        if mission.status
+        in {
+            FindingValidationMission.Status.CONFIRMED,
+            FindingValidationMission.Status.NOT_REPRODUCED,
+        }
+    ]
+    if terminal_confirmed:
+        return terminal_confirmed[0]
+    return relevant[0]
 
 
 def _expected_evidence_labels(playbook: dict[str, Any]) -> list[str]:
@@ -464,7 +481,11 @@ def correlate_audit_findings(audit_id: int) -> dict[str, Any]:
         else:
             mapped = playbooks_for_finding(finding)
             playbook = mapped[0] if mapped else None
-        mission = _latest_mission_for_finding(missions, finding.pk)
+        mission = _best_mission_for_finding(
+            missions,
+            finding.pk,
+            playbook.get("playbook_id", "") if playbook is not None else "",
+        )
         candidate = _build_candidate(finding, playbook, mission)
         testability = candidate["dynamic_testability"]
         if testability == "ALREADY_VALIDATED":
@@ -517,10 +538,14 @@ def start_candidate_poc(
             code="CORRELATION_CANDIDATE_NOT_FOUND",
             http_status=404,
         )
-    mission = (
-        FindingValidationMission.objects.filter(finding=finding)
-        .order_by("-created_at")
-        .first()
+    mapped = executable_playbooks_for_finding(finding)
+    playbook = mapped[0] if mapped else (playbooks_for_finding(finding)[0] if playbooks_for_finding(finding) else None)
+    mission = _best_mission_for_finding(
+        list(
+            FindingValidationMission.objects.filter(finding=finding).order_by("-created_at")
+        ),
+        finding.id,
+        playbook.get("playbook_id", "") if playbook is not None else "",
     )
     if mission is None:
         mission = generate_finding_validation_mission(

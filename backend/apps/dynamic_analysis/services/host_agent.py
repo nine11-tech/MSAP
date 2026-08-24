@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -55,6 +56,11 @@ UI_DUMP_DEVICE_PATH = "/data/local/tmp/msap-ui-hierarchy.xml"
 MAX_LOGCAT_BYTES = 128 * 1024
 MAX_LOGCAT_LINES = 500
 MAX_LOGCAT_CAPTURES = 20
+MAX_PROXY_CAPTURES = 4
+MAX_PROXY_CAPTURE_SECONDS = 60
+MAX_PROXY_FLOW_BYTES = 8 * 1024 * 1024
+PROXY_CAPTURE_PORT = 18080
+PROXY_CAPTURE_DRAIN_SECONDS = 3
 SAFE_INPUT_TEXT_RE = re.compile(r"^[A-Za-z0-9 @._,:+!?/\-]{1,128}$")
 
 class HostAgentRequestError(ValueError):
@@ -73,6 +79,8 @@ class DynamicHostAgent:
         self.serial = serial or settings.MSAP_DYNAMIC_ADB_SERIAL
         self._logcat_captures: dict[str, dict] = {}
         self._capture_lock = threading.Lock()
+        self._proxy_captures: dict[str, dict] = {}
+        self._proxy_lock = threading.Lock()
 
     def health(self) -> dict:
         """Safe, structured lab status. No secrets, tokens, or raw environment."""
@@ -336,6 +344,260 @@ class DynamicHostAgent:
             capture_logcat=body.get("capture_logcat"),
             capture_screenshot=body.get("capture_screenshot"),
         )
+
+    def start_proxy_capture(self, body: dict) -> dict:
+        if set(body) != {"package_name", "max_seconds", "phase"}:
+            raise HostAgentRequestError(
+                "proxy-capture-start requires package_name, max_seconds, and phase."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        if package_name != "owasp.sat.agoat":
+            raise HostAgentRequestError(
+                "The TLS demo proxy capture is restricted to authorized AndroGoat.",
+                HTTPStatus.FORBIDDEN,
+            )
+        phase = body.get("phase")
+        if phase not in {"pinning_baseline", "pinning_bypass"}:
+            raise HostAgentRequestError("Invalid proxy capture phase.")
+        max_seconds = _bounded_integer(
+            body.get("max_seconds"), 5, MAX_PROXY_CAPTURE_SECONDS, "max_seconds"
+        )
+        self._require_installed_package(package_name)
+        with self._proxy_lock:
+            if any(item.get("status") == "RUNNING" for item in self._proxy_captures.values()):
+                raise HostAgentRequestError(
+                    "A bounded proxy capture is already running.", HTTPStatus.CONFLICT
+                )
+
+        mitmdump = Path(
+            os.getenv(
+                "MSAP_MITMDUMP_BIN",
+                str(Path(os.getenv("MSAP_MITMPROXY_VENV", "")) / "bin" / "mitmdump"),
+            )
+        ).resolve()
+        confdir_value = os.getenv("MSAP_MITMPROXY_CONF", "").strip()
+        confdir = Path(confdir_value).resolve() if confdir_value else None
+        if (
+            not mitmdump.is_file()
+            or not os.access(mitmdump, os.X_OK)
+            or (confdir is not None and not confdir.is_dir())
+        ):
+            raise HostAgentRequestError(
+                "Managed mitmproxy runtime is unavailable.",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+
+        capture_id = uuid4().hex
+        runtime_root = Path.home() / ".local" / "share" / "msap-dynamic" / "agent" / "proxy"
+        capture_dir = runtime_root / capture_id
+        capture_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+        flows_path = capture_dir / "target.flows"
+        mitm_log = (capture_dir / "mitmdump.log").open("wb")
+        bridge_log = (capture_dir / "bridge.log").open("wb")
+        wsl_ip = self._wsl_eth0_ip()
+        mitm_command = [
+            str(mitmdump),
+            "--set",
+            "block_global=false",
+            "--listen-host",
+            wsl_ip,
+            "--listen-port",
+            str(PROXY_CAPTURE_PORT),
+            "--mode",
+            "regular",
+            "-w",
+            str(flows_path),
+        ]
+        if confdir is not None:
+            mitm_command[1:1] = ["--set", f"confdir={confdir}"]
+        bridge_command = (
+            "$ErrorActionPreference='Stop';"
+            f"$listener=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse('127.0.0.1'),{PROXY_CAPTURE_PORT});"
+            "$listener.Start();"
+            "try { while ($true) { $client=$listener.AcceptTcpClient();"
+            "$upstream=[System.Net.Sockets.TcpClient]::new();"
+            f"try {{ $upstream.Connect('{wsl_ip}',{PROXY_CAPTURE_PORT});"
+            "$clientStream=$client.GetStream();"
+            "$upstreamStream=$upstream.GetStream();"
+            "$copyOne=$clientStream.CopyToAsync($upstreamStream);"
+            "$copyTwo=$upstreamStream.CopyToAsync($clientStream);"
+            "[System.Threading.Tasks.Task]::WaitAny($copyOne,$copyTwo)|Out-Null"
+            "} finally { $client.Close(); $upstream.Close() } } } finally { $listener.Stop() }"
+        )
+        try:
+            mitm_process = subprocess.Popen(
+                mitm_command,
+                shell=False,
+                stdout=mitm_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            self._wait_for_tcp(wsl_ip, PROXY_CAPTURE_PORT, 10)
+            bridge_process = subprocess.Popen(
+                [
+                    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-Command", bridge_command,
+                ],
+                shell=False,
+                stdout=bridge_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            time.sleep(1.0)
+            proxy_result = self._run_adb(
+                "shell", "settings", "put", "global", "http_proxy",
+                f"10.0.2.2:{PROXY_CAPTURE_PORT}", timeout_seconds=10,
+            )
+            if proxy_result["return_code"] != 0:
+                raise HostAgentRequestError("Android proxy routing could not be enabled.")
+        except Exception:
+            for process in (locals().get("bridge_process"), locals().get("mitm_process")):
+                if process is not None and process.poll() is None:
+                    process.terminate()
+            mitm_log.close()
+            bridge_log.close()
+            raise
+
+        capture = {
+            "capture_id": capture_id,
+            "package_name": package_name,
+            "phase": phase,
+            "status": "RUNNING",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "max_seconds": max_seconds,
+            "flows_path": flows_path,
+            "mitm_process": mitm_process,
+            "bridge_process": bridge_process,
+            "mitm_log": mitm_log,
+            "bridge_log": bridge_log,
+            "summary": {},
+        }
+        with self._proxy_lock:
+            while len(self._proxy_captures) >= MAX_PROXY_CAPTURES:
+                oldest = next(iter(self._proxy_captures))
+                self._proxy_captures.pop(oldest, None)
+            self._proxy_captures[capture_id] = capture
+        timer = threading.Timer(max_seconds, self._expire_proxy_capture, args=(capture_id,))
+        timer.daemon = True
+        capture["timer"] = timer
+        timer.start()
+        return {
+            "success": True,
+            "status": "PASS",
+            "capture_id": capture_id,
+            "phase": phase,
+            "started_at": capture["started_at"],
+            "max_seconds": max_seconds,
+            "proxy": f"10.0.2.2:{PROXY_CAPTURE_PORT}",
+        }
+
+    def stop_proxy_capture(self, body: dict) -> dict:
+        if set(body) != {"capture_id"} or not re.fullmatch(r"[a-f0-9]{32}", str(body.get("capture_id") or "")):
+            raise HostAgentRequestError("proxy-capture-stop requires a valid capture_id.")
+        capture_id = str(body["capture_id"])
+        with self._proxy_lock:
+            capture = self._proxy_captures.get(capture_id)
+        if capture is None:
+            raise HostAgentRequestError("Unknown proxy capture_id.", HTTPStatus.NOT_FOUND)
+        if capture["status"] == "RUNNING":
+            time.sleep(PROXY_CAPTURE_DRAIN_SECONDS)
+            self._run_adb(
+                "shell", "settings", "put", "global", "http_proxy", ":0",
+                timeout_seconds=10,
+            )
+            timer = capture.get("timer")
+            if timer is not None:
+                timer.cancel()
+            for key in ("bridge_process", "mitm_process"):
+                process = capture[key]
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+            capture["mitm_log"].close()
+            capture["bridge_log"].close()
+            capture["summary"] = self._summarize_proxy_capture(capture)
+            capture["status"] = "STOPPED"
+            capture["stopped_at"] = datetime.now(timezone.utc).isoformat()
+        return {
+            "success": True,
+            "status": "PASS",
+            "capture_id": capture_id,
+            "phase": capture["phase"],
+            "stopped": True,
+            **capture["summary"],
+        }
+
+    def get_proxy_flows(self, body: dict) -> dict:
+        if set(body) != {"capture_id"} or not re.fullmatch(r"[a-f0-9]{32}", str(body.get("capture_id") or "")):
+            raise HostAgentRequestError("proxy-flows requires a valid capture_id.")
+        with self._proxy_lock:
+            capture = self._proxy_captures.get(str(body["capture_id"]))
+        if capture is None:
+            raise HostAgentRequestError("Unknown proxy capture_id.", HTTPStatus.NOT_FOUND)
+        if capture["status"] == "RUNNING":
+            raise HostAgentRequestError("Stop the proxy capture before reading flows.", HTTPStatus.CONFLICT)
+        return {
+            "success": True,
+            "status": "PASS",
+            "capture_id": capture["capture_id"],
+            "phase": capture["phase"],
+            **capture["summary"],
+        }
+
+    def _summarize_proxy_capture(self, capture: dict) -> dict:
+        flows_path = capture["flows_path"]
+        if not flows_path.exists():
+            return {"flow_count": 0, "successful_tls_flow_count": 0, "flows": [], "redaction_applied": True}
+        if flows_path.stat().st_size > MAX_PROXY_FLOW_BYTES:
+            flows_path.unlink(missing_ok=True)
+            raise HostAgentRequestError("Bounded proxy capture exceeded its size limit.")
+        helper = settings.BASE_DIR.parent / "scripts" / "dynamic-lab" / "helpers" / "mitm-target-flow-summary.py"
+        mitmdump = Path(
+            os.getenv(
+                "MSAP_MITMDUMP_BIN",
+                str(Path(os.getenv("MSAP_MITMPROXY_VENV", "")) / "bin" / "mitmdump"),
+            )
+        ).resolve()
+        command = [str(mitmdump), "-nr", str(flows_path), "-s", str(helper)]
+        confdir_value = os.getenv("MSAP_MITMPROXY_CONF", "").strip()
+        if confdir_value:
+            command[1:1] = ["--set", f"confdir={confdir_value}"]
+        result = self._run_command(command, timeout_seconds=20)
+        flows_path.unlink(missing_ok=True)
+        marker = "MSAP_TARGET_FLOW_SUMMARY="
+        payload = next((line[len(marker):] for line in result.get("stdout_preview", "").splitlines() if line.startswith(marker)), "")
+        try:
+            summary = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            summary = {"flow_count": 0, "successful_tls_flow_count": 0, "flows": [], "truncated": False}
+        return {**summary, "redaction_applied": True, "raw_flow_retained": False}
+
+    def _expire_proxy_capture(self, capture_id: str) -> None:
+        try:
+            self.stop_proxy_capture({"capture_id": capture_id})
+        except Exception:
+            logger.exception("bounded_proxy_capture_cleanup_failed capture_id=%s", capture_id)
+
+    @staticmethod
+    def _wait_for_tcp(host: str, port: int, timeout_seconds: int) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    return
+            except OSError:
+                time.sleep(0.2)
+        raise HostAgentRequestError("Managed mitmproxy did not become ready.")
+
+    def _wsl_eth0_ip(self) -> str:
+        result = self._run_command(["ip", "-o", "-4", "addr", "show", "eth0"], timeout_seconds=5)
+        match = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)/", result.get("stdout_preview", ""))
+        if not match:
+            raise HostAgentRequestError("WSL proxy interface address is unavailable.")
+        return match.group(1)
 
     def _frida_runtime(self) -> FridaRuntime:
         return FridaRuntime(
@@ -731,6 +993,34 @@ class DynamicHostAgent:
             "status": "PASS",
             "package_name": package_name,
             "reset": True,
+            "marker_path": ROOT_DETECTION_DEMO_MARKER,
+        }
+
+    def prepare_root_detection_demo(self, body: dict) -> dict:
+        """Create only the fixed AndroGoat lab signal for the rooted baseline."""
+        if set(body) != {"package_name"}:
+            raise HostAgentRequestError(
+                "root-detection-demo-prepare requires only package_name."
+            )
+        package_name = self._validated_package(body.get("package_name"))
+        if package_name != "owasp.sat.agoat":
+            raise HostAgentRequestError(
+                "The root-detection demo preparation is restricted to authorized AndroGoat.",
+                HTTPStatus.FORBIDDEN,
+            )
+        self._require_installed_package(package_name)
+        result = self._run_adb(
+            "shell", "touch", ROOT_DETECTION_DEMO_MARKER, timeout_seconds=10
+        )
+        if result["return_code"] != 0:
+            raise HostAgentRequestError(
+                "The fixed AndroGoat rooted baseline could not be prepared."
+            )
+        return {
+            "success": True,
+            "status": "PASS",
+            "package_name": package_name,
+            "rooted_baseline_prepared": True,
             "marker_path": ROOT_DETECTION_DEMO_MARKER,
         }
 
@@ -1166,6 +1456,12 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                     self.server.agent.reset_root_detection_demo(self._read_json_body()),
                 )
                 return
+            if path == "/actions/root-detection-demo-prepare":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.prepare_root_detection_demo(self._read_json_body()),
+                )
+                return
             if path == "/actions/frida-ps":
                 self._send_json(
                     HTTPStatus.OK,
@@ -1182,6 +1478,24 @@ class DynamicHostAgentRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     HTTPStatus.OK,
                     self.server.agent.frida_run_js(self._read_json_body()),
+                )
+                return
+            if path == "/actions/proxy-capture-start":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.start_proxy_capture(self._read_json_body()),
+                )
+                return
+            if path == "/actions/proxy-capture-stop":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.stop_proxy_capture(self._read_json_body()),
+                )
+                return
+            if path == "/actions/proxy-flows":
+                self._send_json(
+                    HTTPStatus.OK,
+                    self.server.agent.get_proxy_flows(self._read_json_body()),
                 )
                 return
             if path == "/actions/launch-exported-activity":

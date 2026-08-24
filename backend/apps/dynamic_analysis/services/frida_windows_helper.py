@@ -58,7 +58,7 @@ def run_script(args: list[str]) -> int:
     def emit(message, _data):
         if message.get("type") == "send":
             payload = message.get("payload")
-            if isinstance(payload, dict) and payload.get("type") == "root_detection_native_hooks_installed":
+            if isinstance(payload, dict) and payload.get("type") == "root_detection_bypass_hooks_installed":
                 adb = os.getenv("MSAP_WINDOWS_ADB_PATH", r"C:\Users\lenovo\AppData\Local\Android\Sdk\platform-tools\adb.exe")
                 try:
                     subprocess.run(

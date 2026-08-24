@@ -51,6 +51,7 @@ from apps.dynamic_analysis.services.finding_validation_missions import (
     create_mission_from_poc_plan,
 )
 from apps.findings.models import Finding
+from apps.normalization.models import NormalizedArtifact
 from apps.projects.models import Project
 
 
@@ -85,10 +86,10 @@ def audit_with_apk(db):
     return audit, apk
 
 
-def _component_finding(audit):
+def _component_finding(audit, *, rule_id="MASVS-PLATFORM-EXPORTED-001"):
     return Finding.objects.create(
         audit=audit,
-        rule_id="MASVS-PLATFORM-EXPORTED-001",
+        rule_id=rule_id,
         title="Exported activity exposure",
         severity="Medium",
         category="MASVS-PLATFORM",
@@ -112,6 +113,46 @@ def _candidate(finding, **overrides):
     }
     candidate.update(overrides)
     return candidate
+
+
+def _add_component_manifest(audit, apk):
+    NormalizedArtifact.objects.create(
+        audit=audit,
+        apk_file=apk,
+        artifact_type=NormalizedArtifact.ArtifactType.MANIFEST,
+        source="poc-planning-test",
+        normalized_data={
+            "package_name": apk.package_name,
+            "components": [
+                {
+                    "type": "activity",
+                    "name": "owasp.sat.agoat.ExportedActivity",
+                    "exported": True,
+                    "permission": None,
+                    "intent_filters": [],
+                },
+                {
+                    "type": "receiver",
+                    "name": "owasp.sat.agoat.ExportedReceiver",
+                    "exported": True,
+                    "permission": None,
+                    "intent_filters": [
+                        {"actions": ["owasp.sat.agoat.ACTION_TEST"], "categories": []}
+                    ],
+                },
+                {
+                    "type": "provider",
+                    "name": "owasp.sat.agoat.ExportedProvider",
+                    "exported": True,
+                    "permission": None,
+                    "read_permission": None,
+                    "write_permission": None,
+                    "authorities": "owasp.sat.agoat.provider",
+                    "intent_filters": [],
+                },
+            ],
+        },
+    )
 
 
 @override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
@@ -288,3 +329,120 @@ def test_not_testable_classification_raises(audit_with_apk, analyst):
         )
     assert exc_info.value.code == "POC_PLANNING_NOT_AVAILABLE"
     assert exc_info.value.http_status == 409
+
+
+@pytest.mark.parametrize(
+    ("rule_id", "component_tool", "likely_capabilities"),
+    [
+        ("MSAP-AND-004", "launch_exported_activity", ["frida_status", "launch_exported_activity"]),
+        ("MSAP-AND-006", "send_explicit_broadcast", ["frida_status", "send_explicit_broadcast"]),
+        ("MSAP-AND-007", "query_exported_provider", ["frida_status", "query_exported_provider"]),
+    ],
+)
+@override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
+def test_component_poc_planner_excludes_frida_for_reachability_rules(
+    audit_with_apk,
+    analyst,
+    rule_id,
+    component_tool,
+    likely_capabilities,
+):
+    audit, apk = audit_with_apk
+    _add_component_manifest(audit, apk)
+    finding = _component_finding(audit, rule_id=rule_id)
+
+    result = build_poc_plan(
+        finding=finding,
+        candidate=_candidate(
+            finding,
+            likely_capabilities=[*likely_capabilities, "take_screenshot"],
+        ),
+        requested_by=analyst,
+    )
+
+    tools = {
+        tool["name"]
+        for step in result["canonical_plan"]["steps"]
+        for tool in step["tools"]
+    }
+    assert component_tool in tools
+    assert tools.isdisjoint(
+        {"frida_status", "frida_ps", "frida_setup", "frida_attach", "frida_run_js"}
+    )
+
+
+@override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="OPENAI")
+def test_component_poc_filters_frida_from_provider_output(audit_with_apk, analyst):
+    audit, apk = audit_with_apk
+    _add_component_manifest(audit, apk)
+    finding = _component_finding(audit, rule_id="MSAP-AND-006")
+
+    class FakeProvider:
+        name = "OPENAI"
+        model = "fake-poc-planner"
+        last_metadata = {"provider_request_sent": False}
+
+    raw_plan = {
+        "hypothesis": "The exported receiver is reachable at runtime.",
+        "objective": "Validate exported receiver reachability with bounded tools.",
+        "scope": "Use only approved Tool Gateway capabilities against the authorized package.",
+        "steps": [
+            {
+                "sequence": 1,
+                "step_id": "bad_frida_probe",
+                "objective": "Check instrumentation even though it is unrelated.",
+                "rationale": "Frida is not needed for component reachability.",
+                "tools": [{"name": "frida_status", "arguments": {"package_name": apk.package_name}}],
+                "expected_observation": "Frida status is returned.",
+                "success_condition": "Frida is reachable.",
+                "evidence_requirements": ["tool_output"],
+                "dependencies": [],
+            },
+            {
+                "sequence": 2,
+                "step_id": "broadcast_receiver",
+                "objective": "Send an explicit broadcast to the exported receiver.",
+                "rationale": "The manifest receiver can be exercised without instrumentation.",
+                "tools": [
+                    {
+                        "name": "send_explicit_broadcast",
+                        "arguments": {
+                            "package_name": apk.package_name,
+                            "receiver_name": "owasp.sat.agoat.ExportedReceiver",
+                            "action": "owasp.sat.agoat.ACTION_TEST",
+                        },
+                    }
+                ],
+                "expected_observation": "Broadcast delivery is observed.",
+                "success_condition": "The receiver delivery is target-correlated.",
+                "evidence_requirements": ["tool_output"],
+                "dependencies": [],
+            },
+        ],
+        "expected_outcomes": [],
+    }
+
+    with patch(
+        "apps.dynamic_analysis.services.poc_planning_agent.configured_planner_provider",
+        return_value=FakeProvider(),
+    ), patch(
+        "apps.dynamic_analysis.services.poc_planning_agent._provider_call",
+        return_value=raw_plan,
+    ):
+        result = build_poc_plan(
+            finding=finding,
+            candidate=_candidate(
+                finding,
+                likely_capabilities=["frida_status", "send_explicit_broadcast"],
+            ),
+            requested_by=analyst,
+        )
+
+    tools = [
+        tool["name"]
+        for step in result["canonical_plan"]["steps"]
+        for tool in step["tools"]
+    ]
+    assert result["mode"] == "AI_AGENT"
+    assert "send_explicit_broadcast" in tools
+    assert "frida_status" not in tools

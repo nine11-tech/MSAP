@@ -59,7 +59,7 @@ from apps.dynamic_analysis.services.assessment_plan_contract import (
 from apps.evidence.models import Evidence
 from apps.findings.models import Finding
 from apps.normalization.models import NormalizedArtifact
-from apps.dynamic_analysis.services.playbook_catalog import list_playbooks, playbooks_for_rule, playbooks_for_objective, playbooks_for_finding
+from apps.dynamic_analysis.services.playbook_catalog import get_playbook, list_playbooks, playbooks_for_rule, playbooks_for_objective, playbooks_for_finding
 from apps.dynamic_analysis.services.playbook_authorization import authorize_manifest_component, authorize_provider_authority
 from apps.dynamic_analysis.models import DynamicValidationResult
 from apps.dynamic_analysis.services.dynamic_validation_scenario import scenario_from_finding
@@ -519,26 +519,54 @@ def _deterministic_lab_playbook_plan(planner_input: dict[str, Any]) -> dict[str,
 
 
 def _deterministic_root_screen_plan(planner_input: dict[str, Any]) -> dict[str, Any] | None:
-    """Build the no-elevation AndroGoat root-control observation plan."""
+    """Build the AndroGoat rooted-to-not-rooted Frida proof."""
     control = planner_input.get("trusted_control", planner_input)
     findings = planner_input.get("untrusted_observations", {}).get("static_findings", [])
     matches = playbooks_for_finding(findings[0]) if findings else []
     playbook = next((item for item in matches if item["playbook_id"] == "ROOT_DETECTION_SCREEN_VALIDATION"), None)
+    if playbook is None and "root detection manipulation" in str(control.get("assessment_objective") or "").lower():
+        playbook = get_playbook("ROOT_DETECTION_SCREEN_VALIDATION")
     if playbook is None:
         return None
     package_name = control["target_package"]
     audit_id = control["audit"]["id"]
     source_id = "__MSAP_ROOT_DETECTION_NATIVE_HOOK_TEMPLATE__"
     return {"target_package": package_name, "assessment_objective": control.get("assessment_objective", ""), "scope": control["scope"], "steps": [
-        {"sequence": 1, "step_id": "reset_root_detection_demo", "objective": "Reset the fixed AndroGoat root-detection lab signal before the baseline.", "rationale": "This backend-owned precondition removes only /data/local/su on authorized AndroGoat so repeated demos always begin from the real unrooted screen.", "tools": [{"name": "reset_root_detection_demo", "arguments": {"package_name": package_name}}], "expected_observation": "The fixed lab marker is absent.", "success_condition": "The authorized demo signal is reset.", "evidence_requirements": ["tool_output"], "dependencies": []},
-        {"sequence": 2, "step_id": "launch_root_control_target", "objective": "Launch the authorized AndroGoat target.", "rationale": "ROOT_DETECTION_SCREEN_VALIDATION launches only the package authorized by this audit.", "tools": [{"name": "launch_package", "arguments": {"package_name": package_name}}], "expected_observation": "AndroGoat is foregrounded.", "success_condition": "The target package is running.", "evidence_requirements": ["tool_output"], "dependencies": ["reset_root_detection_demo"]},
-        {"sequence": 3, "step_id": "open_root_detection_screen", "objective": "Open AndroGoat's fixed root-detection control screen.", "rationale": "ROOT_DETECTION_SCREEN_VALIDATION uses a backend-owned navigation coordinate; the model cannot select a different target or coordinate.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 1550, "reason": "manual_navigation"}}], "expected_observation": "The root-detection control is visible.", "success_condition": "The bounded navigation action completes on the authorized target.", "evidence_requirements": ["tool_output"], "dependencies": ["launch_root_control_target"]},
-        {"sequence": 4, "step_id": "click_check_root_baseline", "objective": "Click Check Root and expose AndroGoat's unmodified result.", "rationale": "The fixed AndroGoat Check Root control is clicked before instrumentation to establish the real baseline.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 802, "reason": "manual_navigation"}}], "expected_observation": "AndroGoat displays Device is not rooted.", "success_condition": "The bounded Check Root action completes.", "evidence_requirements": ["tool_output"], "dependencies": ["open_root_detection_screen"]},
-        {"sequence": 5, "step_id": "capture_root_detection_before", "objective": "Capture the real Device is not rooted baseline screenshot.", "rationale": "This stored PNG is the before image required by the auditor; no result is inferred from model text.", "tools": [{"name": "take_screenshot", "arguments": {"capture_reason": "instrumentation_before", "audit_id": audit_id}}], "expected_observation": "A target-correlated baseline screenshot is stored.", "success_condition": "The before artifact is available.", "evidence_requirements": ["screenshot"], "dependencies": ["click_check_root_baseline"]},
-        {"sequence": 6, "step_id": "dismiss_root_baseline", "objective": "Dismiss the baseline dialog before instrumentation.", "rationale": "The fixed Android dialog button closes only the already-observed baseline result.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 890, "y": 1360, "reason": "manual_navigation"}}], "expected_observation": "The root-detection screen is visible again.", "success_condition": "The baseline dialog is dismissed.", "evidence_requirements": ["tool_output"], "dependencies": ["capture_root_detection_before"]},
-        {"sequence": 7, "step_id": "install_root_detection_hooks", "objective": "Install the approved Frida native root-signal hooks and rerun Check Root while they remain attached.", "rationale": "ROOT_DETECTION_SCREEN_VALIDATION accepts only the backend-owned native hook template; the bounded bridge clicks the fixed Check Root control after hooks are live.", "tools": [{"name": "frida_run_js", "arguments": {"package_name": package_name, "mode": "attach", "source": source_id, "timeout": 20, "capture_logcat": True, "capture_screenshot": False}}], "expected_observation": "Frida emits root_detection_native_hooks_installed and root_detection_native_signal_modified.", "success_condition": "The approved hooks change the result of the fixed Check Root action.", "evidence_requirements": ["frida_events", "logcat"], "dependencies": ["dismiss_root_baseline"]},
-        {"sequence": 8, "step_id": "capture_root_detection_after", "objective": "Capture the real Device is rooted result after Frida instrumentation.", "rationale": "The after PNG is independently stored after the instrumented Check Root action so the auditor can compare both screenshots.", "tools": [{"name": "take_screenshot", "arguments": {"capture_reason": "instrumentation_after", "audit_id": audit_id}}], "expected_observation": "The active AndroGoat dialog visibly says Device is rooted.", "success_condition": "The after artifact is available and target-correlated.", "evidence_requirements": ["screenshot"], "dependencies": ["install_root_detection_hooks"]},
-        {"sequence": 9, "step_id": "capture_root_detection_after_ui", "objective": "Capture the after-state UI hierarchy containing Device is rooted.", "rationale": "The UI hierarchy independently corroborates the visible after screenshot.", "tools": [{"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "The target hierarchy contains Device is rooted.", "success_condition": "The after UI result is captured.", "evidence_requirements": ["ui_hierarchy"], "dependencies": ["capture_root_detection_after"]},
+        {"sequence": 1, "step_id": "prepare_rooted_baseline", "objective": "Prepare the fixed AndroGoat rooted baseline signal.", "rationale": "This touches only /data/local/su on the authorized lab emulator so the app itself produces the rooted baseline.", "tools": [{"name": "prepare_root_detection_demo", "arguments": {"package_name": package_name}}], "expected_observation": "The fixed rooted baseline is prepared.", "success_condition": "The bounded lab marker exists.", "evidence_requirements": ["tool_output"], "dependencies": []},
+        {"sequence": 2, "step_id": "restart_root_target", "objective": "Restart the authorized AndroGoat target.", "rationale": "A clean app process makes the comparison repeatable.", "tools": [{"name": "force_stop_package", "arguments": {"package_name": package_name}}, {"name": "launch_package", "arguments": {"package_name": package_name}}], "expected_observation": "AndroGoat is foregrounded.", "success_condition": "The target package is running.", "evidence_requirements": ["tool_output"], "dependencies": ["prepare_rooted_baseline"]},
+        {"sequence": 3, "step_id": "wait_for_root_menu", "objective": "Capture the main UI after splash completion.", "rationale": "The hierarchy provides a real readiness check before navigation.", "tools": [{"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "ROOT DETECTION is present.", "success_condition": "The target main UI is captured.", "evidence_requirements": ["ui_hierarchy"], "dependencies": ["restart_root_target"]},
+        {"sequence": 4, "step_id": "open_root_detection_screen", "objective": "Open AndroGoat's root-detection screen.", "rationale": "The catalog fixes the authorized AndroGoat coordinate.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 1550, "reason": "manual_navigation"}}], "expected_observation": "The root-detection control is visible.", "success_condition": "The bounded navigation action completes.", "evidence_requirements": ["tool_output"], "dependencies": ["wait_for_root_menu"]},
+        {"sequence": 5, "step_id": "wait_for_root_control", "objective": "Verify the Check Root control is ready.", "rationale": "UI evidence prevents an early coordinate tap from being treated as proof.", "tools": [{"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "CHECK ROOT is visible.", "success_condition": "The root screen hierarchy is captured.", "evidence_requirements": ["ui_hierarchy"], "dependencies": ["open_root_detection_screen"]},
+        {"sequence": 6, "step_id": "click_rooted_baseline", "objective": "Run the app's unmodified root check.", "rationale": "The app itself must report the baseline before Frida is loaded.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 802, "reason": "manual_navigation"}}], "expected_observation": "AndroGoat displays Device is rooted.", "success_condition": "The Check Root action completes.", "evidence_requirements": ["tool_output"], "dependencies": ["wait_for_root_control"]},
+        {"sequence": 7, "step_id": "capture_rooted_before", "objective": "Capture the Device is rooted baseline.", "rationale": "A PNG and hierarchy preserve the app's actual baseline result.", "tools": [{"name": "take_screenshot", "arguments": {"capture_reason": "instrumentation_before", "audit_id": audit_id}}, {"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "The baseline screenshot and hierarchy say Device is rooted.", "success_condition": "Both baseline evidence forms are stored.", "evidence_requirements": ["screenshot", "ui_hierarchy"], "dependencies": ["click_rooted_baseline"]},
+        {"sequence": 8, "step_id": "dismiss_rooted_baseline", "objective": "Dismiss the baseline dialog.", "rationale": "The fixed dialog action prepares the same screen for the instrumented check.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 890, "y": 1360, "reason": "manual_navigation"}}], "expected_observation": "The root screen is visible again.", "success_condition": "The baseline dialog is dismissed.", "evidence_requirements": ["tool_output"], "dependencies": ["capture_rooted_before"]},
+        {"sequence": 9, "step_id": "prepare_frida_runtime", "objective": "Recover the bounded Frida runtime before instrumentation.", "rationale": "The approved setup action validates client/server versions, refreshes the managed server, and verifies RPC through the fixed gateway path.", "tools": [{"name": "frida_setup", "arguments": {"package_name": package_name}}], "expected_observation": "Frida RPC is reachable for the target package.", "success_condition": "The managed Frida runtime reports PASS.", "evidence_requirements": ["tool_output"], "dependencies": ["dismiss_rooted_baseline"]},
+        {"sequence": 10, "step_id": "bypass_root_detection", "objective": "Apply approved Frida root-signal hooks and rerun Check Root.", "rationale": "The backend-owned template only suppresses known root paths and clicks AndroGoat's fixed rootCheck control.", "tools": [{"name": "frida_run_js", "arguments": {"package_name": package_name, "mode": "attach", "source": source_id, "timeout": 20, "capture_logcat": True, "capture_screenshot": False}}], "expected_observation": "Frida reports installed hooks, modified signals, and a triggered check.", "success_condition": "The approved hooks execute in the target process.", "evidence_requirements": ["frida_events", "logcat"], "dependencies": ["prepare_frida_runtime"]},
+        {"sequence": 11, "step_id": "capture_not_rooted_after", "objective": "Capture the Device is not rooted result after instrumentation.", "rationale": "The distinct after PNG and hierarchy are decisive auditor evidence.", "tools": [{"name": "take_screenshot", "arguments": {"capture_reason": "instrumentation_after", "audit_id": audit_id}}, {"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "The after state says Device is not rooted.", "success_condition": "The after screenshot and hierarchy are stored.", "evidence_requirements": ["screenshot", "ui_hierarchy"], "dependencies": ["bypass_root_detection"]},
+    ]}
+
+
+def _deterministic_tls_pinning_plan(planner_input: dict[str, Any]) -> dict[str, Any] | None:
+    control = planner_input.get("trusted_control", planner_input)
+    if "tls pinning bypass" not in str(control.get("assessment_objective") or "").lower():
+        return None
+    package_name = control["target_package"]
+    audit_id = control["audit"]["id"]
+    source_id = "__MSAP_TLS_PINNING_OKHTTP_BYPASS_TEMPLATE__"
+    placeholder = "proxy_capture_from_previous_step"
+    return {"target_package": package_name, "assessment_objective": control.get("assessment_objective", ""), "scope": control["scope"], "steps": [
+        {"sequence": 1, "step_id": "restart_tls_target", "objective": "Restart the authorized AndroGoat target.", "rationale": "A clean process makes the pinning hooks and network evidence repeatable.", "tools": [{"name": "force_stop_package", "arguments": {"package_name": package_name}}, {"name": "launch_package", "arguments": {"package_name": package_name}}], "expected_observation": "AndroGoat is foregrounded.", "success_condition": "The target process is running.", "evidence_requirements": ["tool_output"], "dependencies": []},
+        {"sequence": 2, "step_id": "wait_for_tls_menu", "objective": "Capture the main UI after splash completion.", "rationale": "The hierarchy proves readiness before fixed navigation.", "tools": [{"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "NETWORK INTERCEPTING is visible.", "success_condition": "The main UI is captured.", "evidence_requirements": ["ui_hierarchy"], "dependencies": ["restart_tls_target"]},
+        {"sequence": 3, "step_id": "open_network_screen", "objective": "Open AndroGoat's Network Intercepting screen.", "rationale": "The catalog fixes the authorized navigation coordinate.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 716, "reason": "manual_navigation"}}], "expected_observation": "The pinning controls are displayed.", "success_condition": "The bounded navigation completes.", "evidence_requirements": ["tool_output"], "dependencies": ["wait_for_tls_menu"]},
+        {"sequence": 4, "step_id": "verify_pinning_control", "objective": "Verify the OkHttp pinning control is ready.", "rationale": "UI evidence ties the workflow to AndroGoat's real pinning exercise.", "tools": [{"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "CERTIFICATE PINNING - OKHTTP3 is visible.", "success_condition": "The network screen hierarchy is captured.", "evidence_requirements": ["ui_hierarchy"], "dependencies": ["open_network_screen"]},
+        {"sequence": 5, "step_id": "start_pinning_baseline_capture", "objective": "Start a bounded baseline proxy capture.", "rationale": "Only target-host flow metadata is retained; raw flows are deleted after summarization.", "tools": [{"name": "start_proxy_capture", "arguments": {"package_name": package_name, "max_seconds": 30, "phase": "pinning_baseline"}}], "expected_observation": "The controlled proxy route is active.", "success_condition": "A bounded capture id is returned.", "evidence_requirements": ["network_flow"], "dependencies": ["verify_pinning_control"]},
+        {"sequence": 6, "step_id": "trigger_pinned_baseline", "objective": "Trigger the unmodified pinned request.", "rationale": "The app's real OkHttp pinning path runs before Frida instrumentation.", "tools": [{"name": "tap_coordinates", "arguments": {"x": 540, "y": 994, "reason": "manual_navigation"}}], "expected_observation": "No decrypted successful proxy flow is produced.", "success_condition": "The request action completes.", "evidence_requirements": ["tool_output"], "dependencies": ["start_pinning_baseline_capture"]},
+        {"sequence": 7, "step_id": "stop_pinning_baseline_capture", "objective": "Stop and summarize the baseline capture.", "rationale": "The closed placeholder resolves only the preceding approved capture id.", "tools": [{"name": "stop_proxy_capture", "arguments": {"capture_id": placeholder}}], "expected_observation": "No successful decrypted owasp.org flow is present before bypass.", "success_condition": "The baseline summary is stored and proxy state is restored.", "evidence_requirements": ["network_flow"], "dependencies": ["trigger_pinned_baseline"]},
+        {"sequence": 8, "step_id": "start_pinning_bypass_capture", "objective": "Start a fresh bounded capture for the instrumented request.", "rationale": "Separate captures prevent baseline and bypass outcomes from being conflated.", "tools": [{"name": "start_proxy_capture", "arguments": {"package_name": package_name, "max_seconds": 30, "phase": "pinning_bypass"}}], "expected_observation": "The controlled proxy route is active for the bypass phase.", "success_condition": "A fresh capture id is returned.", "evidence_requirements": ["network_flow"], "dependencies": ["stop_pinning_baseline_capture"]},
+        {"sequence": 9, "step_id": "prepare_frida_runtime", "objective": "Recover the bounded Frida runtime before instrumentation.", "rationale": "The approved setup action validates client/server versions, refreshes the managed server, and verifies RPC through the fixed gateway path.", "tools": [{"name": "frida_setup", "arguments": {"package_name": package_name}}], "expected_observation": "Frida RPC is reachable for the target package.", "success_condition": "The managed Frida runtime reports PASS.", "evidence_requirements": ["tool_output"], "dependencies": ["start_pinning_bypass_capture"]},
+        {"sequence": 10, "step_id": "apply_tls_pinning_bypass", "objective": "Apply the approved Frida OkHttp pinning bypass and trigger the request.", "rationale": "The backend template is AndroGoat-scoped and emits structured events.", "tools": [{"name": "frida_run_js", "arguments": {"package_name": package_name, "mode": "attach", "source": source_id, "timeout": 20, "capture_logcat": True, "capture_screenshot": False}}], "expected_observation": "Frida reports pinning bypass events and triggers the request.", "success_condition": "The approved template runs in the target process.", "evidence_requirements": ["frida_events", "logcat"], "dependencies": ["prepare_frida_runtime"]},
+        {"sequence": 11, "step_id": "stop_pinning_bypass_capture", "objective": "Stop and summarize the bypass capture.", "rationale": "The summary exposes no bodies or unrestricted packet data.", "tools": [{"name": "stop_proxy_capture", "arguments": {"capture_id": placeholder}}], "expected_observation": "A decrypted successful TLS flow to owasp.org is present.", "success_condition": "The proxy summary is stored and raw flows are deleted.", "evidence_requirements": ["network_flow"], "dependencies": ["apply_tls_pinning_bypass"]},
+        {"sequence": 12, "step_id": "capture_tls_ui", "objective": "Capture the exercised AndroGoat pinning screen.", "rationale": "The screenshot and hierarchy correlate network evidence with the live workflow.", "tools": [{"name": "take_screenshot", "arguments": {"capture_reason": "instrumentation_after", "audit_id": audit_id}}, {"name": "dump_ui", "arguments": {"package_name": package_name}}], "expected_observation": "The certificate-pinning screen is stored.", "success_condition": "Target-correlated UI evidence is available.", "evidence_requirements": ["screenshot", "ui_hierarchy"], "dependencies": ["stop_pinning_bypass_capture"]},
     ]}
 
 
@@ -559,6 +587,54 @@ def _constrain_lab_playbook_plan(generated: dict[str, Any], planner_input: dict[
     return generated, None
 
 
+FRIDA_PLAN_TOOLS = frozenset(
+    {"frida_status", "frida_ps", "frida_attach", "frida_run_js", "frida_setup"}
+)
+
+COMPONENT_REACHABILITY_RULE_IDS = frozenset(
+    {"MSAP-AND-004", "MSAP-AND-006", "MSAP-AND-007"}
+)
+
+
+def _strip_disallowed_tools(
+    steps: list[Any],
+    allowed_tools: set[str],
+) -> list[dict[str, Any]]:
+    """Remove tools outside the allowed set, drop empty steps, re-sequence.
+
+    This is a deterministic post-generation filter: it does not trust the
+    provider to stay inside the capability manifest. Steps that lose every
+    tool are removed so the plan remains executable and revalidated.
+    """
+    rebuilt: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        kept = [
+            tool
+            for tool in step.get("tools", [])
+            if isinstance(tool, dict) and tool.get("name") in allowed_tools
+        ]
+        if not kept:
+            continue
+        rebuilt.append({**step, "tools": kept, "sequence": len(rebuilt) + 1})
+    return rebuilt
+
+
+def _finding_rule_ids(planner_input: dict[str, Any]) -> set[str]:
+    observations = planner_input.get("untrusted_observations", {})
+    findings = (
+        observations.get("static_findings", [])
+        if isinstance(observations, dict)
+        else []
+    )
+    return {
+        str(row.get("rule_id", ""))
+        for row in findings
+        if isinstance(row, dict) and row.get("rule_id")
+    }
+
+
 def _constrain_finding_driven_plan(
     generated: dict[str, Any],
     planner_input: dict[str, Any],
@@ -571,6 +647,21 @@ def _constrain_finding_driven_plan(
     original provider response remains represented in provider telemetry; the
     persisted plan is the safe executable strategy the auditor approves.
     """
+    rule_ids = _finding_rule_ids(planner_input)
+    component_poc = bool(rule_ids & COMPONENT_REACHABILITY_RULE_IDS)
+    finding_constraint = ""
+    if component_poc and isinstance(generated, dict):
+        steps = generated.get("steps")
+        if isinstance(steps, list):
+            # Exported activity/receiver/provider validation is an ADB/UI/
+            # logcat reachability check. It must not require Frida readiness:
+            # Frida is unrelated to proving manifest component exposure, so
+            # any provider-emitted Frida tool is deterministically removed.
+            filtered = _strip_disallowed_tools(steps, set(TOOL_MANIFEST) - FRIDA_PLAN_TOOLS)
+            if filtered != steps:
+                generated = {**generated, "steps": filtered}
+                steps = filtered
+                finding_constraint = "COMPONENT_POC_FRIDA_STRIPPED"
     if isinstance(generated, dict):
         steps = generated.get("steps")
         if isinstance(steps, list) and any(
@@ -600,7 +691,7 @@ def _constrain_finding_driven_plan(
                 generated = {**generated, "steps": steps}
     steps = generated.get("steps") if isinstance(generated, dict) else None
     if not isinstance(steps, list):
-        return generated, None
+        return generated, finding_constraint or None
     flat_tools = [
         tool.get("name")
         for step in steps if isinstance(step, dict)
@@ -615,7 +706,12 @@ def _constrain_finding_driven_plan(
             "get_device_status", "launch_exported_activity", "send_explicit_broadcast",
             "query_exported_provider", "frida_status", "frida_attach", "dump_ui",
         ]
-        if "frida_attach" in flat_tools:
+        if component_poc:
+            preferred = [
+                name for name in preferred
+                if name not in FRIDA_PLAN_TOOLS
+            ]
+        if "frida_attach" in flat_tools and not component_poc:
             selected = [name for name in ("get_device_status", "frida_status", "frida_attach") if name in flat_tools][: max(1, max_decisions - 1)]
         else:
             selected = [name for name in preferred if name in flat_tools][: max(1, max_decisions - 1)]
@@ -647,10 +743,10 @@ def _constrain_finding_driven_plan(
         len(tools) <= settings.MSAP_ASSESSMENT_EXECUTION_MAX_TOOL_CALLS
         and total_timeout <= settings.MSAP_ASSESSMENT_EXECUTION_TOTAL_TIMEOUT_SECONDS
     ):
-        return generated, None
+        return generated, finding_constraint or None
     fallback = _deterministic_finding_driven_plan(planner_input)
     if fallback is None:
-        return generated, None
+        return generated, finding_constraint or None
     return fallback, "OVER_BUDGET_AI_PLAN_REDUCED_TO_ONE_APPROVED_PLAYBOOK"
 
 
@@ -1180,6 +1276,10 @@ class AssessmentPlannerService:
         if root_screen_fallback is not None:
             generated = root_screen_fallback
             lab_constraint = "ROOT_SCREEN_VALIDATION_NO_HOST_ELEVATION"
+        tls_pinning_fallback = _deterministic_tls_pinning_plan(planner_input)
+        if tls_pinning_fallback is not None:
+            generated = tls_pinning_fallback
+            lab_constraint = "TLS_PINNING_BYPASS_BOUNDED_PROXY"
         generated, finding_constraint = _constrain_finding_driven_plan(
             generated,
             planner_input,
