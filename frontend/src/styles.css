@@ -4439,6 +4439,196 @@ tbody tr:hover td {
   line-height: 1.5;
 }
 
+.advanced-console-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.advanced-console-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: 1rem;
+  padding: 1rem 1.05rem;
+  border: 1px solid #32586d;
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at top right, rgba(68, 178, 181, 0.16), transparent 28%),
+    linear-gradient(145deg, rgba(10, 28, 42, 0.98), rgba(6, 18, 28, 0.98));
+  box-shadow: 0 22px 55px rgba(0, 0, 0, 0.16);
+}
+
+.advanced-console-hero-copy {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+}
+
+.advanced-console-hero-copy h2 {
+  margin: 0;
+  color: #e8f4f7;
+  font-size: 1.2rem;
+}
+
+.advanced-console-hero-copy p {
+  margin: 0;
+  max-width: 58ch;
+  color: #8fa6b6;
+  line-height: 1.55;
+}
+
+.advanced-console-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.advanced-console-chip {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #29475a;
+  border-radius: 9px;
+  background: rgba(6, 18, 28, 0.72);
+}
+
+.advanced-console-chip span {
+  color: #8399aa;
+  font-size: 0.67rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.advanced-console-chip strong {
+  color: #e3edf4;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.advanced-console-chip.state-online {
+  border-color: rgba(63, 198, 155, 0.32);
+}
+
+.advanced-console-chip.state-warning {
+  border-color: rgba(224, 182, 79, 0.36);
+}
+
+.advanced-console-chip.state-offline {
+  border-color: rgba(238, 111, 120, 0.34);
+}
+
+.advanced-console-card {
+  border-color: #305469;
+  background:
+    radial-gradient(circle at 94% 7%, rgba(67, 151, 159, 0.08), transparent 28%),
+    linear-gradient(145deg, rgba(8, 24, 36, 0.99), rgba(5, 17, 27, 0.99));
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.14);
+}
+
+.advanced-console-facts {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.advanced-console-target-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.advanced-console-form {
+  min-width: 0;
+}
+
+.advanced-console-target-card {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.95rem;
+  border: 1px solid #284455;
+  border-radius: 9px;
+  background: #071520;
+}
+
+.advanced-console-target-card h3 {
+  margin: 0;
+  color: #e4edf4;
+  font-size: 0.96rem;
+  overflow-wrap: anywhere;
+}
+
+.advanced-console-target-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.6rem;
+}
+
+.advanced-console-actions {
+  display: grid;
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.advanced-console-actions-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.advanced-console-actions-header h3 {
+  margin: 0.15rem 0 0;
+  color: #dce7ef;
+  font-size: 0.92rem;
+}
+
+.advanced-console-actions-note {
+  color: #73899b;
+  font-size: 0.69rem;
+}
+
+.advanced-console-toolbar {
+  padding: 0.9rem;
+  border: 1px solid #274253;
+  border-radius: 9px;
+  background: rgba(6, 19, 30, 0.7);
+}
+
+.advanced-console-screenshot {
+  margin-top: 1rem;
+  min-height: 0;
+  background:
+    linear-gradient(145deg, rgba(7, 20, 31, 0.98), rgba(5, 16, 25, 0.98));
+}
+
+.advanced-console-screenshot .target-screenshot-heading {
+  align-items: flex-start;
+}
+
+.advanced-console-screenshot-state {
+  color: #83dfbd;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.advanced-console-screenshot .dynamic-screenshot-panel,
+.advanced-console-screenshot .dynamic-screenshot-panel.has-capture {
+  display: grid;
+  place-items: center;
+  min-height: 340px;
+  border: 1px solid #274253;
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(3, 9, 14, 0.96), rgba(7, 18, 26, 0.98));
+}
+
+.advanced-console-screenshot .dynamic-screenshot-panel img {
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
+}
+
 .primary-assessment-card {
   position: relative;
   overflow: hidden;
