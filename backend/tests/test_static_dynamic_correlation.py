@@ -274,6 +274,58 @@ def test_already_validated_findings_show_current_status(analyst_client, audit_wi
 
 @pytest.mark.django_db
 @override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
+def test_correlation_prefers_confirmed_mission_over_newer_failed_rerun(
+    analyst_client, audit_with_apk
+):
+    audit, apk = audit_with_apk
+    finding = Finding.objects.create(
+        audit=audit,
+        rule_id="MSAP-AND-001",
+        title="Debuggable build enables runtime instrumentation",
+        severity="Medium",
+        confidence="HIGH",
+        standard="MASVS",
+        category="MASVS-RESILIENCE",
+    )
+    confirmed = FindingValidationMission.objects.create(
+        audit=audit,
+        apk=apk,
+        finding=finding,
+        target_package=apk.package_name,
+        playbook_id="ROOT_DETECTION_SCREEN_VALIDATION",
+        status="CONFIRMED",
+        final_conclusion="Confirmed root manipulation evidence.",
+        scenario_contract={"steps": []},
+    )
+    newer_failed = FindingValidationMission.objects.create(
+        audit=audit,
+        apk=apk,
+        finding=finding,
+        target_package=apk.package_name,
+        playbook_id="ROOT_DETECTION_SCREEN_VALIDATION",
+        status="INCONCLUSIVE",
+        final_conclusion="Required evidence did not complete: frida_run_js.",
+        scenario_contract={"steps": []},
+    )
+
+    with patch(
+        "apps.dynamic_analysis.services.correlation_agent._live_manifest",
+        return_value=_connected_manifest("frida_setup", "frida_run_js", "take_screenshot", "dump_ui", "launch_package"),
+    ):
+        result = __import__(
+            "apps.dynamic_analysis.services.correlation_agent",
+            fromlist=["correlate_audit_findings"],
+        ).correlate_audit_findings(audit.id)
+
+    card = result["candidates"][0]
+    assert card["classification"] == "ALREADY_VALIDATED"
+    assert card["current_validation_status"] == "CONFIRMED"
+    assert card["existing_mission_id"] == confirmed.id
+    assert card["existing_mission_id"] != newer_failed.id
+
+
+@pytest.mark.django_db
+@override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
 def test_latest_correlation_reuses_cache_when_nothing_changed(analyst_client, audit_with_apk):
     audit, _apk = audit_with_apk
     _component_finding(audit)

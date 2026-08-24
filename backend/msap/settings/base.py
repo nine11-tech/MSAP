@@ -480,8 +480,8 @@ MSAP_AGENT_MAX_TOOL_CALLS = min(
     max(1, int(os.getenv("MSAP_AGENT_MAX_TOOL_CALLS", "12"))),
 )
 MSAP_AGENT_MAX_PROVIDER_CALLS = min(
-    4,
-    max(1, int(os.getenv("MSAP_AGENT_MAX_PROVIDER_CALLS", "4"))),
+    50,
+    max(1, int(os.getenv("MSAP_AGENT_MAX_PROVIDER_CALLS", "30"))),
 )
 MSAP_AGENT_MAX_CONSECUTIVE_FAILURES = min(
     2,
@@ -513,8 +513,8 @@ MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS = min(
     max(1, int(os.getenv("MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS", "1"))),
 )
 MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS = min(
-    24,
-    max(1, int(os.getenv("MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS", "6"))),
+    50,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS", "30"))),
 )
 MSAP_OPENAI_MAX_CORRELATION_CALLS = min(
     16,
@@ -524,21 +524,34 @@ MSAP_OPENAI_MAX_POC_PLANNING_CALLS = min(
     8,
     max(1, int(os.getenv("MSAP_OPENAI_MAX_POC_PLANNING_CALLS", "3"))),
 )
+MSAP_OPENAI_MAX_EVIDENCE_EXPLANATION_CALLS = min(
+    50,
+    max(1, int(os.getenv("MSAP_OPENAI_MAX_EVIDENCE_EXPLANATION_CALLS", "30"))),
+)
 MSAP_OPENAI_MAX_TOTAL_CALLS = min(
-    32,
+    50,
     max(
         1,
         int(
             os.getenv(
                 "MSAP_OPENAI_MAX_TOTAL_CALLS",
-                str(
-                    MSAP_OPENAI_MAX_MISSION_GENERATION_CALLS
-                    + MSAP_OPENAI_MAX_ADAPTIVE_DECISION_CALLS
-                ),
+                "50",
             )
         ),
     ),
 )
+MSAP_FRIDA_SCRIPT_GENERATION_PROVIDER = os.getenv(
+    "MSAP_FRIDA_SCRIPT_GENERATION_PROVIDER",
+    "OPENAI",
+).upper()
+if MSAP_FRIDA_SCRIPT_GENERATION_PROVIDER not in {"OPENAI", "DETERMINISTIC"}:
+    MSAP_FRIDA_SCRIPT_GENERATION_PROVIDER = "OPENAI"
+MSAP_EVIDENCE_EXPLANATION_PROVIDER = os.getenv(
+    "MSAP_EVIDENCE_EXPLANATION_PROVIDER",
+    "OPENAI",
+).upper()
+if MSAP_EVIDENCE_EXPLANATION_PROVIDER not in {"OPENAI", "DETERMINISTIC", "DISABLED"}:
+    MSAP_EVIDENCE_EXPLANATION_PROVIDER = "OPENAI"
 
 # Dynamic lab runtime mode. WINDOWS_HOST_AGENT uses Windows adb.exe/Frida via the
 # Windows Host Agent; WSL_BRIDGED keeps the legacy WSL bridge. The default stays

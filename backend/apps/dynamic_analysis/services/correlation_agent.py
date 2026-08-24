@@ -235,27 +235,53 @@ def _affected_component(finding: Finding, mapping: dict[str, Any]) -> str:
 
 
 def _previous_validation_status(finding: Finding) -> str:
-    mission = (
+    mission = _preferred_mission_for_finding(
         FindingValidationMission.objects.filter(finding=finding)
-        .order_by("-created_at")
-        .first()
     )
     if mission is not None:
         return mission.status or ""
     return ""
 
 
+def _preferred_mission_for_finding(missions):
+    ordered = list(missions.order_by("-created_at"))
+    if not ordered:
+        return None
+    for mission in ordered:
+        if mission.status in TERMINAL_VALIDATED_STATUSES:
+            return mission
+    return ordered[0]
+
+
 def _validation_statuses(findings: list[Finding]) -> dict[int, str]:
+    return {
+        finding_id: mission.status or ""
+        for finding_id, mission in _preferred_validation_missions(findings).items()
+    }
+
+
+def _preferred_validation_missions(
+    findings: list[Finding],
+) -> dict[int, FindingValidationMission]:
     finding_ids = [finding.pk for finding in findings]
-    missions = (
+    missions = list(
         FindingValidationMission.objects.filter(finding_id__in=finding_ids)
         .order_by("finding_id", "-created_at")
-        .values("finding_id", "status")
     )
-    statuses: dict[int, str] = {}
+    grouped: dict[int, list[FindingValidationMission]] = {}
     for mission in missions:
-        statuses.setdefault(mission["finding_id"], mission["status"] or "")
-    return statuses
+        grouped.setdefault(mission.finding_id, []).append(mission)
+    preferred: dict[int, FindingValidationMission] = {}
+    for finding_id, rows in grouped.items():
+        preferred[finding_id] = next(
+            (
+                row
+                for row in rows
+                if row.status in TERMINAL_VALIDATED_STATUSES
+            ),
+            rows[0],
+        )
+    return preferred
 
 
 def _findings_fingerprint(findings: list[Finding], statuses: dict[int, str]) -> str:
@@ -638,6 +664,7 @@ def _merge_result(
     raw: dict[str, Any],
     *,
     current_validation_status: str,
+    existing_mission_id: int | None = None,
 ) -> dict[str, Any]:
     available = set()
     return {
@@ -662,6 +689,7 @@ def _merge_result(
             else "MEDIUM"
         ),
         "current_validation_status": current_validation_status or "",
+        "existing_mission_id": existing_mission_id,
         "missing_capabilities": _bounded_string_list(raw.get("missing_capabilities"), 12),
         "start_poc_available": raw.get("classification")
         in {"RECOMMENDED_DYNAMIC_VALIDATION", "OPTIONAL_DYNAMIC_VALIDATION"}
@@ -764,7 +792,11 @@ def correlate_audit_findings(
 
     batches = _batch_findings(static_findings)
     candidates: dict[int, dict[str, Any]] = {}
-    validation_statuses = _validation_statuses(static_findings)
+    preferred_missions = _preferred_validation_missions(static_findings)
+    validation_statuses = {
+        finding_id: mission.status or ""
+        for finding_id, mission in preferred_missions.items()
+    }
     provider_used = False
     provider_failure = ""
     provider_name = "DETERMINISTIC_FALLBACK"
@@ -831,6 +863,11 @@ def correlate_audit_findings(
                 finding,
                 raw,
                 current_validation_status=validation_statuses.get(finding.pk, ""),
+                existing_mission_id=(
+                    preferred_missions.get(finding.pk).id
+                    if preferred_missions.get(finding.pk) is not None
+                    else None
+                ),
             )
 
     ordered = [
@@ -1099,9 +1136,9 @@ def start_candidate_poc(
             http_status=404,
         )
     mission = (
-        FindingValidationMission.objects.filter(finding=finding)
-        .order_by("-created_at")
-        .first()
+        _preferred_mission_for_finding(
+            FindingValidationMission.objects.filter(finding=finding)
+        )
     )
     if mission is not None and mission.status not in RETRYABLE_STATUSES:
         if mission.status == FindingValidationMission.Status.VALIDATED:

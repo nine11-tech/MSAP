@@ -850,6 +850,7 @@ def default_agent_runtime_capabilities() -> dict:
             "FRIDA_RUNTIME_ACTION",
             "FRIDA_RUNTIME_UI_MODIFICATION_PROOF",
             "FRIDA_CUSTOM_SCRIPT",
+            "ASSESSMENT_PLAN_EXECUTION",
         ],
         "tools": [
             "get_device_status",
@@ -857,12 +858,16 @@ def default_agent_runtime_capabilities() -> dict:
             "install_verified_apk",
             "launch_package",
             "reset_root_detection_demo",
+            "prepare_root_detection_demo",
             "force_stop_package",
             "clear_package_data",
             "take_screenshot",
             "start_logcat",
             "stop_logcat",
             "get_logcat_excerpt",
+            "start_proxy_capture",
+            "stop_proxy_capture",
+            "get_proxy_flows",
             "dump_ui",
             "tap_coordinates",
             "type_text",
@@ -1354,6 +1359,92 @@ class AgentActionDecision(models.Model):
         ]
 
 
+class FridaScriptProposal(models.Model):
+    class Status(models.TextChoices):
+        GENERATED = "GENERATED", "Generated"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+        EXECUTED = "EXECUTED", "Executed"
+        FAILED = "FAILED", "Failed"
+
+    run = models.ForeignKey(
+        AgentRun,
+        on_delete=models.CASCADE,
+        related_name="frida_script_proposals",
+    )
+    audit = models.ForeignKey(
+        "audits.Audit",
+        on_delete=models.CASCADE,
+        related_name="frida_script_proposals",
+    )
+    finding = models.ForeignKey(
+        "findings.Finding",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="frida_script_proposals",
+    )
+    mission = models.ForeignKey(
+        "dynamic_analysis.FindingValidationMission",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="frida_script_proposals",
+    )
+    hypothesis = models.ForeignKey(
+        AgentHypothesis,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="frida_script_proposals",
+    )
+    title = models.CharField(max_length=200)
+    rationale = models.CharField(max_length=1000)
+    expected_evidence = models.JSONField(default=list, blank=True)
+    source_identifier = models.CharField(max_length=128, unique=True, blank=True)
+    source_sha256 = models.CharField(max_length=64)
+    source_code = models.TextField()
+    source_size_bytes = models.PositiveIntegerField(default=0)
+    generator_provider = models.CharField(max_length=32)
+    generator_model = models.CharField(max_length=128, blank=True)
+    provider_metadata = models.JSONField(default=dict, blank=True)
+    validation_warnings = models.JSONField(default=list, blank=True)
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.GENERATED,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="created_frida_script_proposals",
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_frida_script_proposals",
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    executed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=1000, blank=True)
+    suggested_fix = models.CharField(max_length=1000, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["run", "status", "created_at"], name="dynamic_ana_run_id_e1960d_idx"),
+            models.Index(fields=["audit", "status", "created_at"], name="dynamic_ana_audit_i_209a6f_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"Frida script proposal {self.id}: {self.status}"
+
+
 class DynamicValidationResult(models.Model):
     class ValidationStatus(models.TextChoices):
         NOT_STARTED = "NOT_STARTED", "Not started"
@@ -1521,7 +1612,7 @@ class OpenAICallBudget(models.Model):
         default=1,
     )
     max_adaptive_decision_calls = models.PositiveIntegerField(
-        default=6,
+        default=30,
     )
     max_correlation_calls = models.PositiveIntegerField(
         default=6,
@@ -1529,13 +1620,17 @@ class OpenAICallBudget(models.Model):
     max_poc_planning_calls = models.PositiveIntegerField(
         default=3,
     )
+    max_evidence_explanation_calls = models.PositiveIntegerField(
+        default=30,
+    )
     max_total_openai_calls = models.PositiveIntegerField(
-        default=7,
+        default=50,
     )
     mission_generation_call_count = models.PositiveIntegerField(default=0)
     adaptive_decision_call_count = models.PositiveIntegerField(default=0)
     correlation_call_count = models.PositiveIntegerField(default=0)
     poc_planning_call_count = models.PositiveIntegerField(default=0)
+    evidence_explanation_call_count = models.PositiveIntegerField(default=0)
     current_openai_call_count = models.PositiveIntegerField(default=0)
     provider_response_ids = models.JSONField(default=list, blank=True)
     budget_exhausted_reason = models.CharField(max_length=128, blank=True)

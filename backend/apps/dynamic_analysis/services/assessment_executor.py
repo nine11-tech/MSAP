@@ -28,6 +28,11 @@ from apps.dynamic_analysis.services.agent_gateway import (
     AgentGatewayRequestError,
     execute_run_tool_call,
 )
+from apps.dynamic_analysis.services.agent_controller import (
+    KNOWN_RUNTIME_PLACEHOLDERS,
+    RuntimePlaceholderError,
+    resolve_approved_plan_arguments,
+)
 from apps.dynamic_analysis.services.agent_tools import TOOL_MANIFEST
 from apps.dynamic_analysis.services.assessment_execution_contract import (
     AssessmentExecutionContractError,
@@ -35,6 +40,7 @@ from apps.dynamic_analysis.services.assessment_execution_contract import (
     validate_approved_execution_contract,
 )
 from apps.dynamic_analysis.services.assessment_plan_contract import MAX_PLAN_STEPS
+from apps.dynamic_analysis.services.evidence_explainer import explain_evidence_record
 from apps.evidence.models import Evidence
 
 
@@ -87,6 +93,7 @@ class AssessmentExecutor:
     ):
         self.gateway_executor = gateway_executor
         self.clock = clock
+        self.runtime_context: dict[str, Any] = {}
 
     def create_run(
         self,
@@ -197,6 +204,7 @@ class AssessmentExecutor:
         run = self._start_run(run_id)
         deadline = self.clock() + settings.MSAP_ASSESSMENT_EXECUTION_TOTAL_TIMEOUT_SECONDS
         any_failure = False
+        self.runtime_context = {}
 
         for step_id in run.steps.order_by("sequence_number").values_list("id", flat=True):
             run.refresh_from_db()
@@ -217,11 +225,19 @@ class AssessmentExecutor:
 
             started = self.clock()
             try:
+                arguments = self._resolved_step_arguments(step)
                 result = self.gateway_executor(
                     run_id=run.id,
                     tool_name=step.tool_name,
-                    arguments=deepcopy(step.input_summary),
+                    arguments=arguments,
                 )
+            except AssessmentExecutionError as exc:
+                step.refresh_from_db()
+                if step.status == AgentRunStep.Status.PENDING:
+                    self._fail_step(step, str(exc))
+                any_failure = True
+                self._record_failed_observation(run, step)
+                continue
             except AgentGatewayExecutionError:
                 step.refresh_from_db()
                 any_failure = True
@@ -246,6 +262,15 @@ class AssessmentExecutor:
             except AssessmentExecutionError as exc:
                 self._fail_step(step, str(exc))
                 any_failure = True
+            output = result.get("output", {})
+            if step.tool_name == "start_logcat" and isinstance(output, dict):
+                collector_id = output.get("collector_id")
+                if isinstance(collector_id, str) and collector_id:
+                    self.runtime_context["logcat_collector_id"] = collector_id
+            if step.tool_name == "start_proxy_capture" and isinstance(output, dict):
+                capture_id = output.get("capture_id")
+                if isinstance(capture_id, str) and capture_id:
+                    self.runtime_context["proxy_capture_id"] = capture_id
 
         run.refresh_from_db()
         if run.cancellation_requested_at is not None:
@@ -253,6 +278,38 @@ class AssessmentExecutor:
         return self._finish(run, failed=any_failure or run.steps.filter(
             status__in=[AgentRunStep.Status.FAILED, AgentRunStep.Status.TIMEOUT]
         ).exists())
+
+    def _resolved_step_arguments(self, step: AgentRunStep) -> dict[str, Any]:
+        """Resolve only the closed set of run-scoped placeholders.
+
+        The bounded runtime context is derived exclusively from earlier
+        successful approved steps of this run (collector_id from start_logcat).
+        No secrets or unrelated model references are ever copied into it, and no
+        arbitrary interpolation is performed.
+        """
+        input_summary = step.input_summary if isinstance(step.input_summary, dict) else {}
+        if not any(value in KNOWN_RUNTIME_PLACEHOLDERS for value in input_summary.values()):
+            return deepcopy(input_summary)
+        completed_outputs: dict[str, Any] = {}
+        if self.runtime_context.get("logcat_collector_id"):
+            completed_outputs["start_logcat"] = {
+                "collector_id": self.runtime_context["logcat_collector_id"]
+            }
+        if self.runtime_context.get("proxy_capture_id"):
+            completed_outputs["start_proxy_capture"] = {
+                "capture_id": self.runtime_context["proxy_capture_id"]
+            }
+        try:
+            return resolve_approved_plan_arguments(
+                deepcopy(input_summary),
+                completed_outputs,
+            )
+        except RuntimePlaceholderError as exc:
+            raise AssessmentExecutionError(
+                str(exc),
+                code="ASSESSMENT_RUNTIME_PLACEHOLDER_UNRESOLVED",
+                http_status=409,
+            ) from None
 
     @staticmethod
     def request_cancellation(run: AgentRun, *, requested_by) -> AgentRun:
@@ -680,8 +737,14 @@ class AssessmentExecutor:
                     ),
                 }
             )
-        return Evidence.objects.create(
+        finding = (
+            run.assessment_plan.source_finding
+            if run.assessment_plan_id and run.assessment_plan.source_finding_id
+            else None
+        )
+        evidence = Evidence.objects.create(
             audit_id=run.audit_id,
+            finding=finding,
             storage_reference=(artifact.object_reference if artifact else None),
             agent_run=run,
             agent_run_step=step,
@@ -693,6 +756,14 @@ class AssessmentExecutor:
             sha256=sha256(encoded.encode("utf-8")).hexdigest(),
             provenance=provenance,
         )
+        explain_evidence_record(
+            evidence,
+            run=run,
+            step=step,
+            artifact=artifact,
+            observation=observation,
+        )
+        return evidence
 
     @staticmethod
     def _skip_step(step: AgentRunStep, reason: str) -> None:

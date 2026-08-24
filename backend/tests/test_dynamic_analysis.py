@@ -36,6 +36,7 @@ from apps.dynamic_analysis.models import (
     AgentRunStep,
     AssessmentPlan,
     AssessmentPlanStep,
+    DynamicValidationResult,
     DynamicAnalysisJob,
     DynamicDevice,
     DynamicDeviceCapability,
@@ -47,6 +48,7 @@ from apps.dynamic_analysis.models import (
     DynamicSessionArtifact,
     DynamicSessionEvent,
     DynamicSessionStage,
+    FindingValidationMission,
 )
 from apps.dynamic_analysis.services.leases import (
     DynamicLeaseError,
@@ -92,6 +94,9 @@ from apps.dynamic_analysis.services.agent_decision_provider import (
 from apps.dynamic_analysis.services.agent_oracles import evaluate_run_oracles
 from apps.dynamic_analysis.services.agent_retry import adaptive_retryability
 from apps.dynamic_analysis.services.assessment_agent import AssessmentAgent
+from apps.dynamic_analysis.services.assessment_results import (
+    _resolve_playbook_validations,
+)
 from apps.dynamic_analysis.services.container_runtime import (
     ContainerRuntimeTimeout,
     build_container_launch,
@@ -113,6 +118,9 @@ from apps.dynamic_analysis.services.frida_runtime import (
     FridaRuntimeError,
     MAX_FRIDA_EVENTS,
     _parse_frida_events,
+)
+from apps.dynamic_analysis.services.frida_scripts import (
+    ROOT_DETECTION_NATIVE_HOOK_SOURCE,
 )
 from apps.dynamic_analysis.services.assessment_planner import (
     AssessmentPlannerService,
@@ -635,12 +643,16 @@ def test_agent_tool_manifest_only_exposes_allowlisted_tools():
         "install_verified_apk",
         "launch_package",
         "reset_root_detection_demo",
+        "prepare_root_detection_demo",
         "force_stop_package",
         "clear_package_data",
         "take_screenshot",
         "start_logcat",
         "stop_logcat",
         "get_logcat_excerpt",
+        "start_proxy_capture",
+        "stop_proxy_capture",
+        "get_proxy_flows",
         "dump_ui",
         "tap_coordinates",
         "type_text",
@@ -2527,6 +2539,41 @@ def test_seed_dynamic_lab_command_creates_local_lab_metadata():
     assert DynamicEmulatorSnapshot.objects.filter(device=device).count() == 2
 
 
+@pytest.mark.django_db
+@override_settings(DEBUG=True)
+def test_seed_androgoat_finding_demo_reinitializes_audit_demo():
+    first_output = StringIO()
+    second_output = StringIO()
+
+    call_command("seed_androgoat_finding_demo", "--dev-fixture", stdout=first_output)
+    first_audit = Audit.objects.get(name="audit-demo")
+    assert first_audit.findings.count() == 6
+    stale_mission = first_audit.finding_validation_missions.create(
+        apk=APKFile.objects.get(audit=first_audit, package_name="owasp.sat.agoat"),
+        finding=Finding.objects.get(audit=first_audit, rule_id="MSAP-AND-006"),
+        target_package="owasp.sat.agoat",
+        status="VALIDATED",
+        scenario_contract={"steps": []},
+        scenario_hash="a" * 64,
+        mission_hash="b" * 64,
+        validation_family="demo",
+    )
+
+    call_command(
+        "seed_androgoat_finding_demo",
+        "--dev-fixture",
+        "--reinitialize",
+        stdout=second_output,
+    )
+
+    reinitialized = Audit.objects.get(name="audit-demo")
+    assert reinitialized.findings.count() == 6
+    assert reinitialized.apk_files.filter(package_name="owasp.sat.agoat").exists()
+    assert not FindingValidationMission.objects.filter(pk=stale_mission.pk).exists()
+    assert "DEMO_AUDIT_NAME=audit-demo" in second_output.getvalue()
+    assert "STATIC_FINDING_DEMO_FIXTURE=PASS" in second_output.getvalue()
+
+
 @override_settings(MSAP_DYNAMIC_RUNNER_ENABLED=False)
 @pytest.mark.django_db
 def test_dynamic_mvp_runner_refuses_when_disabled():
@@ -3215,7 +3262,7 @@ def test_frida_ps_returns_real_bounded_process_count():
 
 def test_frida_attach_rejects_missing_runtime_probe_event():
     runtime = _make_frida_runtime()
-    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+    with patch.object(runtime, "_ensure_runtime_ready"), patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
         runtime, "_endpoint", return_value="172.20.0.1:27043"
     ), patch.object(
         runtime,
@@ -3272,7 +3319,7 @@ def test_frida_run_js_bounds_logcat_and_returns_structured_success():
         "finished_at": timezone.now().isoformat(),
         "cleanup_state": "DETACHED",
     }
-    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+    with patch.object(runtime, "_ensure_runtime_ready"), patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
         runtime, "_endpoint", return_value="172.20.0.1:27043"
     ), patch.object(runtime, "_client_version", return_value="17.16.4"), patch.object(
         runtime, "_run_script", return_value=execution
@@ -3317,7 +3364,7 @@ def test_frida_run_js_preserves_negative_probe_observation_as_successful_executi
         "finished_at": timezone.now().isoformat(),
         "cleanup_state": "DETACHED",
     }
-    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+    with patch.object(runtime, "_ensure_runtime_ready"), patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
         runtime, "_endpoint", return_value="172.20.0.1:27043"
     ), patch.object(runtime, "_client_version", return_value="17.16.4"), patch.object(
         runtime, "_run_script", return_value=execution
@@ -3357,7 +3404,7 @@ def test_frida_run_js_rejects_script_error_event():
         "finished_at": timezone.now().isoformat(),
         "cleanup_state": "DETACHED",
     }
-    with patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
+    with patch.object(runtime, "_ensure_runtime_ready"), patch.object(runtime, "_frida_executable", return_value="/frida"), patch.object(
         runtime, "_endpoint", return_value="172.20.0.1:27043"
     ), patch.object(runtime, "_run_script", return_value=execution), pytest.raises(
         FridaRuntimeError, match="emitted an error event"
@@ -3370,6 +3417,203 @@ def test_frida_run_js_rejects_script_error_event():
             capture_logcat=False,
             capture_screenshot=False,
         )
+
+
+def test_frida_runtime_ready_recovers_unreachable_server_with_setup():
+    runtime = _make_frida_runtime()
+    with patch.object(
+        runtime,
+        "status",
+        return_value={
+            "frida_client_installed": True,
+            "frida_server_version": "17.16.4",
+            "frida_server_reachable": False,
+            "version_agreement": True,
+        },
+    ), patch.object(runtime, "setup") as setup:
+        runtime._ensure_runtime_ready("owasp.sat.agoat")
+
+    setup.assert_called_once_with("owasp.sat.agoat")
+
+
+def test_frida_run_js_auto_recovers_runtime_before_execution():
+    runtime = _make_frida_runtime()
+    execution = {
+        "success": True,
+        "events": [
+            {"type": "script_start", "success": True, "pid": 26273},
+            {"type": "script_loaded", "success": True, "pid": 26273},
+            {"type": "script_completion", "success": True, "pid": 26273},
+        ],
+        "pid": 26273,
+        "architecture": "x64",
+        "script_started": True,
+        "script_loaded": True,
+        "script_completed": True,
+        "duration_seconds": 1.0,
+        "started_at": timezone.now().isoformat(),
+        "finished_at": timezone.now().isoformat(),
+        "cleanup_state": "DETACHED",
+    }
+    with patch.object(runtime, "_ensure_runtime_ready") as ensure_ready, patch.object(
+        runtime, "_frida_executable", return_value="/frida"
+    ), patch.object(runtime, "_endpoint", return_value="172.20.0.1:27043"), patch.object(
+        runtime, "_client_version", return_value="17.16.4"
+    ), patch.object(runtime, "_run_script", return_value=execution):
+        result = runtime.run_js(
+            package_name="owasp.sat.agoat",
+            mode="attach",
+            source='send({type:"proof",success:true});',
+            timeout_seconds=10,
+            capture_logcat=False,
+            capture_screenshot=False,
+        )
+
+    ensure_ready.assert_called_once_with("owasp.sat.agoat")
+    assert result["status"] == "PASS"
+
+
+def test_root_detection_template_uses_view_click_fallbacks():
+    assert "View.performClick.overload().call(button)" in ROOT_DETECTION_NATIVE_HOOK_SOURCE
+    assert "View.callOnClick.overload().call(button)" in ROOT_DETECTION_NATIVE_HOOK_SOURCE
+
+
+@pytest.mark.django_db
+def test_root_detection_validation_preserves_real_screenshot_hashes(
+    django_user_model,
+):
+    user = django_user_model.objects.create_user(username="root-validation-user")
+    audit, apk = _make_audit_with_apk("root-validation-proof")
+    finding = Finding.objects.create(
+        audit=audit,
+        rule_id="MSAP-AND-001",
+        title="Debuggable build enables runtime instrumentation",
+        severity="Medium",
+        confidence="HIGH",
+        standard="MASVS",
+        category="MASVS-RESILIENCE",
+    )
+    plan = AssessmentPlan.objects.create(
+        audit=audit,
+        source_finding=finding,
+        target_package=apk.package_name,
+        planner_provider="DETERMINISTIC",
+        planner_model="test",
+        objective="Root detection manipulation demo",
+        scope="Bounded demo validation.",
+        status=AssessmentPlan.Status.APPROVED,
+        validation_status=AssessmentPlan.ValidationStatus.PASSED,
+        policy_status=AssessmentPlan.PolicyStatus.PASSED,
+        generated_plan={},
+        normalized_plan={
+            "steps": [
+                {
+                    "step_id": "prepare_rooted_baseline",
+                    "tools": [
+                        {
+                            "name": "prepare_root_detection_demo",
+                            "arguments": {"package_name": apk.package_name},
+                        }
+                    ],
+                },
+                {
+                    "step_id": "bypass_root_detection",
+                    "tools": [
+                        {
+                            "name": "frida_run_js",
+                            "arguments": {
+                                "source": "__MSAP_ROOT_DETECTION_NATIVE_HOOK_TEMPLATE__"
+                            },
+                        }
+                    ],
+                }
+            ]
+        },
+        planner_input_hash="a" * 64,
+        plan_hash="b" * 64,
+        created_by=user,
+        approved_by=user,
+    )
+    run = AgentRun.objects.create(
+        audit=audit,
+        assessment_plan=plan,
+        target_package=apk.package_name,
+        approved_plan_hash=plan.plan_hash,
+        objective=AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION,
+        status=AgentRun.Status.SUCCEEDED,
+        requested_by=user,
+        execution_mode=AgentRun.ExecutionMode.SEQUENTIAL_PLAN,
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=1,
+        tool_name="prepare_root_detection_demo",
+        plan_step_identifier="prepare_rooted_baseline",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={"rooted_baseline_prepared": True},
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=2,
+        tool_name="take_screenshot",
+        plan_step_identifier="capture_rooted_before",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={"sha256": "1" * 64, "object_reference_id": 1},
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=3,
+        tool_name="dump_ui",
+        plan_step_identifier="capture_rooted_before",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={"text_values": ["Root Detection", "Device is rooted", "OK"]},
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=4,
+        tool_name="frida_run_js",
+        plan_step_identifier="bypass_root_detection",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={
+            "events": [
+                {"type": "root_detection_bypass_hooks_installed", "success": True},
+                {"type": "root_detection_check_triggered", "success": True},
+            ],
+            "before_screenshot_sha256": "",
+            "after_screenshot_sha256": "",
+        },
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=5,
+        tool_name="take_screenshot",
+        plan_step_identifier="capture_not_rooted_after",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={"sha256": "2" * 64, "object_reference_id": 2},
+    )
+    AgentRunStep.objects.create(
+        run=run,
+        sequence_number=6,
+        tool_name="dump_ui",
+        plan_step_identifier="capture_not_rooted_after",
+        status=AgentRunStep.Status.SUCCEEDED,
+        output_summary={"text_values": ["Root Detection", "Device is not rooted", "OK"]},
+    )
+    Evidence.objects.create(
+        audit=audit,
+        finding=finding,
+        agent_run=run,
+        evidence_type="dynamic_tool_observation",
+        source="test",
+        snippet="bounded root validation evidence",
+        redacted=True,
+        sha256="e" * 64,
+    )
+
+    results = _resolve_playbook_validations(run)
+
+    assert results[0]["playbook_id"] == "ROOT_DETECTION_SCREEN_VALIDATION"
+    assert results[0]["validation_status"] == DynamicValidationResult.ValidationStatus.SUPPORTED
 
 
 @pytest.mark.django_db
@@ -3885,7 +4129,7 @@ def test_planner_rejects_step_and_evidence_bounds():
             objective=objective,
             scope=scope,
         )
-    assert len(EVIDENCE_TYPES) == 6
+    assert len(EVIDENCE_TYPES) == 7
 
 
 @pytest.mark.django_db
@@ -4798,6 +5042,7 @@ def test_plan_api_can_select_openai_provider_without_exposing_configuration(
 
 
 @pytest.mark.django_db
+@override_settings(MSAP_ASSESSMENT_PLANNER_PROVIDER="DETERMINISTIC")
 def test_assessment_plan_api_rbac_validation_and_approval_are_plan_only(
     analyst_client,
     viewer_client,
@@ -6804,6 +7049,7 @@ def _adaptive_gateway(**kwargs):
 
 
 @pytest.mark.django_db
+@override_settings(MSAP_AGENT_MAX_PROVIDER_CALLS=12)
 def test_adaptive_agent_e2e_observation_changes_next_gateway_action(django_user_model):
     user, audit, _apk, plan = _approved_adaptive_plan(
         django_user_model,
@@ -7564,7 +7810,7 @@ def test_adaptive_tool_call_budget_blocks_the_next_action(django_user_model):
 
 
 @pytest.mark.django_db
-@override_settings(MSAP_AGENT_MAX_CONSECUTIVE_FAILURES=3)
+@override_settings(MSAP_AGENT_MAX_CONSECUTIVE_FAILURES=3, MSAP_AGENT_MAX_PROVIDER_CALLS=8)
 def test_adaptive_consecutive_failure_limit_stops_future_decisions(django_user_model):
     user, _audit, _apk, plan = _approved_execution_plan(
         django_user_model,

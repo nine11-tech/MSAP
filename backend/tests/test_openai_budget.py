@@ -39,6 +39,7 @@ from apps.dynamic_analysis.services.finding_validation_missions import (
 )
 from apps.dynamic_analysis.services.openai_budget import (
     KIND_DECISION,
+    KIND_EVIDENCE_EXPLANATION,
     KIND_GENERATION,
     GLOBAL_SCOPE,
     OpenAIBudgetExhausted,
@@ -404,3 +405,23 @@ def test_response_ids_are_recorded_deduplicated():
         "resp_abc123",
         "resp_def456",
     ]
+
+
+@pytest.mark.django_db
+@override_settings(
+    MSAP_OPENAI_MAX_EVIDENCE_EXPLANATION_CALLS=2,
+    MSAP_OPENAI_MAX_TOTAL_CALLS=5,
+)
+def test_evidence_explanation_budget_is_separate_from_adaptive_decisions():
+    budget = reset_budget()
+
+    reserve_call(KIND_EVIDENCE_EXPLANATION)
+    budget.refresh_from_db()
+
+    assert budget.evidence_explanation_call_count == 1
+    assert budget.adaptive_decision_call_count == 0
+    assert budget.current_openai_call_count == 1
+
+    status = budget_status()
+    assert status["evidence_explanation_call_count"] == 1
+    assert status["max_evidence_explanation_calls"] == 2

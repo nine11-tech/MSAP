@@ -16,12 +16,18 @@ from apps.dynamic_analysis.models import (
     FindingValidationMission,
 )
 from apps.dynamic_analysis.services.assessment_executor import AssessmentExecutor
+from apps.dynamic_analysis.services.assessment_agent import (
+    AssessmentAgent,
+    AssessmentAgentError,
+)
 from apps.dynamic_analysis.services.assessment_executor import AssessmentExecutionError
 from apps.dynamic_analysis.services.assessment_planner import (
+    _deterministic_root_screen_plan,
+    _deterministic_tls_pinning_plan,
+    build_planner_input,
     AssessmentPlannerError,
     AssessmentPlannerService,
     PlanPolicyError,
-    configured_planner_provider,
 )
 from apps.dynamic_analysis.services.host_agent_client import (
     DynamicHostAgentClient,
@@ -39,6 +45,7 @@ from apps.dynamic_analysis.services.openai_budget import (
 )
 from apps.dynamic_analysis.services.playbook_catalog import (
     executable_playbooks_for_finding,
+    get_playbook,
     playbooks_for_finding,
 )
 from apps.findings.models import Finding
@@ -87,6 +94,209 @@ def _latest_apk_for_audit(audit_id: int, target_package: str | None = None) -> A
             http_status=409,
         )
     return apk
+
+
+class _DeterministicSelectedPlaybookProvider:
+    name = "DETERMINISTIC"
+    model = "msap-selected-playbook-v1"
+    last_metadata: dict[str, Any] = {}
+
+    def generate(self, planner_input: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "target_package": planner_input["trusted_control"]["target_package"],
+            "assessment_objective": planner_input["trusted_control"]["assessment_objective"],
+            "scope": planner_input["trusted_control"]["scope"],
+            "steps": [],
+        }
+
+
+SELECTABLE_AUDITOR_PLAYBOOKS = frozenset(
+    {
+        "ROOT_DETECTION_SCREEN_VALIDATION",
+        "TLS_PINNING_FRIDA_BYPASS",
+    }
+)
+
+
+def _preferred_existing_selected_playbook_mission(
+    *,
+    audit_id: int,
+    playbook_id: str,
+) -> FindingValidationMission | None:
+    finding = _playbook_basis_finding(audit_id, playbook_id)
+    missions = list(
+        FindingValidationMission.objects.filter(
+            audit_id=audit_id,
+            finding=finding,
+            playbook_id=playbook_id,
+        ).order_by("-created_at")
+    )
+    if not missions:
+        return None
+    for preferred_status in (
+        FindingValidationMission.Status.CONFIRMED,
+        FindingValidationMission.Status.NOT_REPRODUCED,
+        FindingValidationMission.Status.RUNNING,
+        FindingValidationMission.Status.APPROVED,
+        FindingValidationMission.Status.VALIDATED,
+    ):
+        for mission in missions:
+            if mission.status == preferred_status:
+                return mission
+    return missions[0]
+
+
+def _playbook_basis_finding(audit_id: int, playbook_id: str) -> Finding:
+    preferred_rules = {
+        "ROOT_DETECTION_SCREEN_VALIDATION": ("MSAP-AND-001",),
+        "TLS_PINNING_FRIDA_BYPASS": ("MSAP-AND-016", "MSAP-AND-029"),
+    }.get(playbook_id, ())
+    queryset = Finding.objects.filter(audit_id=audit_id).order_by("severity", "id")
+    for rule_id in preferred_rules:
+        finding = queryset.filter(rule_id=rule_id).first()
+        if finding is not None:
+            return finding
+    finding = queryset.first()
+    if finding is None:
+        raise FindingValidationMissionError(
+            "The audit has no persisted findings to anchor the assessment playbook.",
+            code="MISSION_FINDING_UNAVAILABLE",
+            http_status=409,
+        )
+    return finding
+
+
+def generate_selected_playbook_mission(
+    *,
+    audit_id: int,
+    playbook_id: str,
+    requested_by,
+) -> FindingValidationMission:
+    if playbook_id not in SELECTABLE_AUDITOR_PLAYBOOKS:
+        raise FindingValidationMissionError(
+            "This assessment playbook is not available from the auditor workflow.",
+            code="MISSION_PLAYBOOK_UNAVAILABLE",
+            http_status=400,
+        )
+    finding = _playbook_basis_finding(audit_id, playbook_id)
+    apk = _latest_apk_for_audit(finding.audit_id)
+    playbook = get_playbook(playbook_id)
+    if playbook is None:
+        raise FindingValidationMissionError(
+            "The selected assessment playbook is not registered.",
+            code="MISSION_PLAYBOOK_UNAVAILABLE",
+            http_status=409,
+        )
+    objective = {
+        "ROOT_DETECTION_SCREEN_VALIDATION": "Root detection manipulation demo",
+        "TLS_PINNING_FRIDA_BYPASS": "TLS pinning bypass demo",
+    }[playbook_id]
+    scope = (
+        "Use only the approved Tool Gateway, the authorized AndroGoat lab target, "
+        "and bounded evidence collection. Do not use unrestricted shell, ADB shell, "
+        "Frida source, or host resources."
+    )
+    provider = _DeterministicSelectedPlaybookProvider()
+    service = AssessmentPlannerService()
+    planner_input = build_planner_input(
+        audit=finding.audit,
+        target_package=apk.package_name,
+        objective=objective,
+        scope=scope,
+    )
+    generated = (
+        _deterministic_root_screen_plan(planner_input)
+        if playbook_id == "ROOT_DETECTION_SCREEN_VALIDATION"
+        else _deterministic_tls_pinning_plan(planner_input)
+    )
+    if generated is None:
+        raise FindingValidationMissionError(
+            "The selected assessment playbook could not be generated safely.",
+            code="MISSION_GENERATION_FAILED",
+            http_status=503,
+        )
+    try:
+        plan = AssessmentPlan.objects.create(
+            audit=finding.audit,
+            target_package=apk.package_name,
+            planner_provider=provider.name,
+            planner_model=provider.model,
+            objective=objective,
+            scope=scope,
+            status=AssessmentPlan.Status.GENERATED,
+            validation_status=AssessmentPlan.ValidationStatus.PENDING,
+            policy_status=AssessmentPlan.PolicyStatus.PENDING,
+            generated_plan=generated,
+            planner_input_hash=_json_hash(planner_input),
+            scenario_contract={},
+            created_by=requested_by,
+        )
+        plan = service.validate(plan)
+    except AssessmentPlannerError:
+        raise
+    except Exception as exc:
+        raise FindingValidationMissionError(
+            "The selected assessment playbook could not be generated safely.",
+            code="MISSION_GENERATION_FAILED",
+            http_status=503,
+        ) from exc
+
+    family = (
+        "RUNTIME_TAMPERING_VALIDATION"
+        if playbook_id == "ROOT_DETECTION_SCREEN_VALIDATION"
+        else "TLS_INTERCEPTION_VALIDATION"
+    )
+    finding_data = {
+        "finding_id": finding.pk,
+        "rule_id": finding.rule_id,
+        "title": finding.title,
+    }
+    scenario = scenario_from_finding(
+        audit_id=finding.audit_id,
+        target_package=apk.package_name,
+        finding=finding_data,
+        family=family,
+        tools=list(playbook.get("supported_tools", [])),
+        evidence=list(playbook.get("required_evidence_inputs", [])),
+        steps=plan.normalized_plan.get("steps", []),
+        reason="",
+    )
+    plan.source_finding = finding
+    plan.scenario_contract = scenario
+    plan.save(update_fields=["source_finding", "scenario_contract", "updated_at"])
+    return _create_mission_from_parts(
+        finding=finding,
+        apk=apk,
+        status=FindingValidationMission.Status.VALIDATED,
+        scenario=scenario,
+        assessment_plan=plan,
+        playbook=playbook,
+        requested_by=requested_by,
+        final_conclusion="Awaiting auditor approval and execution.",
+        limitations=playbook.get("limitations", ""),
+    )
+
+
+def get_or_create_selected_playbook_mission(
+    *,
+    audit_id: int,
+    playbook_id: str,
+    requested_by,
+) -> tuple[FindingValidationMission, bool]:
+    existing = _preferred_existing_selected_playbook_mission(
+        audit_id=audit_id,
+        playbook_id=playbook_id,
+    )
+    if existing is not None:
+        return existing, False
+    return (
+        generate_selected_playbook_mission(
+            audit_id=audit_id,
+            playbook_id=playbook_id,
+            requested_by=requested_by,
+        ),
+        True,
+    )
 
 
 def generate_finding_validation_mission(
@@ -333,11 +543,18 @@ def start_finding_validation_mission(
         )
     _require_dynamic_lab_ready(mission)
     try:
-        run = AssessmentExecutor().create_run(
-            plan=mission.assessment_plan,
-            requested_by=requested_by,
-        )
-    except AssessmentExecutionError as exc:
+        if mission.playbook_id in SELECTABLE_AUDITOR_PLAYBOOKS:
+            run = AssessmentExecutor().create_run(
+                plan=mission.assessment_plan,
+                requested_by=requested_by,
+            )
+        else:
+            run = AssessmentAgent().create_run(
+                plan=mission.assessment_plan,
+                requested_by=requested_by,
+                decision_provider_name=decision_provider_name,
+            )
+    except (AssessmentAgentError, AssessmentExecutionError) as exc:
         raise FindingValidationMissionError(
             str(exc),
             code=exc.code,
@@ -462,6 +679,11 @@ def refresh_mission_from_run(run: AgentRun) -> FindingValidationMission | None:
         status = _mission_status_from_result(result)
         oracle = result.oracle_result if isinstance(result.oracle_result, dict) else {}
         conclusion = result.safe_summary or oracle.get("summary", "")
+        warnings = oracle.get("warnings") or []
+        if oracle.get("verdict") == "CONFIRMED_WITH_WARNING" and warnings:
+            conclusion = (
+                f"Confirmed with warning: {'; '.join(warnings)}. {conclusion}"
+            )
         limitations = result.limitations or mission.limitations
     elif run.status == AgentRun.Status.SUCCEEDED:
         status = FindingValidationMission.Status.INCONCLUSIVE
@@ -558,6 +780,8 @@ def _preferred_dynamic_validation_result(run: AgentRun, mission: FindingValidati
 
 
 def _mission_expected_playbook_id(mission: FindingValidationMission) -> str:
+    if mission.playbook_id:
+        return mission.playbook_id
     finding_rule_id = getattr(mission.finding, "rule_id", "") or ""
     by_rule = {
         "MSAP-AND-001": "DEBUGGABLE_APP_VERIFICATION",
@@ -580,6 +804,8 @@ def _mission_expected_playbook_id(mission: FindingValidationMission) -> str:
 
     if "ROOT_DETECTION_SCREEN_VALIDATION" in scenario_text or "reset_root_detection_demo" in tools:
         return "ROOT_DETECTION_SCREEN_VALIDATION"
+    if "TLS_PINNING_FRIDA_BYPASS" in scenario_text or "start_proxy_capture" in tools:
+        return "TLS_PINNING_FRIDA_BYPASS"
     if "launch_exported_activity" in tools:
         return "EXPORTED_ACTIVITY_LAUNCH_VERIFICATION"
     if "send_explicit_broadcast" in tools:

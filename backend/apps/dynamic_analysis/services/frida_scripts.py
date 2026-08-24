@@ -166,18 +166,138 @@ ROOT_DETECTION_NATIVE_HOOK_SOURCE = r"""
       },
       onLeave: function (retval) {
         if (this.msapRootSignal) {
+          var originalResult = retval.toInt32();
           modified = true;
-          retval.replace(0);
-          send({type: "root_detection_native_signal_modified", success: true, api: name, path_suffix: this.msapRootSignal, original_result: retval.toInt32(), modified_result: 0});
+          retval.replace(-1);
+          send({type: "root_detection_native_signal_modified", success: true, api: name, path_suffix: this.msapRootSignal, original_result: originalResult, modified_result: -1});
         }
       }
     });
   });
-  send({type: "root_detection_native_hooks_installed", success: true, hooks: hookNames});
-  setTimeout(function () {
-    send({type: "root_detection_native_hooks_ready", success: true, modified: modified});
-  }, 1000);
+  Java.perform(function () {
+    var File = Java.use("java.io.File");
+    var View = Java.use("android.view.View");
+    var originalExists = File.exists.overload();
+    originalExists.implementation = function () {
+      var path = this.getAbsolutePath().toString();
+      if (path.indexOf("/su") >= 0 || path.indexOf("/magisk") >= 0 || path.indexOf("/system/xbin") >= 0) {
+        modified = true;
+        send({type: "root_detection_java_signal_modified", success: true, api: "java.io.File.exists", path_suffix: path.slice(-96), modified_result: false});
+        return false;
+      }
+      return originalExists.call(this);
+    };
+    send({type: "root_detection_bypass_hooks_installed", success: true, hooks: hookNames.concat(["java.io.File.exists"])});
+    Java.choose("android.app.Activity", {
+      onMatch: function (activity) {
+        try {
+          if (!activity.hasWindowFocus()) {
+            return;
+          }
+        } catch (ignored) {
+          return;
+        }
+        var retained = Java.retain(activity);
+        Java.scheduleOnMainThread(function () {
+          try {
+            var id = retained.getResources().getIdentifier("rootCheck", "id", retained.getPackageName());
+            var button = id > 0 ? retained.findViewById(id) : null;
+            var clicked = false;
+            if (button !== null) {
+              try {
+                clicked = View.performClick.overload().call(button);
+              } catch (performError) {
+                clicked = View.callOnClick.overload().call(button);
+              }
+            }
+            send({type: "root_detection_check_triggered", success: !!clicked, modified: modified, activity: retained.getClass().getName().toString().slice(0, 255)});
+          } catch (error) {
+            send({type: "root_detection_check_triggered", success: false, modified: modified, error: String(error).slice(0, 500)});
+          }
+        });
+        return "stop";
+      },
+      onComplete: function () {
+        send({type: "root_detection_activity_search_complete", success: true});
+      }
+    });
+  });
 })();
+""".strip()
+
+TLS_PINNING_OKHTTP_BYPASS_SOURCE = r"""
+Java.perform(function () {
+  var hookCount = 0;
+  var bypassCount = 0;
+  try {
+    var CertificatePinner = Java.use("okhttp3.CertificatePinner");
+    CertificatePinner.check.overloads.forEach(function (overload) {
+      overload.implementation = function () {
+        bypassCount += 1;
+        send({type: "tls_pinning_check_bypassed", success: true, host: String(arguments[0]).slice(0, 255), overload: overload.argumentTypes.length});
+        return;
+      };
+      hookCount += 1;
+    });
+  } catch (error) {
+    send({type: "tls_pinning_hook_warning", success: false, layer: "okhttp3.CertificatePinner", error: String(error).slice(0, 500)});
+  }
+  try {
+    var X509TrustManager = Java.use("javax.net.ssl.X509TrustManager");
+    var TrustManager = Java.registerClass({
+      name: "org.msap.BoundedProxyTrustManager",
+      implements: [X509TrustManager],
+      methods: {
+        checkClientTrusted: function () {},
+        checkServerTrusted: function () {},
+        getAcceptedIssuers: function () { return []; }
+      }
+    });
+    var SSLContext = Java.use("javax.net.ssl.SSLContext");
+    var originalInit = SSLContext.init.overload(
+      "[Ljavax.net.ssl.KeyManager;",
+      "[Ljavax.net.ssl.TrustManager;",
+      "java.security.SecureRandom"
+    );
+    originalInit.implementation = function (keyManagers, trustManagers, secureRandom) {
+      send({type: "tls_proxy_trust_injected", success: true, scope: "current_process"});
+      return originalInit.call(this, keyManagers, [TrustManager.$new()], secureRandom);
+    };
+    hookCount += 1;
+  } catch (error) {
+    send({type: "tls_trust_hook_warning", success: false, layer: "SSLContext.init", error: String(error).slice(0, 500)});
+  }
+  send({type: "tls_pinning_bypass_hooks_installed", success: hookCount > 0, hook_count: hookCount, target_host: "owasp.org"});
+  Java.choose("android.app.Activity", {
+    onMatch: function (activity) {
+      try {
+        if (!activity.hasWindowFocus()) {
+          return;
+        }
+      } catch (ignored) {
+        return;
+      }
+      var retained = Java.retain(activity);
+      Java.scheduleOnMainThread(function () {
+        try {
+          var id = retained.getResources().getIdentifier("PinningButton", "id", retained.getPackageName());
+          var button = id > 0 ? retained.findViewById(id) : null;
+          var clicked = button !== null && button.performClick();
+          send({type: "tls_pinned_request_triggered", success: !!clicked, target_host: "owasp.org", activity: retained.getClass().getName().toString().slice(0, 255)});
+        } catch (error) {
+          send({type: "tls_pinned_request_triggered", success: false, target_host: "owasp.org", error: String(error).slice(0, 500)});
+        }
+      });
+      return "stop";
+    },
+    onComplete: function () {
+      send({type: "tls_activity_search_complete", success: true, target_host: "owasp.org"});
+    }
+  });
+  setTimeout(function () {
+    send({type: "tls_pinning_bypass_observation", success: bypassCount > 0, bypass_count: bypassCount, target_host: "owasp.org"});
+  }, 2500);
+});
 """.strip()
 
 EMULATOR_DETECTION_LAB_BYPASS_SOURCE = r"""
@@ -249,6 +369,13 @@ FRIDA_TEMPLATE_REGISTRY = {
         "purpose": "Authorized lab-only native root-signal instrumentation for AndroGoat",
         "requires_additional_approval": True,
         "source": ROOT_DETECTION_NATIVE_HOOK_SOURCE,
+        "authorized_lab_targets_only": True,
+    },
+    "tls_pinning_okhttp_bypass_template": {
+        "source_identifier": "__MSAP_TLS_PINNING_OKHTTP_BYPASS_TEMPLATE__",
+        "purpose": "Authorized AndroGoat OkHttp pinning bypass for controlled proxy evidence",
+        "requires_additional_approval": True,
+        "source": TLS_PINNING_OKHTTP_BYPASS_SOURCE,
         "authorized_lab_targets_only": True,
     },
     "emulator_detection_lab_bypass_template": {

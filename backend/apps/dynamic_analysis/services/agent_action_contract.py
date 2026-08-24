@@ -20,6 +20,11 @@ from apps.dynamic_analysis.services.agent_tools import (
     validate_agent_tool_arguments,
 )
 from apps.dynamic_analysis.services.frida_scripts import APPROVED_FRIDA_SOURCE_IDENTIFIERS
+from apps.dynamic_analysis.services.generated_frida_scripts import (
+    FridaScriptProposalError,
+    is_generated_frida_source_identifier,
+    resolve_approved_generated_frida_source,
+)
 from apps.dynamic_analysis.services.assessment_plan_contract import EVIDENCE_TYPES
 
 
@@ -191,12 +196,29 @@ def validate_action_decision(
                 code="AGENT_DECISION_NEEDS_AUDITOR",
                 http_status=403,
             )
-        if tool_name == "frida_run_js" and arguments.get("source") not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
-            raise AgentActionDecisionError(
-                "Agentic Frida execution is restricted to the controlled built-in proof.",
-                code="AGENT_DECISION_FRIDA_SOURCE_REJECTED",
-                http_status=403,
-            )
+        if tool_name == "frida_run_js":
+            source = arguments.get("source")
+            if source not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
+                if is_generated_frida_source_identifier(source):
+                    try:
+                        resolve_approved_generated_frida_source(
+                            source,
+                            run=run,
+                            requested_by=run.requested_by,
+                            target_package=arguments.get("package_name", ""),
+                        )
+                    except FridaScriptProposalError as exc:
+                        raise AgentActionDecisionError(
+                            str(exc),
+                            code=exc.code,
+                            http_status=exc.http_status,
+                        ) from None
+                else:
+                    raise AgentActionDecisionError(
+                        "Agentic Frida execution requires a built-in template or an auditor-approved generated script reference.",
+                        code="AGENT_DECISION_FRIDA_SOURCE_REJECTED",
+                        http_status=403,
+                    )
         try:
             arguments = validate_agent_tool_arguments(
                 tool_name,
@@ -314,15 +336,30 @@ def _authorize_arguments(
             code="AGENT_DECISION_ARGUMENT_POLICY_REJECTED",
             http_status=403,
         )
-    if tool_name == "frida_run_js" and (
-        arguments.get("source") not in policy.get("allowed_source_identifiers", [])
-        or arguments.get("mode") not in policy["allowed_modes"]
-    ):
-        raise AgentActionDecisionError(
-            "Agentic Frida execution is restricted to the controlled built-in proof.",
-            code="AGENT_DECISION_FRIDA_SOURCE_REJECTED",
-            http_status=403,
-        )
+    if tool_name == "frida_run_js":
+        source = arguments.get("source")
+        source_allowed = source in policy.get("allowed_source_identifiers", [])
+        if not source_allowed and is_generated_frida_source_identifier(source):
+            try:
+                resolve_approved_generated_frida_source(
+                    source,
+                    run=run,
+                    requested_by=run.requested_by,
+                    target_package=arguments.get("package_name", ""),
+                )
+                source_allowed = True
+            except FridaScriptProposalError as exc:
+                raise AgentActionDecisionError(
+                    str(exc),
+                    code=exc.code,
+                    http_status=exc.http_status,
+                ) from None
+        if not source_allowed or arguments.get("mode") not in policy["allowed_modes"]:
+            raise AgentActionDecisionError(
+                "Agentic Frida execution requires a built-in template or an auditor-approved generated script reference.",
+                code="AGENT_DECISION_FRIDA_SOURCE_REJECTED",
+                http_status=403,
+            )
     if tool_name in {"stop_logcat", "get_logcat_excerpt"}:
         collector_ids = {
             step.output_summary.get("collector_id")

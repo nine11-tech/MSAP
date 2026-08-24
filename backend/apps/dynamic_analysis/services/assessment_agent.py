@@ -67,6 +67,9 @@ from apps.dynamic_analysis.services.openai_budget import (
     release_call,
     reserve_call,
 )
+from apps.dynamic_analysis.services.generated_frida_scripts import (
+    is_generated_frida_source_identifier,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -464,6 +467,23 @@ class AssessmentAgent:
                 run.consecutive_failure_count += 1
                 run.save(update_fields=["consecutive_failure_count", "updated_at"])
                 evaluate_run_oracles(run)
+                if (
+                    decision.tool_name == "frida_run_js"
+                    and isinstance(decision.arguments, dict)
+                    and is_generated_frida_source_identifier(
+                        decision.arguments.get("source")
+                    )
+                ):
+                    return self._finish(
+                        run,
+                        status=AgentRun.Status.PAUSED,
+                        termination_reason="FRIDA_SCRIPT_NEEDS_REVIEW",
+                        message=(
+                            "The auditor-approved generated Frida script failed. "
+                            "Review the recorded error, generate or edit a narrower "
+                            "script proposal, approve it, then resume the assessment."
+                        ),
+                    )
 
     def _start_run(self, run_id: int) -> AgentRun:
         with transaction.atomic():

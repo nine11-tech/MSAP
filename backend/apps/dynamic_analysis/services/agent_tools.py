@@ -29,6 +29,11 @@ from apps.dynamic_analysis.services.frida_scripts import (
     FRIDA_TEMPLATE_REGISTRY,
     RUNTIME_UI_MODIFICATION_PROOF_SOURCE,
 )
+from apps.dynamic_analysis.services.generated_frida_scripts import (
+    FridaScriptProposalError,
+    is_generated_frida_source_identifier,
+    resolve_approved_generated_frida_source,
+)
 from apps.storage.models import ObjectStorageReference
 from apps.storage.services.file_provider import APKFileProvider, FileProviderError
 from apps.storage.services.minio_storage import MinIOStorageService
@@ -38,6 +43,7 @@ PACKAGE_NAME_RE = re.compile(
     r"^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_]+)+$"
 )
 COLLECTOR_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+PROXY_CAPTURE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
 SAFE_INPUT_TEXT_RE = re.compile(r"^[A-Za-z0-9 @._,:+!?/\-]{1,128}$")
 MAX_PACKAGES = 500
 MAX_UI_VALUES = 100
@@ -151,6 +157,12 @@ TOOL_MANIFEST = MappingProxyType(
             ("status", "package_name", "reset", "marker_path"),
             15,
         ),
+        "prepare_root_detection_demo": AgentToolSpec(
+            "prepare_root_detection_demo",
+            _object_schema({"package_name": PACKAGE_PROPERTY}, required=("package_name",)),
+            ("package_name", "rooted_baseline_prepared", "marker_path"),
+            15,
+        ),
         "launch_exported_activity": AgentToolSpec(
             "launch_exported_activity",
             _object_schema({"package_name": PACKAGE_PROPERTY, "component_name": COMPONENT_PROPERTY}, required=("package_name", "component_name")),
@@ -242,6 +254,37 @@ TOOL_MANIFEST = MappingProxyType(
             ),
             ("line_count", "lines", "redaction_applied"),
             10,
+        ),
+        "start_proxy_capture": AgentToolSpec(
+            "start_proxy_capture",
+            _object_schema(
+                {
+                    "package_name": PACKAGE_PROPERTY,
+                    "max_seconds": {"type": "integer", "minimum": 5, "maximum": 60},
+                    "phase": {"type": "string", "enum": ["pinning_baseline", "pinning_bypass"]},
+                },
+                required=("package_name", "max_seconds", "phase"),
+            ),
+            ("capture_id", "phase", "started_at", "max_seconds", "proxy"),
+            20,
+        ),
+        "stop_proxy_capture": AgentToolSpec(
+            "stop_proxy_capture",
+            _object_schema(
+                {"capture_id": {"type": "string", "maxLength": 64}},
+                required=("capture_id",),
+            ),
+            ("capture_id", "phase", "stopped", "flow_count", "successful_tls_flow_count", "flows", "redaction_applied", "raw_flow_retained"),
+            30,
+        ),
+        "get_proxy_flows": AgentToolSpec(
+            "get_proxy_flows",
+            _object_schema(
+                {"capture_id": {"type": "string", "maxLength": 64}},
+                required=("capture_id",),
+            ),
+            ("capture_id", "phase", "flow_count", "successful_tls_flow_count", "flows", "redaction_applied", "raw_flow_retained"),
+            15,
         ),
         "dump_ui": AgentToolSpec(
             "dump_ui",
@@ -507,6 +550,7 @@ def _dispatch_tool(
         "list_packages": "/actions/list-packages",
         "launch_package": "/actions/launch-package",
         "reset_root_detection_demo": "/actions/root-detection-demo-reset",
+        "prepare_root_detection_demo": "/actions/root-detection-demo-prepare",
         "launch_exported_activity": "/actions/launch-exported-activity",
         "send_explicit_broadcast": "/actions/send-explicit-broadcast",
         "query_exported_provider": "/actions/query-exported-provider",
@@ -515,6 +559,9 @@ def _dispatch_tool(
         "start_logcat": "/actions/logcat-bounded-capture",
         "stop_logcat": "/actions/logcat-stop",
         "get_logcat_excerpt": "/actions/logcat-excerpt",
+        "start_proxy_capture": "/actions/proxy-capture-start",
+        "stop_proxy_capture": "/actions/proxy-capture-stop",
+        "get_proxy_flows": "/actions/proxy-flows",
         "dump_ui": "/actions/ui-dump",
         "tap_coordinates": "/actions/tap",
         "type_text": "/actions/type-text",
@@ -526,7 +573,7 @@ def _dispatch_tool(
     }[tool_name]
     body = (
         {"package_name": arguments["package_name"]}
-        if tool_name in {"launch_package", "reset_root_detection_demo", "force_stop_package", "clear_package_data"}
+        if tool_name in {"launch_package", "reset_root_detection_demo", "prepare_root_detection_demo", "force_stop_package", "clear_package_data"}
         else arguments
     )
     if tool_name == "frida_run_js":
@@ -536,6 +583,22 @@ def _dispatch_tool(
         )
         if template is not None:
             body = {**body, "source": template["source"]}
+        elif is_generated_frida_source_identifier(body.get("source")):
+            try:
+                body = {
+                    **body,
+                    "source": resolve_approved_generated_frida_source(
+                        body["source"],
+                        requested_by=requested_by,
+                        target_package=body.get("package_name", ""),
+                    ),
+                }
+            except FridaScriptProposalError as exc:
+                raise AgentToolError(
+                    str(exc),
+                    code=exc.code,
+                    failure_category="TOOL_EXECUTION_FAILED",
+                ) from None
     raw = client.request_json(route, method="POST", body=body)
     if raw.get("success") is False and tool_name not in {
         "stop_logcat",
@@ -575,6 +638,12 @@ def _dispatch_tool(
             "package_name": _package_name_or_empty(raw.get("package_name")),
             "reset": bool(raw.get("reset")),
             "marker_path": _bounded_text(raw.get("marker_path"), 128),
+        }
+    if tool_name == "prepare_root_detection_demo":
+        return {
+            "package_name": _package_name_or_empty(raw.get("package_name")),
+            "rooted_baseline_prepared": bool(raw.get("rooted_baseline_prepared")),
+            "marker_path": "/data/local/su" if raw.get("rooted_baseline_prepared") else "",
         }
     if tool_name == "launch_exported_activity":
         return {
@@ -634,6 +703,39 @@ def _dispatch_tool(
             "line_count": len(lines),
             "lines": lines,
             "redaction_applied": bool(raw.get("redaction_applied")),
+        }
+    if tool_name == "start_proxy_capture":
+        return {
+            "capture_id": _bounded_text(raw.get("capture_id"), 32),
+            "phase": _bounded_text(raw.get("phase"), 32),
+            "started_at": _bounded_text(raw.get("started_at"), 64),
+            "max_seconds": _bounded_int(raw.get("max_seconds"), 5, 60),
+            "proxy": _bounded_text(raw.get("proxy"), 64),
+        }
+    if tool_name in {"stop_proxy_capture", "get_proxy_flows"}:
+        flows = []
+        for item in raw.get("flows", [])[:100]:
+            if not isinstance(item, dict):
+                continue
+            flows.append({
+                "event": _bounded_text(item.get("event"), 16),
+                "method": _bounded_text(item.get("method"), 12),
+                "scheme": _bounded_text(item.get("scheme"), 12),
+                "host": _bounded_text(item.get("host"), 255),
+                "path": _bounded_text(item.get("path"), 500),
+                "status_code": _nullable_positive_int(item.get("status_code")),
+                "tls_established": bool(item.get("tls_established")),
+                "error": _bounded_text(item.get("error"), 500),
+            })
+        return {
+            "capture_id": _bounded_text(raw.get("capture_id"), 32),
+            "phase": _bounded_text(raw.get("phase"), 32),
+            "stopped": bool(raw.get("stopped")) if tool_name == "stop_proxy_capture" else True,
+            "flow_count": _bounded_int(raw.get("flow_count"), 0, 100),
+            "successful_tls_flow_count": _bounded_int(raw.get("successful_tls_flow_count"), 0, 100),
+            "flows": flows,
+            "redaction_applied": True,
+            "raw_flow_retained": False,
         }
     if tool_name == "dump_ui":
         return {
@@ -747,6 +849,7 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
         "install_verified_apk": {"audit_id", "apk_file_id"},
         "launch_package": {"package_name"},
         "reset_root_detection_demo": {"package_name"},
+        "prepare_root_detection_demo": {"package_name"},
         "launch_exported_activity": {"package_name", "component_name"},
         "send_explicit_broadcast": {"package_name", "receiver_name", "action"},
         "query_exported_provider": {"package_name", "authority"},
@@ -756,6 +859,9 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
         "start_logcat": {"package_name", "reason", "max_seconds"},
         "stop_logcat": {"collector_id"},
         "get_logcat_excerpt": {"collector_id", "max_lines"},
+        "start_proxy_capture": {"package_name", "max_seconds", "phase"},
+        "stop_proxy_capture": {"capture_id"},
+        "get_proxy_flows": {"capture_id"},
         "dump_ui": {"package_name"},
         "tap_coordinates": {"x", "y", "reason"},
         "type_text": {"text", "reason"},
@@ -819,8 +925,8 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
                 f"Frida JavaScript must be at most {MAX_FRIDA_SCRIPT_BYTES} bytes "
                 "with no NUL characters."
             )
-        if source not in APPROVED_FRIDA_SOURCE_IDENTIFIERS:
-            _invalid("Frida source must be an approved backend template identifier.")
+        if source not in APPROVED_FRIDA_SOURCE_IDENTIFIERS and not is_generated_frida_source_identifier(source):
+            _invalid("Frida source must be an approved backend template or generated-script identifier.")
         if not isinstance(arguments["capture_logcat"], bool) or not isinstance(
             arguments["capture_screenshot"], bool
         ):
@@ -839,6 +945,16 @@ def _validate_arguments(tool_name: str, arguments: Any, *, requested_by=None) ->
         collector_id = arguments["collector_id"]
         if not isinstance(collector_id, str) or not COLLECTOR_ID_RE.fullmatch(collector_id):
             _invalid("Invalid collector_id.")
+    if tool_name in {"stop_proxy_capture", "get_proxy_flows"}:
+        capture_id = arguments["capture_id"]
+        if not isinstance(capture_id, str) or not PROXY_CAPTURE_ID_RE.fullmatch(capture_id):
+            _invalid("Invalid proxy capture_id.")
+    if tool_name == "start_proxy_capture":
+        if arguments["package_name"] != "owasp.sat.agoat":
+            _invalid("TLS proxy capture is restricted to authorized AndroGoat.")
+        validated["max_seconds"] = _integer_in_range(arguments["max_seconds"], 5, 60, "max_seconds")
+        if arguments["phase"] not in {"pinning_baseline", "pinning_bypass"}:
+            _invalid("Invalid proxy capture phase.")
     if tool_name == "get_logcat_excerpt":
         validated["max_lines"] = _integer_in_range(arguments["max_lines"], 1, 100, "max_lines")
     if tool_name == "tap_coordinates":

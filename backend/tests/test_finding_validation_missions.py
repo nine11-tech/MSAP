@@ -12,11 +12,13 @@ from apps.audits.models import Audit
 from apps.dynamic_analysis.models import (
     AgentRun,
     AgentRuntime,
+    AssessmentPlan,
     DynamicValidationResult,
     FindingValidationMission,
 )
 from apps.dynamic_analysis.services.agent_tools import ALL_TOOL_NAMES
 from apps.dynamic_analysis.services.finding_validation_missions import (
+    generate_selected_playbook_mission,
     refresh_mission_from_run,
 )
 from apps.evidence.models import Evidence
@@ -58,12 +60,16 @@ def audit_with_apk(db):
         sha256="a" * 64,
         size_bytes=1234,
     )
+    AgentRuntime.objects.all().delete()
     AgentRuntime.objects.create(
         name="Internal runtime",
         runtime_type=AgentRuntime.RuntimeType.INTERNAL_CONTROLLER,
         status=AgentRuntime.Status.AVAILABLE,
         enabled=True,
-        capabilities={"tools": sorted(ALL_TOOL_NAMES), "objectives": []},
+        capabilities={
+            "tools": sorted(ALL_TOOL_NAMES),
+            "objectives": [AgentRun.Objective.ASSESSMENT_PLAN_EXECUTION],
+        },
     )
     return audit, apk
 
@@ -178,20 +184,22 @@ def test_approval_and_start_require_analyst(
     audit_with_apk,
 ):
     audit, _apk = audit_with_apk
-    finding = Finding.objects.create(
+    Finding.objects.create(
         audit=audit,
-        rule_id="SDK-ROOT-001",
-        title="Root detection via RootBeer",
+        rule_id="MSAP-AND-016",
+        title="User-installed CA trust",
         severity="Medium",
         confidence="HIGH",
         standard="MASVS",
-        category="MASVS-RESILIENCE",
+        category="NETWORK",
     )
-    mission = analyst_client.post(
-        f"/api/findings/{finding.id}/dynamic-validation/generate/",
-        {},
-        format="json",
-    ).json()
+    mission = {
+        "id": generate_selected_playbook_mission(
+            audit_id=audit.id,
+            playbook_id="TLS_PINNING_FRIDA_BYPASS",
+            requested_by=analyst_client.user,
+        ).id
+    }
 
     assert viewer_client.post(
         f"/api/dynamic/finding-validations/{mission['id']}/approve/",
@@ -217,6 +225,9 @@ def test_approval_and_start_require_analyst(
         "apps.dynamic_analysis.services.finding_validation_missions.DynamicHostAgentClient",
         return_value=_ReadyLabClient(),
     ), patch(
+        "apps.dynamic_analysis.views.execute_assessment_plan_run_task.delay",
+        return_value=Mock(id="task-1"),
+    ), patch(
         "apps.dynamic_analysis.views.execute_adaptive_assessment_run_task.delay",
         return_value=Mock(id="task-1"),
     ):
@@ -228,6 +239,87 @@ def test_approval_and_start_require_analyst(
     assert started.status_code == 202
     assert started.json()["mission"]["status"] == "RUNNING"
     assert started.json()["run"]["objective"] == "ASSESSMENT_PLAN_EXECUTION"
+
+
+@pytest.mark.django_db
+def test_start_selected_auditor_playbook_creates_validated_mission(
+    analyst_client,
+    audit_with_apk,
+):
+    audit, _apk = audit_with_apk
+    Finding.objects.create(
+        audit=audit,
+        rule_id="MSAP-AND-016",
+        title="User-installed CA trust",
+        severity="Medium",
+        confidence="HIGH",
+        standard="MASVS",
+        category="NETWORK",
+    )
+
+    response = analyst_client.post(
+        f"/api/dynamic/static-dynamic-correlation/{audit.id}/start-playbook/",
+        {"playbook_id": "TLS_PINNING_FRIDA_BYPASS"},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["next_step"] == "approve"
+    assert data["mission"]["playbook_id"] == "TLS_PINNING_FRIDA_BYPASS"
+    assert data["mission"]["status"] == "VALIDATED"
+    assert data["mission"]["target_package"] == "owasp.sat.agoat"
+    assert "start_proxy_capture" in data["mission"]["allowed_capabilities"]
+
+
+@pytest.mark.django_db
+def test_start_selected_auditor_playbook_reuses_confirmed_mission(
+    analyst_client,
+    audit_with_apk,
+):
+    audit, apk = audit_with_apk
+    finding = Finding.objects.create(
+        audit=audit,
+        rule_id="MSAP-AND-001",
+        title="Debuggable build enables runtime instrumentation",
+        severity="Medium",
+        confidence="HIGH",
+        standard="MASVS",
+        category="MASVS-RESILIENCE",
+    )
+    confirmed = FindingValidationMission.objects.create(
+        audit=audit,
+        apk=apk,
+        finding=finding,
+        target_package=apk.package_name,
+        playbook_id="ROOT_DETECTION_SCREEN_VALIDATION",
+        status=FindingValidationMission.Status.CONFIRMED,
+        final_conclusion="Confirmed root manipulation evidence.",
+        scenario_contract={"steps": []},
+    )
+    FindingValidationMission.objects.create(
+        audit=audit,
+        apk=apk,
+        finding=finding,
+        target_package=apk.package_name,
+        playbook_id="ROOT_DETECTION_SCREEN_VALIDATION",
+        status=FindingValidationMission.Status.INCONCLUSIVE,
+        final_conclusion="Required evidence did not complete: frida_run_js.",
+        scenario_contract={"steps": []},
+    )
+
+    response = analyst_client.post(
+        f"/api/dynamic/static-dynamic-correlation/{audit.id}/start-playbook/",
+        {"playbook_id": "ROOT_DETECTION_SCREEN_VALIDATION"},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["mission"]["id"] == confirmed.id
+    assert data["mission"]["status"] == "CONFIRMED"
+    assert data["next_step"] == "result"
+    assert data["mission"]["playbook_id"] == "ROOT_DETECTION_SCREEN_VALIDATION"
 
 
 @pytest.mark.django_db

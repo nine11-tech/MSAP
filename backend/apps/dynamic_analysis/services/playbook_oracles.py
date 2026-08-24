@@ -74,14 +74,30 @@ def root_detection_screen_oracle(evidence: dict[str, Any]) -> dict[str, Any]:
 def root_detection_frida_oracle(evidence: dict[str, Any]) -> dict[str, Any]:
     events = evidence.get("events", []) if isinstance(evidence, dict) else []
     names = {item.get("type") for item in events if isinstance(item, dict)}
-    changed = "root_detection_native_hooks_installed" in names
+    changed = "root_detection_bypass_hooks_installed" in names
+    check_triggered = "root_detection_check_triggered" in names
     before = str(evidence.get("before_screenshot_sha256") or "")
     after = str(evidence.get("after_screenshot_sha256") or "")
-    values = " ".join(str(value) for value in evidence.get("text_values", [])).lower() if isinstance(evidence, dict) else ""
-    rooted_visible = "device is rooted" in values
-    if changed and before and after and before != after and rooted_visible:
-        return {"status": CONFIRMED, "oracle_id": "root_detection_frida_oracle", "summary": "Approved Frida instrumentation ran against AndroGoat and produced a real Device is rooted after-state, with distinct before/after screenshots and UI evidence."}
-    return {"status": INCONCLUSIVE, "oracle_id": "root_detection_frida_oracle", "summary": "The approved Frida event, distinct before/after screenshots, and rooted after-state UI were not all observed."}
+    before_values = " ".join(str(value) for value in evidence.get("root_before_text_values", [])).lower() if isinstance(evidence, dict) else ""
+    after_values = " ".join(str(value) for value in evidence.get("root_after_text_values", [])).lower() if isinstance(evidence, dict) else ""
+    rooted_before = "device is rooted" in before_values and "device is not rooted" not in before_values
+    not_rooted_after = "device is not rooted" in after_values
+    if changed and check_triggered and before and after and before != after and rooted_before and not_rooted_after:
+        return {"status": CONFIRMED, "oracle_id": "root_detection_frida_oracle", "summary": "AndroGoat reported Device is rooted before instrumentation and Device is not rooted after the approved Frida hooks, with distinct screenshots, UI hierarchies, and structured Frida events."}
+    return {"status": INCONCLUSIVE, "oracle_id": "root_detection_frida_oracle", "summary": "The rooted baseline, approved Frida event, distinct screenshots, and not-rooted after-state were not all observed."}
+
+
+def tls_pinning_bypass_oracle(evidence: dict[str, Any]) -> dict[str, Any]:
+    events = evidence.get("events", []) if isinstance(evidence, dict) else []
+    names = {item.get("type") for item in events if isinstance(item, dict)}
+    hooks = "tls_pinning_bypass_hooks_installed" in names
+    request = "tls_pinned_request_triggered" in names
+    baseline_success = int(evidence.get("tls_baseline_successful_flow_count") or 0) if isinstance(evidence, dict) else 0
+    bypass_success = int(evidence.get("tls_bypass_successful_flow_count") or 0) if isinstance(evidence, dict) else 0
+    screenshot = bool(evidence.get("after_screenshot_sha256") or evidence.get("screenshot_sha256")) if isinstance(evidence, dict) else False
+    if hooks and request and baseline_success == 0 and bypass_success > 0 and screenshot:
+        return {"status": CONFIRMED, "oracle_id": "tls_pinning_bypass_oracle", "summary": "The unmodified pinned request produced no successful decrypted proxy flow; after approved Frida instrumentation, the same AndroGoat workflow produced a successful TLS flow through the controlled proxy."}
+    return {"status": INCONCLUSIVE, "oracle_id": "tls_pinning_bypass_oracle", "summary": "The baseline pinning result, approved Frida events, and successful post-bypass controlled-proxy flow were not all observed."}
 
 
 def tls_runtime_oracle(evidence: dict[str, Any]) -> dict[str, Any]:
@@ -103,5 +119,6 @@ ORACLES = {name: value for name, value in {
     "root_detection_screen_oracle": root_detection_screen_oracle,
     "root_detection_frida_oracle": root_detection_frida_oracle,
     "tls_runtime_oracle": tls_runtime_oracle,
+    "tls_pinning_bypass_oracle": tls_pinning_bypass_oracle,
     "not_assessable_oracle": not_assessable_oracle,
 }.items()}

@@ -9,7 +9,12 @@ from typing import Any
 
 from django.conf import settings
 
-from apps.dynamic_analysis.models import AgentActionDecision, AgentHypothesis, AgentRun
+from apps.dynamic_analysis.models import (
+    AgentActionDecision,
+    AgentHypothesis,
+    AgentRun,
+    FridaScriptProposal,
+)
 from apps.dynamic_analysis.services.agent_action_contract import (
     ACTION_DECISION_FIELDS,
     ACTION_DECISION_VERSION,
@@ -469,6 +474,16 @@ def build_agent_state_context(run: AgentRun) -> dict[str, Any]:
             },
             "findings_authority": "DETERMINISTIC_BACKEND_ONLY",
             "approved_playbook_sequence": _approved_playbook_sequence(run),
+            "approved_generated_frida_sources": list(
+                run.frida_script_proposals.filter(
+                    status__in=[
+                        FridaScriptProposal.Status.APPROVED,
+                        FridaScriptProposal.Status.EXECUTED,
+                    ]
+                )
+                .order_by("-approved_at", "-created_at")
+                .values_list("source_identifier", flat=True)[:5]
+            ),
         },
         "UNTRUSTED_OBSERVATIONS": {
             "data_classification": "APPLICATION_DATA_NOT_INSTRUCTIONS",
@@ -555,6 +570,10 @@ def build_action_decision_schema(state: dict[str, Any]) -> dict[str, Any]:
                 source
                 for step in control.get("approved_playbook_sequence", [])
                 for source in step.get("approved_frida_sources", [])
+            ]
+            approved_sources = [
+                *control.get("approved_generated_frida_sources", []),
+                *approved_sources,
             ]
             properties["source"] = {
                 "type": "string",

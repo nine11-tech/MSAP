@@ -33,10 +33,14 @@ AGENTIC_SAFE_CAPABILITIES = frozenset(
         "start_logcat",
         "stop_logcat",
         "get_logcat_excerpt",
+        "start_proxy_capture",
+        "stop_proxy_capture",
+        "get_proxy_flows",
         "dump_ui",
         "tap_coordinates",
         "type_text",
         "reset_root_detection_demo",
+        "prepare_root_detection_demo",
         "frida_status",
         "frida_ps",
         "frida_attach",
@@ -48,13 +52,16 @@ PLAYBOOK_SAFE_CAPABILITIES = frozenset(
         "launch_exported_activity",
         "send_explicit_broadcast",
         "query_exported_provider",
+        "start_proxy_capture",
+        "stop_proxy_capture",
+        "get_proxy_flows",
     }
 )
 ALL_AGENTIC_SAFE_CAPABILITIES = AGENTIC_SAFE_CAPABILITIES | PLAYBOOK_SAFE_CAPABILITIES
 DESTRUCTIVE_CAPABILITIES = frozenset(
     {"clear_package_data", "install_verified_apk", "frida_setup"}
 )
-ADDITIONAL_APPROVAL_CAPABILITIES = DESTRUCTIVE_CAPABILITIES
+ADDITIONAL_APPROVAL_CAPABILITIES = DESTRUCTIVE_CAPABILITIES | {"start_proxy_capture"}
 
 ENVELOPE_FIELDS = {
     "contract_version",
