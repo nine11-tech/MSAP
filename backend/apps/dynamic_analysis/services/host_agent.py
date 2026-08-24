@@ -82,6 +82,27 @@ class DynamicHostAgent:
         self._proxy_captures: dict[str, dict] = {}
         self._proxy_lock = threading.Lock()
 
+    @staticmethod
+    def _dynamic_lab_home() -> Path:
+        configured = os.getenv("MSAP_DYNAMIC_HOME", "").strip()
+        base = Path(configured).expanduser() if configured else Path.home() / ".local" / "share" / "msap-dynamic"
+        return base.resolve()
+
+    def _mitmproxy_venv(self) -> Path:
+        configured = os.getenv("MSAP_MITMPROXY_VENV", "").strip()
+        base = Path(configured).expanduser() if configured else self._dynamic_lab_home() / "venvs" / "mitmproxy"
+        return base.resolve()
+
+    def _mitmproxy_confdir(self) -> Path:
+        configured = os.getenv("MSAP_MITMPROXY_CONF", "").strip()
+        base = Path(configured).expanduser() if configured else self._dynamic_lab_home() / "tools" / "mitmproxy" / "conf"
+        return base.resolve()
+
+    def _mitmdump_bin(self) -> Path:
+        configured = os.getenv("MSAP_MITMDUMP_BIN", "").strip()
+        binary = Path(configured).expanduser() if configured else self._mitmproxy_venv() / "bin" / "mitmdump"
+        return binary.resolve()
+
     def health(self) -> dict:
         """Safe, structured lab status. No secrets, tokens, or raw environment."""
         adb_path = self._adb_path()
@@ -369,18 +390,12 @@ class DynamicHostAgent:
                     "A bounded proxy capture is already running.", HTTPStatus.CONFLICT
                 )
 
-        mitmdump = Path(
-            os.getenv(
-                "MSAP_MITMDUMP_BIN",
-                str(Path(os.getenv("MSAP_MITMPROXY_VENV", "")) / "bin" / "mitmdump"),
-            )
-        ).resolve()
-        confdir_value = os.getenv("MSAP_MITMPROXY_CONF", "").strip()
-        confdir = Path(confdir_value).resolve() if confdir_value else None
+        mitmdump = self._mitmdump_bin()
+        confdir = self._mitmproxy_confdir()
         if (
             not mitmdump.is_file()
             or not os.access(mitmdump, os.X_OK)
-            or (confdir is not None and not confdir.is_dir())
+            or not confdir.is_dir()
         ):
             raise HostAgentRequestError(
                 "Managed mitmproxy runtime is unavailable.",
@@ -408,8 +423,7 @@ class DynamicHostAgent:
             "-w",
             str(flows_path),
         ]
-        if confdir is not None:
-            mitm_command[1:1] = ["--set", f"confdir={confdir}"]
+        mitm_command[1:1] = ["--set", f"confdir={confdir}"]
         bridge_command = (
             "$ErrorActionPreference='Stop';"
             f"$listener=[System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Parse('127.0.0.1'),{PROXY_CAPTURE_PORT});"
@@ -555,16 +569,9 @@ class DynamicHostAgent:
             flows_path.unlink(missing_ok=True)
             raise HostAgentRequestError("Bounded proxy capture exceeded its size limit.")
         helper = settings.BASE_DIR.parent / "scripts" / "dynamic-lab" / "helpers" / "mitm-target-flow-summary.py"
-        mitmdump = Path(
-            os.getenv(
-                "MSAP_MITMDUMP_BIN",
-                str(Path(os.getenv("MSAP_MITMPROXY_VENV", "")) / "bin" / "mitmdump"),
-            )
-        ).resolve()
+        mitmdump = self._mitmdump_bin()
         command = [str(mitmdump), "-nr", str(flows_path), "-s", str(helper)]
-        confdir_value = os.getenv("MSAP_MITMPROXY_CONF", "").strip()
-        if confdir_value:
-            command[1:1] = ["--set", f"confdir={confdir_value}"]
+        command[1:1] = ["--set", f"confdir={self._mitmproxy_confdir()}"]
         result = self._run_command(command, timeout_seconds=20)
         flows_path.unlink(missing_ok=True)
         marker = "MSAP_TARGET_FLOW_SUMMARY="

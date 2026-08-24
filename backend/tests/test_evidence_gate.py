@@ -172,6 +172,94 @@ def test_failed_required_frida_evidence_does_not_confirm(django_user_model):
 
 
 @pytest.mark.django_db
+def test_tls_pinning_gate_accepts_stop_proxy_capture_summary_without_get_proxy_flows(
+    django_user_model,
+):
+    _user, audit, apk, finding = _make_context(django_user_model, rule_id="MSAP-AND-016")
+    run = _run_with_steps(
+        _user,
+        audit,
+        apk,
+        run_status=AgentRun.Status.SUCCEEDED,
+        steps=[
+            ("start_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"capture_id": "a" * 32}),
+            ("stop_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"successful_tls_flow_count": 1}),
+            ("frida_run_js", AgentRunStep.Status.SUCCEEDED, {"events": [{"type": "tls_pinned_request_triggered", "success": True}]}),
+            ("take_screenshot", AgentRunStep.Status.SUCCEEDED, {"screenshot_sha256": "1" * 64}),
+        ],
+    )
+
+    result = apply_evidence_gate(
+        "TLS_PINNING_FRIDA_BYPASS",
+        run,
+        {
+            "status": "CONFIRMED",
+            "oracle_id": "tls_pinning_bypass_oracle",
+            "summary": "The unmodified pinned request produced no successful decrypted proxy flow; after approved Frida instrumentation, the same AndroGoat workflow produced a successful TLS flow through the controlled proxy.",
+        },
+    )
+
+    assert result["status"] == "CONFIRMED"
+    assert "evidence_gate" not in result
+
+
+@pytest.mark.django_db
+def test_tls_pinning_oracle_accepts_single_terminal_screenshot_shape(
+    django_user_model,
+):
+    _user, audit, apk, finding = _make_context(django_user_model, rule_id="MSAP-AND-016")
+    run = _run_with_steps(
+        _user,
+        audit,
+        apk,
+        run_status=AgentRun.Status.SUCCEEDED,
+        steps=[
+            ("start_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"capture_id": "a" * 32}),
+            ("stop_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"phase": "pinning_baseline", "successful_tls_flow_count": 0}),
+            ("start_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"capture_id": "b" * 32}),
+            ("frida_run_js", AgentRunStep.Status.SUCCEEDED, {"events": [
+                {"type": "tls_pinning_bypass_hooks_installed", "success": True},
+                {"type": "tls_pinned_request_triggered", "success": True},
+            ]}),
+            ("stop_proxy_capture", AgentRunStep.Status.SUCCEEDED, {"phase": "pinning_bypass", "successful_tls_flow_count": 1}),
+            ("take_screenshot", AgentRunStep.Status.SUCCEEDED, {"sha256": "1" * 64, "object_reference_id": 1}),
+        ],
+    )
+    evidence_record = Evidence.objects.create(
+        audit=audit,
+        finding=finding,
+        agent_run=run,
+        evidence_type="network_flow",
+        source="test",
+        snippet="bounded flow summary",
+        redacted=True,
+        sha256="c" * 64,
+    )
+    result = record_dynamic_validation(
+        finding=finding,
+        audit=audit,
+        playbook_id="TLS_PINNING_FRIDA_BYPASS",
+        evidence={
+            "events": [
+                {"type": "tls_pinning_bypass_hooks_installed", "success": True},
+                {"type": "tls_pinned_request_triggered", "success": True},
+            ],
+            "tls_baseline_successful_flow_count": 0,
+            "tls_bypass_successful_flow_count": 1,
+            "sha256": "1" * 64,
+            "object_reference_id": 1,
+        },
+        agent_run=run,
+        evidence_records=[evidence_record],
+        rule_id=finding.rule_id,
+        confidence=0.9,
+    )
+
+    assert result.validation_status == DynamicValidationResult.ValidationStatus.SUPPORTED
+    assert result.oracle_result["status"] == "CONFIRMED"
+
+
+@pytest.mark.django_db
 def test_optional_failure_confirms_with_warning(django_user_model):
     _user, audit, apk, finding = _make_context(django_user_model)
     run = _run_with_steps(

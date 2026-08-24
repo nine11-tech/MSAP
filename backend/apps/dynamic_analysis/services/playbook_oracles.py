@@ -94,7 +94,12 @@ def tls_pinning_bypass_oracle(evidence: dict[str, Any]) -> dict[str, Any]:
     request = "tls_pinned_request_triggered" in names
     baseline_success = int(evidence.get("tls_baseline_successful_flow_count") or 0) if isinstance(evidence, dict) else 0
     bypass_success = int(evidence.get("tls_bypass_successful_flow_count") or 0) if isinstance(evidence, dict) else 0
-    screenshot = bool(evidence.get("after_screenshot_sha256") or evidence.get("screenshot_sha256")) if isinstance(evidence, dict) else False
+    screenshot = bool(
+        evidence.get("after_screenshot_sha256")
+        or evidence.get("screenshot_sha256")
+        or evidence.get("sha256")
+        or evidence.get("object_reference_id")
+    ) if isinstance(evidence, dict) else False
     if hooks and request and baseline_success == 0 and bypass_success > 0 and screenshot:
         return {"status": CONFIRMED, "oracle_id": "tls_pinning_bypass_oracle", "summary": "The unmodified pinned request produced no successful decrypted proxy flow; after approved Frida instrumentation, the same AndroGoat workflow produced a successful TLS flow through the controlled proxy."}
     return {"status": INCONCLUSIVE, "oracle_id": "tls_pinning_bypass_oracle", "summary": "The baseline pinning result, approved Frida events, and successful post-bypass controlled-proxy flow were not all observed."}

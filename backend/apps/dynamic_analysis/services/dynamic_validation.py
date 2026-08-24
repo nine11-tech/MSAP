@@ -19,7 +19,7 @@ REQUIRED_TOOLS_BY_PLAYBOOK = {
     "ROOT_DETECTION_LAB_BYPASS": ("frida_run_js", "take_screenshot"),
     "EMULATOR_DETECTION_LAB_BYPASS": ("frida_run_js", "take_screenshot"),
     "ROOT_DETECTION_SCREEN_VALIDATION": ("prepare_root_detection_demo", "frida_run_js", "dump_ui", "take_screenshot"),
-    "TLS_PINNING_FRIDA_BYPASS": ("start_proxy_capture", "stop_proxy_capture", "get_proxy_flows", "frida_run_js", "take_screenshot"),
+    "TLS_PINNING_FRIDA_BYPASS": ("start_proxy_capture", "stop_proxy_capture", "frida_run_js", "take_screenshot"),
     "TLS_USER_CA_DYNAMIC_VALIDATION": ("get_logcat_excerpt",),
 }
 

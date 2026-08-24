@@ -121,6 +121,7 @@ from apps.dynamic_analysis.services.frida_runtime import (
 )
 from apps.dynamic_analysis.services.frida_scripts import (
     ROOT_DETECTION_NATIVE_HOOK_SOURCE,
+    TLS_PINNING_OKHTTP_BYPASS_SOURCE,
 )
 from apps.dynamic_analysis.services.assessment_planner import (
     AssessmentPlannerService,
@@ -1595,6 +1596,26 @@ def test_host_agent_stop_logcat_does_not_fake_success_for_completed_capture():
     assert result["supported"] is False
     assert result["stopped"] is False
     assert result["status"] == "UNSUPPORTED_BOUNDED_CAPTURE"
+
+
+def test_host_agent_uses_standard_dynamic_lab_mitmproxy_defaults(monkeypatch, tmp_path):
+    agent = DynamicHostAgent(token="test-token", serial="emulator-5554")
+    dynamic_home = tmp_path / ".local" / "share" / "msap-dynamic"
+    mitmdump_bin = dynamic_home / "venvs" / "mitmproxy" / "bin" / "mitmdump"
+    confdir = dynamic_home / "tools" / "mitmproxy" / "conf"
+    mitmdump_bin.parent.mkdir(parents=True)
+    confdir.mkdir(parents=True)
+    mitmdump_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mitmdump_bin.chmod(0o755)
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MSAP_DYNAMIC_HOME", raising=False)
+    monkeypatch.delenv("MSAP_MITMPROXY_VENV", raising=False)
+    monkeypatch.delenv("MSAP_MITMPROXY_CONF", raising=False)
+    monkeypatch.delenv("MSAP_MITMDUMP_BIN", raising=False)
+
+    assert agent._mitmdump_bin() == mitmdump_bin.resolve()
+    assert agent._mitmproxy_confdir() == confdir.resolve()
 
 
 @pytest.mark.django_db
@@ -3476,6 +3497,13 @@ def test_frida_run_js_auto_recovers_runtime_before_execution():
 def test_root_detection_template_uses_view_click_fallbacks():
     assert "View.performClick.overload().call(button)" in ROOT_DETECTION_NATIVE_HOOK_SOURCE
     assert "View.callOnClick.overload().call(button)" in ROOT_DETECTION_NATIVE_HOOK_SOURCE
+
+
+def test_tls_pinning_template_uses_view_click_fallbacks():
+    assert "View.performClick.overload().call(button)" in TLS_PINNING_OKHTTP_BYPASS_SOURCE
+    assert "View.callOnClick.overload().call(button)" in TLS_PINNING_OKHTTP_BYPASS_SOURCE
+    assert '["check", "check$okhttp"].forEach(function (methodName)' in TLS_PINNING_OKHTTP_BYPASS_SOURCE
+    assert 'String(retained.getClass().getName()).slice(0, 255)' in TLS_PINNING_OKHTTP_BYPASS_SOURCE
 
 
 @pytest.mark.django_db

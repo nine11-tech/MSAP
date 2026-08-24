@@ -230,14 +230,27 @@ Java.perform(function () {
   var hookCount = 0;
   var bypassCount = 0;
   try {
+    var View = Java.use("android.view.View");
     var CertificatePinner = Java.use("okhttp3.CertificatePinner");
-    CertificatePinner.check.overloads.forEach(function (overload) {
-      overload.implementation = function () {
-        bypassCount += 1;
-        send({type: "tls_pinning_check_bypassed", success: true, host: String(arguments[0]).slice(0, 255), overload: overload.argumentTypes.length});
+    ["check", "check$okhttp"].forEach(function (methodName) {
+      var method = CertificatePinner[methodName];
+      if (!method || !method.overloads) {
         return;
-      };
-      hookCount += 1;
+      }
+      method.overloads.forEach(function (overload) {
+        overload.implementation = function () {
+          bypassCount += 1;
+          send({
+            type: "tls_pinning_check_bypassed",
+            success: true,
+            method: methodName,
+            host: String(arguments[0]).slice(0, 255),
+            overload: overload.argumentTypes.length
+          });
+          return;
+        };
+        hookCount += 1;
+      });
     });
   } catch (error) {
     send({type: "tls_pinning_hook_warning", success: false, layer: "okhttp3.CertificatePinner", error: String(error).slice(0, 500)});
@@ -282,8 +295,15 @@ Java.perform(function () {
         try {
           var id = retained.getResources().getIdentifier("PinningButton", "id", retained.getPackageName());
           var button = id > 0 ? retained.findViewById(id) : null;
-          var clicked = button !== null && button.performClick();
-          send({type: "tls_pinned_request_triggered", success: !!clicked, target_host: "owasp.org", activity: retained.getClass().getName().toString().slice(0, 255)});
+          var clicked = false;
+          if (button !== null) {
+            try {
+              clicked = View.performClick.overload().call(button);
+            } catch (performError) {
+              clicked = View.callOnClick.overload().call(button);
+            }
+          }
+          send({type: "tls_pinned_request_triggered", success: !!clicked, target_host: "owasp.org", activity: String(retained.getClass().getName()).slice(0, 255)});
         } catch (error) {
           send({type: "tls_pinned_request_triggered", success: false, target_host: "owasp.org", error: String(error).slice(0, 500)});
         }
