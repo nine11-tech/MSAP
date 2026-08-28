@@ -2,9 +2,10 @@
 
 ## Purpose
 
-This document defines the future contracts for dynamic-analysis jobs, sessions,
-stages, events, and artifacts. These contracts prepare Phase 4 model and API
-work without implementing Django models, APIs, Celery tasks, or frontend code.
+This document defines the contracts for dynamic-analysis jobs, sessions, stages,
+events, and artifacts. The corresponding Django models, serializers, API views,
+and orchestration foundations are implemented. Individual runtime capabilities
+remain subject to the Host Agent, device, approval, and coverage contracts.
 
 Dynamic sessions are bounded evidence-collection workflows. A session may
 produce findings only when runtime behavior, static context, or configuration
@@ -380,7 +381,7 @@ references created during a session.
 }
 ```
 
-## Phase 4 Implementation Notes
+## Implementation Notes
 
 - Store metadata and bounded normalized summaries in PostgreSQL.
 - Store large logs, screenshots, screen recordings, flow files, and binary

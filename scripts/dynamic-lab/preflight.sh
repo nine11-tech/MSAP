@@ -23,8 +23,10 @@ msap_require_env_vars \
   MSAP_ANDROID_API_LEVEL \
   MSAP_ANDROID_ABI \
   MSAP_EXPECTED_FRIDA_VERSION \
+  MSAP_EXPECTED_FRIDA_SERVER_SHA256 \
   MSAP_EXPECTED_MITMPROXY_VERSION \
   MSAP_EXPECTED_CA_SHA256 \
+  MSAP_EXPECTED_CA_NAME \
   MSAP_EXPECTED_APEX_CA_COUNT \
   ANDROID_SDK_WSL \
   ADB_WIN \
@@ -55,6 +57,7 @@ msap_log "Frida client: $client_version"
 
 local_frida_binary="$(msap_frida_expected_binary)"
 msap_require_file "$local_frida_binary"
+msap_verify_local_frida_sha256
 msap_log "Frida local binary: $local_frida_binary"
 
 msap_require_dir "$MSAP_MITMPROXY_VENV"
@@ -88,6 +91,7 @@ msap_android_path_exists "$MSAP_ANDROID_FRIDA_BINARY" ||
 server_version="$(msap_frida_server_binary_version)"
 [[ "$server_version" == "$MSAP_EXPECTED_FRIDA_VERSION" ]] ||
   msap_fail "Android Frida binary version mismatch: expected $MSAP_EXPECTED_FRIDA_VERSION, got ${server_version:-missing}"
+msap_verify_android_frida_sha256
 msap_log "Android Frida binary: $server_version"
 
 msap_verify_staged_ca
@@ -114,7 +118,7 @@ if endpoint="$(msap_frida_endpoint 2>/dev/null)"; then
     msap_log "Frida bridge reachable: $endpoint"
   else
     msap_warn "Frida bridge is stale or unreachable at $endpoint"
-    msap_warn "Run scripts/dynamic-lab/refresh-frida-bridge.sh or msap-frida-configure-bridge"
+    msap_warn "Run scripts/dynamic-lab/refresh-frida-bridge.sh"
   fi
 else
   msap_warn "Could not determine Windows gateway IP for Frida bridge check"

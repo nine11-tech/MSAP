@@ -3,7 +3,7 @@
 ## Purpose
 
 This document defines security boundaries for the MSAP dynamic Android lab and
-future dynamic-analysis implementation. The lab executes authorized APKs in a
+the dynamic-analysis implementation. The lab executes authorized APKs in a
 controlled emulator to collect limited runtime evidence. It does not execute APK
 code on the host and it does not produce malware verdicts.
 

@@ -22,8 +22,8 @@ require_runtime() {
     printf 'ERROR: missing backend interpreter: %s\n' "$BACKEND_DIR/.venv/bin/python" >&2
     exit 1
   }
-  [[ -r "$HOME/.local/bin/msap-dynamic-env" ]] || {
-    printf 'ERROR: missing dynamic environment: %s\n' "$HOME/.local/bin/msap-dynamic-env" >&2
+  [[ -r "$REPO_ROOT/scripts/dynamic-lab/lib/common.sh" ]] || {
+    printf 'ERROR: missing repository dynamic environment loader.\n' >&2
     exit 1
   }
   command -v docker >/dev/null 2>&1 || {
@@ -92,7 +92,7 @@ start_agent() {
   (
     cd "$BACKEND_DIR"
     # shellcheck disable=SC1091
-    source "$HOME/.local/bin/msap-dynamic-env" >/dev/null
+    source "$REPO_ROOT/scripts/dynamic-lab/lib/common.sh" >/dev/null
     export MSAP_DYNAMIC_HOST_AGENT_TOKEN="$token"
     export MSAP_DYNAMIC_HOST_AGENT_ENABLED=true
     export MSAP_DYNAMIC_HOST_AGENT_URL="http://$BIND_HOST:$PORT"

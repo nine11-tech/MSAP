@@ -1,40 +1,120 @@
 # Development Guide - MSAP
 
-## First Coding Target
-Start with the backend and storage foundation:
-1. Create the Django project.
-2. Configure environment loading.
-3. Add PostgreSQL models.
-4. Implement `ObjectStorageReference`.
-5. Add MinIO client integration.
-6. Implement APK upload metadata and object storage.
-7. Add Redis/Celery.
-8. Add the first worker task.
-9. Add YAML rule loading.
-10. Add JSON export.
+This document describes the implemented repository. Earlier build-order plans
+under `docs/archive/` are historical context, not current instructions.
 
-## Suggested Django Apps
-- `accounts`
-- `projects`
-- `audits`
-- `storage`
-- `apk_files`
-- `analysis`
-- `rules`
-- `findings`
-- `evidence`
-- `reports`
+## Repository layout
 
-## Local Development
-Docker Compose may be used for local PostgreSQL, Redis and MinIO. It must not become the production deployment model.
+| Path | Purpose |
+| --- | --- |
+| `backend/` | Django API, Celery tasks, analysis engines, reports, Host Agent |
+| `frontend/` | React/TypeScript/Vite analyst interface and Playwright tests |
+| `rules/` | Versioned deterministic MASVS and ATT&CK-oriented rule data |
+| `agent_runtime/` | Optional ephemeral bounded execution-agent image |
+| `scripts/demo/` | Local platform/demo lifecycle helpers |
+| `scripts/dynamic-lab/` | Android lab bootstrap, restore, validation, and cleanup |
+| `helm/msap/` | Kubernetes packaging |
+| `docs/` | Active technical and operational documentation |
 
-## Worker Safety
-- Treat APKs as untrusted input.
-- Use a scratch directory.
-- Enforce timeouts and size limits.
-- Store large outputs in MinIO.
-- Keep errors bounded and safe for logs.
+## Prerequisites
 
-## Implementation Rule
-Build only what is required by the MVP freeze before adding optional AI, dynamic analysis, MobSF, Frida, iOS or advanced observability.
+- Python 3.12 with `venv`
+- Node.js 22 and npm
+- Docker with Compose v2
+- Git
+- Helm 3 for chart validation
+- Windows/WSL2 and Android SDK only for dynamic-lab work
 
+## Initial setup
+
+```bash
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+npm ci --prefix frontend
+cp .env.compose.example .env
+```
+
+Replace development placeholders in `.env` when the services are reachable
+outside the local machine. Keep `.env`, APKs, generated reports, evidence, and
+runtime files untracked.
+
+For the complete Android toolchain and Host Agent setup, follow
+[21_Workstation_Recovery_Guide.md](21_Workstation_Recovery_Guide.md).
+
+## Run the application
+
+Containerized development/demo:
+
+```bash
+docker compose up --build
+```
+
+The managed direct-WSL demo (after local Python/npm and dynamic-lab setup):
+
+```bash
+scripts/demo/start-local-mvp-demo.sh up
+scripts/demo/start-local-mvp-demo.sh status
+scripts/demo/start-local-mvp-demo.sh down
+```
+
+## Validation commands
+
+Run checks relevant to the files changed:
+
+```bash
+git diff --check
+scripts/security/scan-secrets.sh
+
+cd backend
+.venv/bin/python manage.py check
+.venv/bin/python manage.py validate_rules
+.venv/bin/python manage.py makemigrations --check --dry-run
+.venv/bin/pytest -q
+
+cd ../frontend
+npm run build
+
+cd ..
+docker compose config
+helm lint --strict helm/msap
+```
+
+Dynamic tests require the dedicated local emulator and are intentionally not
+part of a generic shared CI runner. Start from a restored snapshot and run:
+
+```bash
+scripts/dynamic-lab/lab-health.sh
+```
+
+## Implementation boundaries
+
+- Treat every APK, archive entry, manifest value, DEX string, source document,
+  log line, proxy flow, screenshot, and instrumentation message as untrusted.
+- Enforce size, count, timeout, path, and output limits before expensive work.
+- Store large objects in MinIO and keep bounded metadata/references in the
+  relational database.
+- Preserve tenant/project/audit authorization at every API and object boundary.
+- Keep deterministic evidence as the source of truth. Optional AI components
+  may plan or explain within their contracts but cannot create authoritative
+  evidence or bypass approval.
+- Keep the Host Agent allowlisted and token-authenticated. Do not add arbitrary
+  shell, filesystem, Docker, environment, or unrestricted Frida execution.
+- Never put backend credentials in frontend variables; `VITE_` values are
+  compiled into browser-delivered code.
+- Do not add real APKs, credentials, generated CA material, snapshots, or client
+  evidence to fixtures or documentation.
+
+## Schema and rule changes
+
+Django model changes require a migration and a dry-run consistency check.
+Rule changes must remain compatible with `docs/06_Rules_Schema.md`, pass
+`manage.py validate_rules`, and retain deterministic IDs and evidence mapping.
+Scoring or MASVS coverage changes must update the methodology documentation and
+their regression tests in the same change.
+
+## Documentation rule
+
+Update operational documentation with the implementation. Commands in the
+README and active runbooks must be runnable from the repository root and must
+not depend on personal usernames, absolute clone locations, private helper
+scripts, or machine-specific credentials.

@@ -148,8 +148,12 @@ The JSON report view remains available.
   separately; the root Compose workflow automates both.
 - A viewer cannot upload, start analysis, modify metadata, or access administration.
 - Component status is bounded near-real-time polling, not streaming telemetry.
-- Reports contain deterministic persisted results only; there is no AI-generated content.
-- There is no dynamic analysis, iOS support, Kimi AI, malware sandbox, or malware classification.
+- Reports keep persisted evidence and analyst-visible provenance; optional AI
+  explanations are explicitly labelled and never replace deterministic results.
+- The Dynamic Lab and bounded assessment workflows require the separate local
+  Host Agent/emulator setup. There is no iOS pipeline, unrestricted malware
+  sandbox, or guaranteed malware classification.
 - ATT&CK Mobile indicators are triage signals, not malware verdicts.
 
-No frontend test framework was added in this sprint. `npm run build` provides TypeScript and production-bundle verification, followed by the manual workflow above.
+Playwright browser tests live under `frontend/e2e`; TypeScript/build checks
+and the relevant browser workflow should be run for frontend changes.

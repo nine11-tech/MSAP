@@ -122,7 +122,8 @@ Disable embedded components and provide:
 ```yaml
 postgresql:
   enabled: false
-  externalDatabaseUrl: postgresql://user:password@postgres.example:5432/msap
+  # DATABASE_URL is supplied by the existing Secret below.
+  externalDatabaseUrl: ""
 
 redis:
   enabled: false
@@ -134,10 +135,13 @@ minio:
   externalEndpoint: https://s3.internal.example
   publicEndpoint: https://storage.example.com
   secure: true
+
+secrets:
+  existingSecret: msap-external-services
 ```
 
-Prefer `secrets.existingSecret` instead of storing credential-bearing URLs in a
-values file.
+The existing Secret must contain the keys listed above, including `DATABASE_URL`.
+Do not store credential-bearing URLs in a values file.
 
 Embedded PostgreSQL is single-replica and intended for demonstrations or small
 installations. Production should use managed or separately operated PostgreSQL

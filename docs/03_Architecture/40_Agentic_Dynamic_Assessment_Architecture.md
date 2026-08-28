@@ -219,10 +219,11 @@ credential forms redacted. Unavailable context is explicit. Planning never
 queries or mutates the emulator. Only a SHA-256 of the sanitized planner input
 is persisted; API credentials and raw prompts are not stored.
 
-The OpenAI provider uses the Responses API with model `gpt-5.5` and strict
-`text.format` JSON-schema output, disables provider storage for the request, and
-does not supply tools. Provider/model/key/timeout/retry configuration is
-backend-only.
+The OpenAI provider uses the Responses API with the backend-selected model and
+strict `text.format` JSON-schema output, disables provider storage for the
+request, and does not supply tools. Provider/model/key/timeout/retry
+configuration is backend-only. The default economy profile uses
+`gpt-5.6-luna`; balanced and advanced profiles are separately allowlisted.
 Local development and tests default to `DETERMINISTIC`, which produces the same
 validated six-step AndroGoat-compatible plan without an API key.
 
@@ -298,7 +299,8 @@ The existing `OpenAIPlannerProvider` is the sole OpenAI integration. An
 Analyst/Admin may select `OPENAI` or `DETERMINISTIC` through the existing plan
 create API; the choice is a closed enum and never accepts a key, endpoint, model
 name, prompt, or tool list. When omitted, the backend environment selects the
-provider. `gpt-5.5` is the intended configurable OpenAI model.
+provider. Model selection is restricted to the backend-defined economy,
+balanced, and advanced profiles; the browser never supplies an arbitrary model.
 
 The OpenAI request contains one fixed backend system instruction and one JSON
 context document. The system instruction makes the following precedence

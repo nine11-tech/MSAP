@@ -304,7 +304,7 @@ OpenAI planner in a backend environment, configure:
 
 ```text
 MSAP_ASSESSMENT_PLANNER_PROVIDER=OPENAI
-MSAP_ASSESSMENT_PLANNER_MODEL=gpt-5.5
+MSAP_ASSESSMENT_PLANNER_MODEL=gpt-5.6-luna
 MSAP_OPENAI_API_KEY=<backend-only credential>
 ```
 
@@ -548,9 +548,7 @@ scripts/demo/start-local-mvp-demo.sh up
 4. Start or restore Frida for the live PoC:
 
 ```bash
-source scripts/dynamic-lab/lib/common.sh
-msap_load_env
-"$HOME/.local/bin/msap-frida-start"
+scripts/dynamic-lab/frida-start.sh
 ```
 
 If Frida reports `127.0.0.1:27042` already in use, inspect the emulator for a
@@ -558,11 +556,10 @@ stale managed process and clear only that process:
 
 ```bash
 source scripts/dynamic-lab/lib/common.sh
-msap_load_env
 msap_adb shell 'ps -A | grep -i msap-frida-server || true'
 msap_adb shell 'kill <stale-msap-frida-server-pid> || true; rm -f /data/local/tmp/msap-frida-server.pid'
 scripts/dynamic-lab/frida-smoke.sh
-"$HOME/.local/bin/msap-frida-start"
+scripts/dynamic-lab/frida-start.sh
 ```
 
 5. Run safe lab health before any OpenAI call:

@@ -35,8 +35,8 @@ cleanup() {
   local rc="$1"
 
   set +e
-  if [[ "$frida_started" == "1" && -x "$HOME/.local/bin/msap-frida-stop" ]]; then
-    "$HOME/.local/bin/msap-frida-stop" >/dev/null 2>&1
+  if [[ "$frida_started" == "1" && -x "$SCRIPT_DIR/frida-stop.sh" ]]; then
+    "$SCRIPT_DIR/frida-stop.sh" >/dev/null 2>&1
   fi
   if [[ -n "$probe_dir" && -d "$probe_dir" ]]; then
     rm -f -- "$probe_dir/processes.txt" "$probe_dir/probe.txt"
@@ -55,9 +55,9 @@ msap_require_command frida
 msap_require_command frida-ps
 msap_require_command timeout
 
-start_helper="$HOME/.local/bin/msap-frida-start"
-stop_helper="$HOME/.local/bin/msap-frida-stop"
-test_helper="$HOME/.local/bin/msap-frida-test"
+start_helper="$SCRIPT_DIR/frida-start.sh"
+stop_helper="$SCRIPT_DIR/frida-stop.sh"
+test_helper="$SCRIPT_DIR/frida-test.sh"
 
 [[ -x "$start_helper" ]] || msap_fail "Missing executable helper: $start_helper"
 [[ -x "$stop_helper" ]] || msap_fail "Missing executable helper: $stop_helper"

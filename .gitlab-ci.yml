@@ -41,6 +41,9 @@ repository:validate:
       helm/msap/values.yaml
       helm/msap/values-local.yaml
       scripts/check-npm-audit.mjs
+      scripts/security/scan-secrets.sh
+      docs/21_Workstation_Recovery_Guide.md
+      CODING_AGENT_LAB_SETUP.md
       docs/18_GitLab_CICD.md
       README.md
       "
@@ -86,6 +89,18 @@ repository:validate:
       if [ -n "$tracked_generated_paths" ]; then
         echo "Committed Python cache or node_modules paths are not allowed:" >&2
         printf '%s\n' "$tracked_generated_paths" >&2
+        exit 1
+      fi
+    - |
+      secret_locations="$(
+        git grep -nI -E \
+          '(sk-[A-Za-z0-9_-]{20,}|glpat-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{20,}|^[[:space:]]*-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----)' \
+          -- . ':!scripts/security/scan-secrets.sh' |
+          awk -F: '{ print $1 ":" $2 }' || true
+      )"
+      if [ -n "$secret_locations" ]; then
+        echo "Potential committed credential signatures (values suppressed):" >&2
+        printf '%s\n' "$secret_locations" >&2
         exit 1
       fi
     - |

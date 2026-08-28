@@ -391,16 +391,22 @@ Every invoked analyzer produces a `RawAnalyzerResult`, including `SKIPPED` and `
 
 After analyzer execution, the orchestrator indexes deterministic decoded XML and, when deliberately enabled and installed, runs bounded JADX source generation. A first-party source-verification stage turns exact code observations into rule inputs; DEX token-only observations remain review signals. The MASVS and ATT&CK evaluators then run against artifacts for the latest APK, source references are resolved, and risk/compliance/triage summaries are calculated. Evaluator, indexing, verification, and evidence summaries are included in `AnalysisJob.result_summary`. Missing JADX fails safely to decoded configuration or honest non-line metadata evidence. The orchestrator does not download tools, execute APK code, run Frida, or generate reports automatically.
 
-This prepares the future pipeline by separating:
+The pipeline separates:
 - analyzer plugin execution into the `apps.analyzers` contract,
 - raw analyzer output into `RawAnalyzerResult`,
 - canonical downstream inputs into `NormalizedArtifact`,
 - job and audit lifecycle management into the Celery task and orchestrator boundary.
 
 ## Analyzer Registry and Normalization Contracts
-`AnalyzerRegistry` is the deterministic discovery layer for analysis components. It returns registered analyzer instances, filters them with each analyzer's `supports(context)` method, and exposes read-only analyzer metadata through `GET /api/analyzers/`. The default registry registers `PlaceholderMetadataAnalyzer` and `ManifestMetadataAnalyzer` in that order.
+`AnalyzerRegistry` is the deterministic discovery layer for analysis components.
+It returns registered analyzer instances, filters them with each analyzer's
+`supports(context)` method, and exposes read-only analyzer metadata through
+`GET /api/analyzers/`. The default order is `PlaceholderMetadataAnalyzer`,
+`ManifestMetadataAnalyzer`, then `AdvancedStaticAnalyzer`.
 
-Analyzers are registered instead of hardcoded in the orchestrator so future APK metadata, manifest, permissions, components, certificate, string, resource, and code reference analyzers can be added without rewriting the orchestration loop. The registry intentionally avoids dynamic imports; analyzers are added explicitly and run in stable order.
+Analyzers are registered instead of hardcoded in the orchestrator so capabilities
+can evolve without rewriting the orchestration loop. The registry intentionally
+avoids dynamic imports; analyzers are added explicitly and run in stable order.
 
 `RawAnalyzerResult` stores the analyzer-specific raw summary for each analyzer run. `NormalizedArtifact` stores stable, canonical payloads that MASVS and ATT&CK evaluators consume without depending on individual analyzer output formats.
 
@@ -427,25 +433,25 @@ An APK is a ZIP archive, but its `AndroidManifest.xml` is normally compiled Andr
 
 `APKFileProvider` uses `MSAP_LOCAL_APK_ROOT` only when `MSAP_ENVIRONMENT` is `development`, `test`, or `testing`. It resolves object-storage metadata beneath that root as either `<root>/<bucket>/<object_key>` or `<root>/<object_key>`, rejecting paths outside the configured root. If no mirror file exists, an uploaded or verified MinIO object is downloaded to a checksum-verified temporary `.apk` path and deleted when parsing ends. Pending, failed, deleted, or missing object references are recorded as `SKIPPED`; download, checksum, and parsing failures are recorded as `FAILED`. No manifest artifact is emitted for either outcome.
 
-The manifest analyzer itself only parses and normalizes metadata. The orchestrator invokes the separate rule evaluators and scoring services after analyzer execution. The analysis pipeline does not decompile code, classify malware, or generate reports; reports are requested separately from the API.
+The manifest analyzer itself only parses and normalizes metadata. The
+orchestrator invokes separate rule evaluators and scoring services after
+analyzer execution. Optional JADX source indexing is a separate,
+disabled-by-default adapter, and reports remain requested through their API
+endpoints. No stage classifies an APK as malware.
 
-## First Rule Execution Foundation
+## Deterministic rule execution
 
-This is deterministic rule execution over the latest `MANIFEST` `NormalizedArtifact` for an audit. It does not use Kimi AI or any other AI model.
+The evaluators load the versioned YAML catalogs and apply rule-specific
+conditions to the normalized manifest, DEX, resource, string, certificate, and
+source-reference data available for an audit. Deterministic evidence remains the
+source of truth; optional planning or explanation providers do not author rule
+matches.
 
-`apps.appsec_rules.services.masvs_evaluator` loads the validated MASVS YAML catalog and currently evaluates only:
-
-- `MSAP-AND-001`: creates a finding when `application.debuggable` is `true`;
-- `MSAP-AND-002`: creates a finding when `application.allow_backup` is `true`.
-
-`apps.triage_rules.services.attck_evaluator` loads the validated ATT&CK Mobile triage catalog and currently evaluates only:
-
-- `MSAP-MOB-001`: creates a triage indicator for `READ_SMS`, `RECEIVE_SMS`, or `SEND_SMS` permissions;
-- `MSAP-MOB-002`: creates a triage indicator for an accessibility service permission, name, or metadata signal.
-
-Matched results receive a linked `Evidence` row with the audit, finding or indicator, catalog detection type and source, a short normalized snippet, and `redacted=false`. Full manifest XML is never stored as evidence. Reruns reuse existing findings and indicators for the same audit and rule identifier, and do not duplicate identical evidence.
-
-ATT&CK indicators are cautious triage signals only. They require analyst context and do not classify an APK as malware. The remaining 12 MASVS rules and 13 ATT&CK indicators are validated catalog entries but are not executed. Dynamic analysis, malware sandboxing, and Kimi AI remain unimplemented.
+Matched results receive linked, bounded `Evidence` rows. Full manifest/source
+documents are not copied into finding evidence. Reruns reuse the audit/rule
+identity and do not duplicate identical evidence. ATT&CK indicators remain
+cautious triage signals that require analyst context; dynamic observations can
+correlate with findings but do not create a malware verdict.
 
 Run the complete test suite from this directory with:
 
@@ -457,9 +463,19 @@ The evaluator tests create `NormalizedArtifact` rows directly and require no rea
 
 ## Scoring and Security Reports
 
-The risk scoring service reads findings and suspicious indicators for an audit. `Critical`, `High`, `Medium`, and `Low` records contribute weights of 10, 7, 4, and 1. The weights are summed, multiplied by 10, and capped at 100. The resulting severity is `Low` through 30, `Medium` through 60, `High` through 80, and `Critical` above 80. Each run creates or updates the audit's `RiskScore`.
+The risk score uses persisted findings only; ATT&CK indicators are excluded.
+Severity weights are Critical `10`, High `7`, Medium `4`, and Low `1`.
+Confidence factors are High `1.0`, Medium `0.75`, and Low `0.5`. The formula is
+`min(10 × Σ(severity_weight × confidence_factor), 100)`. The displayed level is
+Low for `0–30`, Medium for `31–60`, High for `61–80`, and Critical for `81–100`.
+Each run creates or updates the audit's `RiskScore`.
 
-MASVS compliance considers only `MSAP-AND-001` and `MSAP-AND-002`. Each corresponding finding is a failed evaluated rule, and the stored `ComplianceScore` uses `((evaluated rules - failed rules) / evaluated rules) * 100` with `standard="MASVS"`.
+MASVS compliance uses all persisted MASVS `RuleEvaluation` results. Applicable
+rules are `PASS + FAIL + REVIEW_REQUIRED`; `NOT_APPLICABLE` and `NOT_EVALUATED`
+are excluded from the denominator. The formula is
+`PASS / (PASS + FAIL + REVIEW_REQUIRED) × 100`, or `0` when there is no
+applicable rule. Unevaluated rules produce an explicit partial-coverage warning
+and are never counted as passing.
 
 The ATT&CK Mobile summary counts suspicious indicators and returns `Low` for none, `Medium` for one, and `High` for two or more. This is a triage level only. It is not a malware score and produces no malicious or benign verdict.
 

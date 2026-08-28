@@ -59,10 +59,31 @@ def run_script(args: list[str]) -> int:
         if message.get("type") == "send":
             payload = message.get("payload")
             if isinstance(payload, dict) and payload.get("type") == "root_detection_bypass_hooks_installed":
-                adb = os.getenv("MSAP_WINDOWS_ADB_PATH", r"C:\Users\lenovo\AppData\Local\Android\Sdk\platform-tools\adb.exe")
+                adb = os.getenv("MSAP_WINDOWS_ADB_PATH", "").strip()
+                if not adb:
+                    local_app_data = os.getenv("LOCALAPPDATA", "").strip()
+                    if local_app_data:
+                        adb = os.path.join(
+                            local_app_data,
+                            "Android",
+                            "Sdk",
+                            "platform-tools",
+                            "adb.exe",
+                        )
                 try:
+                    if not adb:
+                        raise OSError("Windows adb.exe path is not configured")
                     subprocess.run(
-                        [adb, "-s", "emulator-5554", "shell", "input", "tap", "540", "802"],
+                        [
+                            adb,
+                            "-s",
+                            os.getenv("MSAP_ANDROID_SERIAL", "emulator-5554"),
+                            "shell",
+                            "input",
+                            "tap",
+                            "540",
+                            "802",
+                        ],
                         check=False,
                         timeout=5,
                         stdout=subprocess.DEVNULL,

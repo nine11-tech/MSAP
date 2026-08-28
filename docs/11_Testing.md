@@ -1,28 +1,61 @@
 # Testing - MSAP
 
-## Test Categories
-- Model tests for metadata and object references.
-- Storage tests for MinIO upload, hash validation and bucket mapping.
-- API tests for project authorization, upload, audit status and exports.
-- Worker tests for task state transitions and failure handling.
-- Rule loader tests for valid and invalid YAML rules.
-- Evidence tests for traceability and redaction status.
-- Report tests for JSON export generation.
+## Test layers
 
-## Acceptance Tests
-- Upload an APK and verify it is stored in `msap-apk-uploads`.
-- Verify PostgreSQL stores metadata and object references only.
-- Queue and complete a Celery analysis task.
-- Produce at least one MASVS finding from YAML rules.
-- Produce at least one ATT&CK Mobile indicator from YAML rules.
-- Link evidence to the source artifact.
-- Generate a JSON export and store it in `msap-exports`.
-- Confirm Kimi AI is disabled and unused in V1.0.
+- Django unit, service, model, permission, API, report, scoring, redaction, Host
+  Agent, and orchestration tests under `backend/tests/`.
+- Rule-schema and migration-drift validation through Django management commands.
+- Frontend TypeScript/production build and Playwright browser tests.
+- Compose configuration and service-health checks.
+- Helm lint/template checks for Kubernetes packaging.
+- Hardware-dependent dynamic-lab preflight and Frida/mitmproxy/TLS smoke tests.
 
-## Security Regression Tests
-- Raw APK bytes are not written to PostgreSQL.
-- Secrets are not logged.
-- Users cannot access another project's audit data.
-- MinIO buckets are not assumed public.
-- Pre-signed URLs expire quickly when implemented.
+## Standard repository checks
 
+```bash
+git diff --check
+scripts/security/scan-secrets.sh
+
+cd backend
+.venv/bin/python manage.py check
+.venv/bin/python manage.py validate_rules
+.venv/bin/python manage.py makemigrations --check --dry-run
+.venv/bin/pytest -q
+
+cd ../frontend
+npm run build
+
+cd ..
+docker compose config
+helm lint --strict helm/msap
+```
+
+Run the subset proportional to a change during development and the complete
+available set before a release. Do not describe a skipped check as passing.
+
+## Dynamic-lab acceptance
+
+Dynamic checks run only on the isolated authorized lab, never a generic shared
+runner:
+
+```bash
+scripts/dynamic-lab/restore-instrumented-snapshot.sh
+scripts/dynamic-lab/lab-health.sh
+```
+
+Acceptance requires the expected API/ABI/build type, root ADB, SELinux
+`Enforcing`, proxy off at rest, matching Frida versions, no unauthorized package,
+no permanent MSAP CA, and Frida stopped after cleanup.
+
+## Security regressions
+
+- Raw APK bytes are not stored in PostgreSQL.
+- Tenant/project/audit authorization prevents cross-scope access.
+- Credentials, provider responses, and unredacted evidence are absent from logs
+  and browser payloads.
+- MinIO buckets remain private and presigned access is bounded.
+- Archive/path/size/count/timeout limits hold for untrusted inputs.
+- Optional AI components cannot bypass approval, capability, call, time,
+  artifact, redaction, or evidence-authority boundaries.
+- Host Agent endpoints require the shared token and expose only allowlisted
+  operations.

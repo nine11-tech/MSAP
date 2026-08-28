@@ -1,4 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export MSAP_WINDOWS_ADB_PATH="${MSAP_WINDOWS_ADB_PATH:-C:\\Users\\lenovo\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe}"
-exec "/mnt/c/Program Files/Python312/python.exe" '//wsl.localhost/Ubuntu/home/anass/projects/MSAP/backend/apps/dynamic_analysis/services/frida_windows_helper.py' "$@"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/common.sh"
+
+msap_require_command wslpath
+msap_require_file "$ADB_WIN"
+helper_win="$(wslpath -w "$REPO_ROOT/backend/apps/dynamic_analysis/services/frida_windows_helper.py")"
+adb_win="$(msap_windows_path "$ADB_WIN")"
+export MSAP_WINDOWS_ADB_PATH="${MSAP_WINDOWS_ADB_PATH:-$adb_win}"
+
+python_command="${MSAP_WINDOWS_PYTHON_PATH:-}"
+if [[ -n "$python_command" && "$python_command" == [A-Za-z]:\\* ]]; then
+  python_command="$(wslpath -u "$python_command")"
+fi
+if [[ -z "$python_command" ]]; then
+  python_command="$(command -v python.exe 2>/dev/null || true)"
+fi
+[[ -n "$python_command" ]] || msap_fail \
+  "Windows Python was not found; set MSAP_WINDOWS_PYTHON_PATH"
+
+exec "$python_command" "$helper_win" "$@"

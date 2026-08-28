@@ -1,245 +1,314 @@
 # MSAP
 
-Mobile Security Assessment & Triage Platform
+Mobile Security Assessment & Triage Platform (MSAP) is a cloud-native,
+self-hosted platform for authorized Android APK security assessments. It
+combines deterministic static analysis, OWASP MASVS-oriented findings, cautious
+MITRE ATT&CK Mobile triage, evidence handling, risk scoring, PDF/JSON reporting,
+and an isolated Android dynamic-analysis lab.
 
-**Positionnement**: Plateforme cloud-native d'evaluation de securite mobile et de triage d'APK basee sur OWASP MASVS, MITRE ATT&CK Mobile, MinIO et Kubernetes.
+MSAP also includes a custom agentic assessment harness: a bounded planning,
+approval, execution, observation, and evidence-correlation loop that can use
+deterministic logic or live OpenAI Responses API calls, including the
+`gpt-5.6-luna` economy profile. A model never receives direct ADB, Frida, shell,
+filesystem, Docker, database, or object-storage access.
 
-## Executive Summary
-MSAP est un projet visant a fournir une plateforme cloud-native, auto-hebergeable et open-source pour l'audit applicatif mobile, le triage d'APK et la production de preuves techniques. Le coeur fonctionnel reste l'analyse statique Android, l'evaluation OWASP MASVS, le triage prudent MITRE ATT&CK Mobile, le scoring et le reporting.
+MSAP does not claim to prove that an application is benign or malicious.
+Findings and ATT&CK mappings are decision support for a qualified analyst.
 
-MSAP ne fournit pas de verdict garanti malware/benin. Les indicateurs ATT&CK Mobile soutiennent une revue analyste evidence-first.
+## What is implemented
 
-## Architecture cible
+- Django REST API with server-side session authentication, CSRF protection,
+  role-based access control, PostgreSQL metadata, and MinIO object storage.
+- Celery/Redis orchestration for bounded APK analysis and report generation.
+- Android manifest, DEX, resource, string, certificate, and optional JADX
+  source indexing with deterministic rule evaluation.
+- Explainable severity, confidence, MASVS coverage, and audit scoring.
+- React, TypeScript, and Vite analyst interface.
+- Local Android dynamic lab using a rootable API 35 emulator, Windows ADB,
+  Frida, mitmproxy, runtime-only CA injection, and a token-authenticated Host
+  Agent with allowlisted operations.
+- An implemented, operational agentic assessment harness for bounded planning
+  and adaptive decisions. It supports both offline deterministic execution and
+  real OpenAI Responses API execution, including `gpt-5.6-luna`, while remaining
+  backend-only and constrained by approval, capability, call, time, artifact,
+  and redaction policies.
+- Docker Compose for development/demo and a Helm chart for Kubernetes.
+
+## Cloud-native design
+
+MSAP is cloud-native at the application and data-orchestration layers while
+keeping privileged Android instrumentation in an isolated lab outside the
+cluster.
+
+| Concern | Implementation |
+| --- | --- |
+| Web tier | Independently packaged React/nginx frontend and Django API images |
+| Asynchronous work | Redis-backed Celery workers separate long-running APK analysis from API requests |
+| Metadata | PostgreSQL stores tenants, projects, audits, states, findings, scores, and object references |
+| Binary objects | Private MinIO/S3 buckets hold APKs, artifacts, evidence, reports, and exports |
+| Deployment | Helm packages frontend, API, worker, Services, Ingress, service accounts, configuration, Secrets, and initialization Jobs |
+| Operations | Health probes, deterministic migrations, idempotent bucket initialization, immutable application images, and environment-driven configuration |
+| Scaling boundary | Stateless frontend/API replicas and Celery workers can scale separately from PostgreSQL, Redis, and object storage |
+| Local parity | Compose runs the same principal services for development without redefining the production architecture |
+
+Large or sensitive binaries do not pass through PostgreSQL. Application records
+contain bounded metadata and `ObjectStorageReference` identities, while MinIO
+owns object bytes and presigned access. API requests, background work, evidence,
+and reports therefore share one traceable audit identity without coupling the
+web process to a local filesystem.
+
+The included PostgreSQL, Redis, and MinIO workloads are useful for a lab or
+small installation. A production deployment should normally use backed-up,
+separately operated stateful services and externally managed Kubernetes Secrets.
+
+## Cloud-native system architecture
+
 ```mermaid
-flowchart LR
-    Auditor[Auditeur] --> ING[Ingress Controller + TLS]
-    ING --> FE[React Frontend]
-    FE --> API[Django REST API]
-    API --> ORCH[Audit Orchestrator]
-    ORCH --> REDIS[Redis Queue]
-    REDIS --> WORKERS[Analyzer Workers / Kubernetes Jobs]
-    WORKERS --> NORM[Normalization Layer]
-    NORM --> MASVS[MASVS Engine]
-    NORM --> ATTCK[ATT&CK Triage Engine]
-    MASVS --> EVID[Evidence Engine]
-    ATTCK --> EVID
-    EVID --> RISK[Risk Engine]
-    API --> PG[(PostgreSQL Metadata)]
-    RISK --> PG
-    EVID --> PG
-    API --> MINIO[(MinIO Object Storage)]
-    WORKERS --> MINIO
-    RISK --> REPORT[Report Generator]
-    REPORT --> API
-    EVID -. redacted post-analysis only .-> KIMI[Optional Kimi AI Assistant]
+flowchart TB
+    USER[Analyst browser]
+
+    subgraph CLOUD[Cloud-native MSAP deployment]
+        ING[Ingress + TLS]
+        UI[React frontend served by nginx]
+        API[Django REST API]
+        QUEUE[Redis queue]
+        WORKER[Celery analysis workers]
+        STATIC[Bounded static analyzers]
+        RULES[MASVS + ATT&CK + scoring]
+        HARNESS[Agentic assessment harness]
+        GATE[Run-scoped tool gateway]
+        REPORT[Evidence + JSON/PDF reports]
+    end
+
+    subgraph DATA[State and object services]
+        DB[(PostgreSQL metadata)]
+        OBJ[(MinIO / S3 objects)]
+    end
+
+    subgraph LAB[Isolated Android lab]
+        HOST[Token-authenticated Host Agent]
+        ADB[Windows ADB + rootable emulator]
+        FRIDA[Frida instrumentation]
+        MITM[mitmproxy capture]
+    end
+
+    USER --> ING --> UI --> API
+    API --> DB
+    API --> OBJ
+    API --> QUEUE --> WORKER
+    WORKER --> STATIC --> RULES --> REPORT
+    WORKER --> OBJ
+    REPORT --> DB
+    REPORT --> OBJ
+    API --> HARNESS --> GATE --> HOST
+    HOST --> ADB
+    HOST --> FRIDA
+    HOST --> MITM
 ```
 
+The Host Agent is deliberately outside the application containers because ADB,
+the emulator, Frida, and proxy tooling belong to the isolated workstation lab.
+It accepts a short allowlist of authenticated actions; it is not a remote shell.
 
-## Deploiement
-Kubernetes est la plateforme cible de deploiement: namespace `msap`, Ingress HTTPS, Secrets, ConfigMaps, Services, Deployments, workers, Jobs, PVC, NetworkPolicies et packaging Helm. Docker Compose est conserve uniquement pour le developpement local et les tests rapides.
+## Agentic assessment harness
 
-## Docker Compose development stack
+The agentic harness is implemented end to end and operational. It supports the
+offline deterministic provider and live OpenAI Responses API calls; its economy
+profile uses `gpt-5.6-luna`. It is not a general-purpose autonomous agent or a
+model connected directly to tools. It is a custom, in-repository security
+harness built around Django contracts and persisted audit state. Model output
+is treated as untrusted input and must cross the same validation and
+authorization boundaries as browser input.
 
-The repository includes a development/demo stack with PostgreSQL, Redis, MinIO,
-automatic MinIO initialization, Django, a Celery worker, and the Vite frontend.
-Kubernetes remains the production deployment target.
+```mermaid
+flowchart LR
+    OBJ[Analyst objective and audit scope] --> CTX[Sanitized trusted/untrusted context]
+    CTX --> PLAN[Deterministic or OpenAI planner]
+    PLAN --> VALIDATE[Strict plan schema and policy validation]
+    VALIDATE --> APPROVE[Analyst approval and playbook authorization]
+    APPROVE --> CAP[Capability envelope]
+    CAP --> EXEC[Bounded controller and executor]
+    EXEC --> GW[Run-scoped Tool Gateway]
+    GW --> HA[Authenticated Host Agent]
+    HA --> TOOLS[Allowlisted ADB, UI, Frida, logcat, screenshot, and proxy actions]
+    TOOLS --> EVID[Normalized evidence and artifacts]
+    EVID --> ORACLE[Oracles and static/dynamic correlation]
+    ORACLE --> DECIDE[Bounded adaptive decision]
+    DECIDE -->|approved next step| EXEC
+    DECIDE --> RESULT[Persisted result and coverage gaps]
+```
 
-Create the local environment file and start the full stack:
+The harness consists of:
+
+| Component | Responsibility and boundary |
+| --- | --- |
+| Context builder | Reads bounded persisted APK metadata, findings, evidence, device state, objective, and scope; separates trusted controls from attacker-influenceable application observations and redacts common credential forms |
+| Planner provider | Supports the offline deterministic planner and live OpenAI Responses API execution; the economy profile uses `gpt-5.6-luna`, strict JSON-schema output, no provider-hosted tools, and disabled provider storage |
+| Plan contract and validator | Reject unknown tools/fields, malformed arguments, dependency cycles, arbitrary Frida source, unauthorized packages, excessive work, credential instructions, and shell/path/environment/Docker requests |
+| Approval and playbook authorization | Requires the requester, audit, APK, objective, plan hash, playbook, and approval state to agree before execution |
+| Capability envelope | Reduces the available action set to the intersection of policy, role, approved plan, playbook, lab health, and currently implemented capabilities |
+| Controller and executor | Runs persisted steps in order with bounded retries, time, tool calls, provider calls, artifacts, evidence records, observation bytes, and failure thresholds |
+| Adaptive decision provider | May select only a schema-valid next action from the remaining approved capabilities; it cannot expand scope, invent a tool, approve itself, or recurse into another planner |
+| Run-scoped Tool Gateway | Accepts a short-lived credential stored by Django only as a digest and bound to one run, its current step, exact tool, and resolved arguments |
+| Host Agent | Holds the separate backend-to-lab token and translates typed requests into fixed subprocess argument lists and allowlisted emulator operations; it exposes no general shell endpoint |
+| Evidence and oracle layer | Normalizes bounded outputs, records provenance and coverage gaps, evaluates expected observations, and correlates runtime evidence with deterministic static findings |
+| Isolated execution sandbox | Runs a non-root, read-only, capability-dropped container with bounded CPU, memory, PIDs, lifetime, and a small `noexec` temporary filesystem; it receives only a run token and gateway URL |
+
+This produces an evidence-centered loop rather than an autonomous exploitation
+loop. The planner proposes; backend policy validates; the analyst approves; the
+capability envelope limits; the gateway and Host Agent enforce; and evidence
+oracles determine what was actually observed. Missing visibility becomes
+`NOT_EVALUATED`, `REVIEW_REQUIRED`, or an explicit coverage gap—never an
+invented pass or vulnerability.
+
+Deterministic static findings and their evidence remain authoritative.
+AI-backed planning, adaptive decisions, script proposals, and evidence
+explanations are labelled by provider and cannot change MASVS results, risk
+scoring, authorization, or raw evidence. See the
+[agentic architecture](docs/03_Architecture/40_Agentic_Dynamic_Assessment_Architecture.md)
+and [sandbox runtime](agent_runtime/README.md) for the detailed contracts.
+
+## Quick start with Docker Compose
+
+Requirements: Git, Docker Engine/Desktop with Compose v2, and enough disk for
+PostgreSQL and MinIO volumes.
 
 ```bash
 cp .env.compose.example .env
 docker compose up --build
-```
-
-The example values are intentionally development-only. Change them if the stack
-is reachable by other machines, and never reuse them in production.
-
-Service URLs:
-
-- Frontend: `http://localhost:5173`
-- Backend: `http://localhost:8000`
-- API documentation: `http://localhost:8000/api/docs/`
-- Backend health: `http://localhost:8000/api/health/`
-- MinIO API: `http://localhost:9000`
-- MinIO console: `http://localhost:9001`
-
-Compose uses one private default network. Containers address PostgreSQL, Redis,
-and MinIO by their service names (`postgres`, `redis`, and `minio`). The backend
-therefore uses `MINIO_ENDPOINT=http://minio:9000` for object metadata and
-downloads. Presigned URLs are generated with
-`MINIO_PUBLIC_ENDPOINT=http://localhost:9000`, which is reachable from the host
-browser. Outside Compose, the public endpoint falls back to `MINIO_ENDPOINT`.
-
-The one-shot `minio-init` service waits for MinIO and creates the five configured
-buckets when absent. It is idempotent and does not enable anonymous access.
-Community MinIO does not implement the S3 per-bucket CORS API, so Compose uses
-its supported cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` setting with only the
-two Vite development origins—never `*`. The intended narrow APK-bucket policy,
-including its required methods and headers, is retained in
-`docker/minio/cors.xml` for compatible S3 deployments. The backend waits for
-healthy dependencies, runs migrations and rule validation, then starts Django.
-The worker starts after the backend is healthy.
-
-The backend initialization also runs the idempotent `bootstrap_roles` command.
-It creates the `MSAP_ADMIN`, `MSAP_ANALYST`, and `MSAP_VIEWER` groups but never
-creates a user or stores an administrator password. Create the first administrator:
-
-```bash
 docker compose exec backend python manage.py createsuperuser
 ```
 
-The web application uses Django server-side sessions and CSRF protection.
-Browser requests include credentials; no JWT, password, session identifier, or
-authentication token is stored in browser storage.
+The values in `.env.compose.example` are local-development placeholders. Before
+exposing the stack beyond loopback, replace every password, token, MinIO key,
+and `DJANGO_SECRET_KEY`. `.env` is ignored by Git.
 
-Useful lifecycle commands:
+Local endpoints:
+
+| Service | URL |
+| --- | --- |
+| Frontend | `http://127.0.0.1:5173` |
+| API | `http://127.0.0.1:8000/api/` |
+| API documentation | `http://127.0.0.1:8000/api/docs/` |
+| Health | `http://127.0.0.1:8000/api/health/` |
+| MinIO API | `http://127.0.0.1:9000` |
+| MinIO console | `http://127.0.0.1:9001` |
+
+Useful commands:
 
 ```bash
 docker compose ps
-docker compose logs -f backend
-docker compose logs -f worker
+docker compose logs -f backend worker
 docker compose down
 ```
 
-To completely reset the development databases and object storage:
+`docker compose down -v` also deletes the local PostgreSQL, Redis, MinIO, and
+frontend dependency volumes. Use it only when a complete local data reset is
+intended.
+
+## Dynamic Android lab
+
+The dynamic lab is not created by `docker compose up`. It requires Windows with
+WSL2, Android Studio/SDK, a rootable AOSP emulator, and local Frida/mitmproxy
+tooling. The repository contains the launch, provisioning, bridge, cleanup, and
+health scripts; generated CA keys, emulator snapshots, APKs, flows, screenshots,
+and runtime evidence intentionally remain outside Git.
+
+For a new or replacement machine, follow the complete
+[workstation recovery guide](docs/21_Workstation_Recovery_Guide.md). To delegate
+that setup, give a coding agent [CODING_AGENT_LAB_SETUP.md](CODING_AGENT_LAB_SETUP.md).
+Normal lab operation is documented in the
+[dynamic lab runbook](docs/07_Deployment/31_Dynamic_Lab_Operations_Runbook.md).
+
+After the one-time setup:
 
 ```bash
-docker compose down -v
+scripts/dynamic-lab/launch-emulator-from-wsl.sh
+scripts/dynamic-lab/restore-instrumented-snapshot.sh
+scripts/dynamic-lab/lab-health.sh
 ```
 
-`down -v` permanently deletes the Compose PostgreSQL, Redis, MinIO, and frontend
-dependency volumes.
+Only analyze APKs for which you have explicit authorization.
 
-For the first end-to-end check, open the frontend, create a project and audit,
-upload an authorized APK, start analysis, wait for status polling to complete,
-then review findings, ATT&CK triage indicators, evidence, scores, and the JSON
-report or download the PDF security report.
-
-## Kubernetes and Helm deployment
-
-Docker Compose remains the local development/demo workflow. Kubernetes is the
-deployment target, packaged by the baseline chart in
-[helm/msap](helm/msap/README.md).
-
-Build and publish the production backend and frontend images to a registry that
-your cluster can pull from, provide production credentials outside Git, then
-install or upgrade:
+## Local source development
 
 ```bash
-helm upgrade --install msap ./helm/msap \
-  --namespace msap \
-  --create-namespace
+python3 -m venv backend/.venv
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+npm ci --prefix frontend
 ```
 
-The chart deploys the Django API, Celery worker, nginx-served React frontend,
-optional single-instance PostgreSQL, Redis and MinIO, persistent storage,
-health probes, migration and MinIO initialization Jobs, and optional Ingress.
-The worker reuses the backend image. Embedded stateful services suit a
-demonstration or small installation; production should prefer separately
-operated stateful services and externally managed Secrets.
+Then either use Compose or the managed local demo launcher described in
+[docs/20_MVP_Demo_Runbook.md](docs/20_MVP_Demo_Runbook.md). Contributor commands,
+settings, and validation checks are in the
+[development guide](docs/10_Development_Guide.md).
 
-The backend uses the internal Kubernetes MinIO Service for object operations.
-`minio.publicEndpoint` must be externally reachable because it is embedded in
-browser-facing presigned URLs. The chart never exposes the MinIO administrative
-console through Ingress.
+## Kubernetes and Helm
 
-Uninstall application resources with:
+Kubernetes is the deployment target; Compose is the local workflow. The chart
+can deploy the API, worker, nginx-served frontend, migration and MinIO init jobs,
+and optional embedded PostgreSQL, Redis, and MinIO services.
 
 ```bash
-helm uninstall msap --namespace msap
+helm lint --strict helm/msap
+helm upgrade --install msap ./helm/msap --namespace msap --create-namespace
 ```
 
-PVCs may be retained by the cluster and should be reviewed separately before
-deletion.
+Use an externally managed Kubernetes Secret for production credentials. Do not
+place credential-bearing URLs or secret values in committed values files.
+Embedded stateful services are suitable for demonstrations and small
+installations; production environments should provide backups and separately
+operated stateful services. See [helm/msap/README.md](helm/msap/README.md).
 
-## GitLab CI/CD
+## Security and repository hygiene
 
-GitHub (`origin`) remains the primary source repository, while GitLab
-(`gitlab`) provides the secondary CI/CD pipeline. Branches and merge requests
-run repository, Django rule/migration, Compose, Helm, backend test, frontend
-build/audit, and production image build checks. Only successful default-branch
-and tag pipelines publish images to the GitLab Container Registry. No
-deployment or Android dynamic-analysis job exists yet.
-
-See [docs/18_GitLab_CICD.md](docs/18_GitLab_CICD.md) for workflow, image-tag,
-security, accepted npm advisory, and future deployment/runner policies.
-
-## Backend status
-The backend provides authenticated/RBAC APIs, bounded asynchronous APK analysis,
-complete evaluation-state tracking, deterministic findings and ATT&CK triage,
-system-component status, MinIO storage, explainable scoring, and JSON/PDF reports.
-
-## Frontend
-
-A professional React, TypeScript, and Vite cybersecurity workspace is available
-in [frontend](frontend/README.md). It includes secure login, role-aware
-navigation, a live architecture status bar, dashboards, finding and ATT&CK
-triage workspaces, audit progress and coverage, and report downloads.
-
-Run the backend separately, then start the dashboard:
+- Real `.env` files, local databases, APKs, private keys/certificates, proxy
+  flows, packet captures, evidence, reports, and runtime directories are
+  ignored.
+- Example environment files contain placeholders only. Deterministic AI modes
+  are the safe offline default in those examples.
+- Browser code must never receive provider keys, MinIO credentials, or the Host
+  Agent token. Never prefix a secret with `VITE_`.
+- The mitmproxy private CA and Android snapshots are machine-local security
+  material. Do not back them up to the source repository.
+- Scan the tracked tree before every release; add `--history` for all reachable
+  commits:
 
 ```bash
-cd frontend
-cp .env.example .env
-npm install
-npm run dev
+scripts/security/scan-secrets.sh
+scripts/security/scan-secrets.sh --history
 ```
 
-The default API base URL is `http://127.0.0.1:8000/api` and can be changed with `VITE_API_BASE_URL`.
+The built-in scanner detects common high-confidence credential formats and
+forbidden tracked artifacts. It complements review and a dedicated secret
+scanner; it cannot prove that an arbitrary custom credential is absent. If a
+real credential is ever committed, revoke/rotate it first, then clean Git
+history and notify every clone owner.
 
-PDF reports are generated on demand at
-`GET /api/audits/{audit_id}/report/pdf/` using ReportLab and in-memory
-`BytesIO`. They contain a cover, executive and scoring summaries, methodology,
-APK metadata, findings, ATT&CK Mobile triage signals, bounded evidence,
-limitations, and a technical appendix. They use only persisted deterministic
-MSAP results, contain no AI-generated content, perform no dynamic execution,
-and do not claim a malware verdict. The JSON report endpoint remains available.
-
-## Perimetre securite
-- Android APK uniquement pour le MVP.
-- Analyse statique comme coeur fonctionnel.
-- OWASP MASVS comme standard d'evaluation AppSec.
-- MITRE ATT&CK Mobile comme mapping prudent de triage.
-- Evidence-first audit model.
-- Pas d'exploitation offensive contre des systemes tiers.
-- Pas de classification malware garantie.
-- MobSF, Frida et analyse dynamique restent des plugins futurs optionnels.
-- Kimi AI reste optionnel, post-analyse, apres redaction, sans acces aux APK bruts.
-
-## Active documentation
-The active implementation baseline is intentionally small:
+## Documentation map
 
 - [Project brief](docs/00_Project_Brief.md)
 - [Requirements](docs/01_Requirements.md)
-- [Security methodology](docs/02_Methodology.md)
+- [Security methodology and scoring](docs/02_Methodology.md)
 - [Architecture](docs/03_Architecture.md)
-- [Data and storage model](docs/04_Data_Model.md)
+- [Agentic dynamic-assessment architecture](docs/03_Architecture/40_Agentic_Dynamic_Assessment_Architecture.md)
+- [Data and object-storage model](docs/04_Data_Model.md)
 - [API contract](docs/05_API_Contract.md)
 - [Rules schema](docs/06_Rules_Schema.md)
-- [MVP freeze](docs/07_MVP_Freeze.md)
 - [Environment variables](docs/08_Environment_Variables.md)
-- [Helm values contract](docs/09_Helm_Values.md)
 - [Development guide](docs/10_Development_Guide.md)
 - [Testing](docs/11_Testing.md)
-- [Security platform operations and analysis scope](docs/12_Security_Platform.md)
-- [GitLab CI/CD baseline](docs/18_GitLab_CICD.md)
+- [Platform security](docs/12_Security_Platform.md)
+- [GitLab CI/CD](docs/18_GitLab_CICD.md)
+- [Demo runbook](docs/20_MVP_Demo_Runbook.md)
+- [Replacement-machine recovery](docs/21_Workstation_Recovery_Guide.md)
 
-Earlier detailed planning and diagram documents are preserved under [docs/archive](docs/archive/README.md) for reference only.
+Superseded planning material is retained under [docs/archive](docs/archive/README.md)
+and is not the implementation contract.
 
-## Stack technique prevue
-Frontend React, Backend Django REST Framework, PostgreSQL, Redis/Celery, workers scalables ou Kubernetes Jobs, MinIO object storage, Kubernetes + Helm. Docker Compose est uniquement un mode de developpement local. Options: Argo CD, Prometheus/Grafana, Trivy, Kimi AI post-analysis assistant.
+## Authorized-use disclaimer
 
-## Roadmap 8 semaines
-| Semaine | Objectif |
-|---|---|
-| S1 | Cadrage cloud-native & exigences |
-| S2 | Architecture Kubernetes + MinIO + design |
-| S3 | Backend foundation + PostgreSQL + MinIO integration |
-| S4 | Queue + workers + APK ingestion |
-| S5 | Analyse statique + normalization |
-| S6 | MASVS + ATT&CK engines + evidence |
-| S7 | Dashboard + reporting + object exports |
-| S8 | Kubernetes deployment + tests + delivery |
-
-## Authorized-Use Disclaimer
-MSAP est une plateforme academique et institutionnelle d'audit cybersécurité. Elle doit etre utilisee uniquement pour analyser des APK avec autorisation explicite. Les resultats de triage ne constituent pas une classification definitive malware/benin et doivent etre interpretes par un analyste.
+MSAP is an academic and institutional cybersecurity assessment platform. Use it
+only on applications and systems you are explicitly authorized to test. Dynamic
+instrumentation and traffic inspection can alter application behavior; keep the
+lab isolated and have an analyst validate all conclusions.

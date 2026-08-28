@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export MSAP_WINDOWS_ADB_PATH="${MSAP_WINDOWS_ADB_PATH:-C:\\Users\\lenovo\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe}"
-exec "/mnt/c/Program Files/Python312/python.exe" '//wsl.localhost/Ubuntu/home/anass/projects/MSAP/backend/apps/dynamic_analysis/services/frida_windows_helper.py' "$@"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$SCRIPT_DIR/frida-windows" "$@"

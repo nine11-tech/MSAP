@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the authoritative state machine for future dynamic Android
+This document defines the authoritative state machine for dynamic Android
 sessions. It is an implementation contract for Django models, Celery workers,
 device leases, operator tooling, and frontend progress display.
 

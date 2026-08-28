@@ -23,7 +23,6 @@ msap_source_env_file() {
 }
 
 msap_load_env() {
-  msap_source_env_file "$HOME/.local/bin/msap-dynamic-env"
   msap_source_env_file "$MSAP_REPO_ROOT/.msap-dynamic-lab.local.env"
 
   export MSAP_ANDROID_SERIAL="${MSAP_ANDROID_SERIAL:-emulator-5554}"
@@ -34,14 +33,22 @@ msap_load_env() {
   export MSAP_ANDROID_ABI="${MSAP_ANDROID_ABI:-x86_64}"
   export MSAP_EXPECTED_BUILD_TYPE="${MSAP_EXPECTED_BUILD_TYPE:-userdebug}"
   export MSAP_EXPECTED_FRIDA_VERSION="${MSAP_EXPECTED_FRIDA_VERSION:-17.16.4}"
+  export MSAP_EXPECTED_FRIDA_SERVER_SHA256="${MSAP_EXPECTED_FRIDA_SERVER_SHA256:-}"
   export MSAP_EXPECTED_MITMPROXY_VERSION="${MSAP_EXPECTED_MITMPROXY_VERSION:-12.2.3}"
-  export MSAP_EXPECTED_CA_SHA256="${MSAP_EXPECTED_CA_SHA256:-dec0e1d91937af25da3b84e6350cb12dc0382f1371960351baffcfa91736dc05}"
-  export MSAP_EXPECTED_APEX_CA_COUNT="${MSAP_EXPECTED_APEX_CA_COUNT:-145}"
+  export MSAP_EXPECTED_CA_SHA256="${MSAP_EXPECTED_CA_SHA256:-}"
+  export MSAP_EXPECTED_APEX_CA_COUNT="${MSAP_EXPECTED_APEX_CA_COUNT:-}"
   export MSAP_PROXY_PORT="${MSAP_PROXY_PORT:-18080}"
   export MSAP_FRIDA_ADB_PORT="${MSAP_FRIDA_ADB_PORT:-27042}"
   export MSAP_FRIDA_BRIDGE_PORT="${MSAP_FRIDA_BRIDGE_PORT:-27043}"
 
-  export ANDROID_SDK_WIN="${ANDROID_SDK_WIN:-C:\\Users\\lenovo\\AppData\\Local\\Android\\Sdk}"
+  if [[ -z "${ANDROID_SDK_WIN:-}" ]] && command -v powershell.exe >/dev/null 2>&1; then
+    ANDROID_SDK_WIN="$(
+      powershell.exe -NoProfile -NonInteractive -Command \
+        '[Console]::Out.Write((Join-Path $env:LOCALAPPDATA "Android\Sdk"))' \
+        2>/dev/null | tr -d '\r'
+    )"
+  fi
+  export ANDROID_SDK_WIN="${ANDROID_SDK_WIN:-}"
 
   if [[ -z "${ANDROID_SDK_WSL:-}" ]]; then
     if [[ "$ANDROID_SDK_WIN" == /* ]]; then
@@ -50,14 +57,15 @@ msap_load_env() {
       ANDROID_SDK_WSL="$(wslpath -u "$ANDROID_SDK_WIN" 2>/dev/null || true)"
     fi
   fi
-  export ANDROID_SDK_WSL="${ANDROID_SDK_WSL:-/mnt/c/Users/lenovo/AppData/Local/Android/Sdk}"
+  export ANDROID_SDK_WSL="${ANDROID_SDK_WSL:-}"
 
-  export ADB_WIN="${ADB_WIN:-$ANDROID_SDK_WSL/platform-tools/adb.exe}"
-  export EMULATOR_WIN="${EMULATOR_WIN:-$ANDROID_SDK_WSL/emulator/emulator.exe}"
-  export MSAP_ANDROID_PLATFORM_JAR="${MSAP_ANDROID_PLATFORM_JAR:-$ANDROID_SDK_WSL/platforms/android-$MSAP_ANDROID_API_LEVEL/android.jar}"
-  export MSAP_BUILD_TOOLS_DIR="${MSAP_BUILD_TOOLS_DIR:-$ANDROID_SDK_WSL/build-tools/36.0.0}"
+  export ADB_WIN="${ADB_WIN:-${ANDROID_SDK_WSL:+$ANDROID_SDK_WSL/platform-tools/adb.exe}}"
+  export EMULATOR_WIN="${EMULATOR_WIN:-${ANDROID_SDK_WSL:+$ANDROID_SDK_WSL/emulator/emulator.exe}}"
+  export MSAP_ANDROID_PLATFORM_JAR="${MSAP_ANDROID_PLATFORM_JAR:-${ANDROID_SDK_WSL:+$ANDROID_SDK_WSL/platforms/android-$MSAP_ANDROID_API_LEVEL/android.jar}}"
+  export MSAP_BUILD_TOOLS_DIR="${MSAP_BUILD_TOOLS_DIR:-${ANDROID_SDK_WSL:+$ANDROID_SDK_WSL/build-tools/36.0.0}}"
 
   export MSAP_DYNAMIC_HOME="${MSAP_DYNAMIC_HOME:-$HOME/.local/share/msap-dynamic}"
+  export MSAP_INSTRUMENTATION_VENV="${MSAP_INSTRUMENTATION_VENV:-$MSAP_DYNAMIC_HOME/venvs/instrumentation}"
   export MSAP_MITMPROXY_VENV="${MSAP_MITMPROXY_VENV:-$MSAP_DYNAMIC_HOME/venvs/mitmproxy}"
   export MSAP_MITMPROXY_CONF="${MSAP_MITMPROXY_CONF:-$MSAP_DYNAMIC_HOME/tools/mitmproxy/conf}"
   export MSAP_EVIDENCE_ROOT="${MSAP_EVIDENCE_ROOT:-$MSAP_DYNAMIC_HOME/evidence/reproducibility}"
@@ -65,13 +73,20 @@ msap_load_env() {
   export MSAP_ANDROID_FRIDA_BINARY="${MSAP_ANDROID_FRIDA_BINARY:-/data/local/tmp/msap-frida-server}"
   export MSAP_FRIDA_REMOTE_PID="${MSAP_FRIDA_REMOTE_PID:-/data/local/tmp/msap-frida-server.pid}"
   export MSAP_FRIDA_REMOTE_LOG="${MSAP_FRIDA_REMOTE_LOG:-/data/local/tmp/msap-frida-server.log}"
-  export MSAP_EXPECTED_CA_NAME="${MSAP_EXPECTED_CA_NAME:-c8750f0d.0}"
+  export MSAP_EXPECTED_CA_NAME="${MSAP_EXPECTED_CA_NAME:-}"
   export MSAP_ANDROID_STAGED_CA="${MSAP_ANDROID_STAGED_CA:-/data/local/tmp/msap-instrumentation/ca/$MSAP_EXPECTED_CA_NAME}"
   export MSAP_RUNTIME_CA_OVERLAY_DIR="${MSAP_RUNTIME_CA_OVERLAY_DIR:-/data/local/tmp/msap-instrumentation/runtime-ca-overlay}"
   export MSAP_MOUNT_PROBE_DIR="${MSAP_MOUNT_PROBE_DIR:-/data/local/tmp/msap-mount-probe}"
   export MSAP_TRUST_PROBE_PACKAGE="${MSAP_TRUST_PROBE_PACKAGE:-tech.nine11.msap.trustprobe}"
   export MSAP_TRUST_PROBE_ACTIVITY="${MSAP_TRUST_PROBE_ACTIVITY:-$MSAP_TRUST_PROBE_PACKAGE/.MainActivity}"
   export MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES="${MSAP_PREFLIGHT_ALLOWED_THIRD_PARTY_PACKAGES:-}"
+
+  if [[ -d "$MSAP_INSTRUMENTATION_VENV/bin" ]]; then
+    case ":$PATH:" in
+      *":$MSAP_INSTRUMENTATION_VENV/bin:"*) ;;
+      *) export PATH="$MSAP_INSTRUMENTATION_VENV/bin:$PATH" ;;
+    esac
+  fi
 }
 
 msap_log_section() {
@@ -499,6 +514,29 @@ msap_frida_server_binary_version() {
     fi
   " 2>/dev/null |
     tr -d '\r\n '
+}
+
+msap_verify_local_frida_sha256() {
+  local binary
+  local actual_hash
+
+  binary="$(msap_frida_expected_binary)"
+  msap_require_file "$binary"
+  actual_hash="$(msap_sha256_file "$binary")"
+  [[ "$actual_hash" == "$MSAP_EXPECTED_FRIDA_SERVER_SHA256" ]] ||
+    msap_fail "Local Frida server SHA-256 mismatch"
+}
+
+msap_verify_android_frida_sha256() {
+  local actual_hash
+
+  actual_hash="$(msap_android_sha256_file "$MSAP_ANDROID_FRIDA_BINARY")"
+  [[ "$actual_hash" == "$MSAP_EXPECTED_FRIDA_SERVER_SHA256" ]] ||
+    msap_fail "Android Frida server SHA-256 mismatch"
+}
+
+msap_frida_client_version() {
+  frida --version 2>/dev/null | tr -d '\r\n '
 }
 
 msap_mitmdump_bin() {

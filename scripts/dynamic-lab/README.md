@@ -12,7 +12,7 @@ The scripts validate the known-good lab contract:
 - clean snapshot `msap-clean-base`
 - instrumented snapshot `msap-instrumented-base`
 - rooted adbd with SELinux `Enforcing`
-- Frida client/server `17.16.4`
+- Frida client/server `17.16.4` with a local SHA-256 trust pin
 - isolated mitmproxy `12.2.3` virtual environment
 - runtime-only platform CA overlay, with no permanent system or APEX CA changes
 
@@ -43,8 +43,21 @@ Defaults live in `lib/common.sh` and are documented in
 cp scripts/dynamic-lab/msap-dynamic-lab.env.example .msap-dynamic-lab.local.env
 ```
 
-The local env file is ignored by Git. The scripts also load
-`~/.local/bin/msap-dynamic-env` when present.
+The local env file is ignored by Git. A fresh clone does not require any helper
+under the user's home directory.
+
+For a replacement machine, follow
+`docs/21_Workstation_Recovery_Guide.md`. The one-time repository-managed setup
+uses:
+
+```bash
+scripts/dynamic-lab/bootstrap-local-tooling.sh
+scripts/dynamic-lab/provision-instrumented-snapshot.sh
+```
+
+The bootstrap downloads pinned local tools and creates a new private CA outside
+the repository. The provisioning script stages only the Frida server and public
+certificate after validating the clean emulator contract.
 
 ## Typical Commands
 

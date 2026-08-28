@@ -2,11 +2,15 @@
 
 ## Purpose
 
-This document defines the contract for future dynamic analyzers. Dynamic
+This document defines the design contract for dynamic analyzers. Dynamic
 analyzers collect, normalize, evaluate, or correlate runtime evidence from a
 bounded Android session. They extend MSAP's existing static analyzer model
 without changing the static-analysis guarantee that APK code is not executed
 during static-only audits.
+
+The persisted session contracts and bounded Host Agent/tool capabilities exist;
+the pseudocode interface and full category list below remain the target contract
+for analyzer plugins and are not a claim that every category is implemented.
 
 Analyzer output must preserve provenance. A static capability, observed runtime
 behavior, confirmed vulnerability, suspicious indicator, ATT&CK triage signal,
@@ -47,8 +51,8 @@ new links or enriched records with explicit provenance.
 
 ## AnalyzerContext Extension
 
-Future Phase 4 code should extend the existing analyzer context rather than
-creating an unrelated execution model.
+New analyzer code should extend the existing session and analyzer contexts
+rather than creating an unrelated execution model.
 
 | Field | Meaning |
 | --- | --- |

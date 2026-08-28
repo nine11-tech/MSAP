@@ -1178,10 +1178,22 @@ code,
 }
 
 .contract-panel {
+  min-width: 0;
   padding: 1rem;
   background: #091725;
   border: 1px solid var(--border-soft);
   border-radius: 8px;
+}
+
+.upload-contract-details,
+.upload-contract-details > div,
+.upload-contract-details dd {
+  min-width: 0;
+}
+
+.upload-contract-details dd {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .upload-state {

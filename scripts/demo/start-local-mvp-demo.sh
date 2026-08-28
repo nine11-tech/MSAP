@@ -58,8 +58,8 @@ require_local_tools() {
     printf 'ERROR: missing Vite executable: %s\n' "$VITE" >&2
     exit 1
   }
-  [[ -r "$HOME/.local/bin/msap-dynamic-env" ]] || {
-    printf 'ERROR: missing dynamic environment: %s\n' "$HOME/.local/bin/msap-dynamic-env" >&2
+  [[ -r "$REPO_ROOT/scripts/dynamic-lab/lib/common.sh" ]] || {
+    printf 'ERROR: missing repository dynamic environment loader.\n' >&2
     exit 1
   }
 }
@@ -127,7 +127,7 @@ start_host_agent() {
     cd "$BACKEND_DIR"
     # The Android/Frida bridge environment is intentionally scoped to this process.
     # shellcheck disable=SC1091
-    source "$HOME/.local/bin/msap-dynamic-env"
+    source "$REPO_ROOT/scripts/dynamic-lab/lib/common.sh"
     export MSAP_DYNAMIC_HOST_AGENT_TOKEN="$(<"$TOKEN_FILE")"
     exec setsid "$PYTHON" manage.py run_dynamic_host_agent --host 127.0.0.1 --port 8765
   ) < /dev/null >"$fifo" 2>&1 &

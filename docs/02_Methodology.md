@@ -57,7 +57,27 @@ execution. Indicators remain separate from vulnerability risk.
 - Reports must distinguish deterministic findings from analyst or optional AI commentary.
 
 ## Scoring
-Risk scoring uses unique failed findings weighted by severity and confidence.
-ATT&CK indicators do not increase risk. MASVS compliance reports applicable,
-evaluated, passed, failed, review-required, and unevaluated counts with an
-explicit partial-coverage warning.
+
+Risk scoring uses persisted failed findings only. Severity weights are Critical
+`10`, High `7`, Medium `4`, and Low `1`; confidence factors are High `1.0`,
+Medium `0.75`, and Low `0.5`:
+
+```text
+risk = min(10 × Σ(severity_weight × confidence_factor), 100)
+```
+
+Risk levels are Low `0–30`, Medium `31–60`, High `61–80`, and Critical
+`81–100`. ATT&CK indicators do not increase this score.
+
+For MASVS, applicable rules are `PASS + FAIL + REVIEW_REQUIRED`. The compliance
+formula is:
+
+```text
+compliance = PASS / (PASS + FAIL + REVIEW_REQUIRED) × 100
+```
+
+The result is `0` when no rule is applicable. `NOT_APPLICABLE` and
+`NOT_EVALUATED` are excluded from the denominator; unevaluated rules produce an
+explicit partial-coverage warning and are never counted as passing. Reports
+include applicable, evaluated, passed, failed, review-required, not-applicable,
+and unevaluated counts so the percentage is not presented without its coverage.

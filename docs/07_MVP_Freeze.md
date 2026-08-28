@@ -1,5 +1,12 @@
 # MVP Freeze - MSAP
 
+> Historical note: this file records the original V1 foundation freeze. It is
+> not the current implementation-status document. Later phases added the
+> frontend, broader static analysis, PDF reporting, the isolated dynamic lab,
+> Frida/mitmproxy integration, and bounded deterministic/optional OpenAI agent
+> workflows. Use the root README and active architecture/runbooks for current
+> behavior.
+
 ## Final Objective
 MSAP V1.0 delivers a cloud-native APK security assessment foundation: Django API, PostgreSQL metadata, MinIO object storage, Redis/Celery analysis, one basic worker, YAML security rules, evidence-first findings and JSON reporting.
 
@@ -49,5 +56,4 @@ MSAP V1.0 delivers a cloud-native APK security assessment foundation: Django API
 - Evidence records link findings or indicators to source artifacts.
 - JSON export is generated and stored through the object storage contract.
 - Kubernetes or Helm packaging exists for the MVP runtime.
-- Kimi AI remains disabled, optional and outside V1.0.
-
+- External AI integration remained outside this original V1.0 freeze.

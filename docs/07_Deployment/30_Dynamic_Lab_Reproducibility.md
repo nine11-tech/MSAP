@@ -3,7 +3,7 @@
 ## Purpose
 
 The MSAP dynamic Android lab is a local operator environment for controlled
-runtime validation of future dynamic-analysis features. This document defines
+runtime validation of implemented dynamic-analysis features. This document defines
 the validated workstation contract and the repository-managed scripts used to
 restore, check, and document that contract after host or emulator drift.
 
@@ -21,14 +21,11 @@ The validated split is:
 - Android runs an API 35 x86_64 userdebug emulator with rooted adbd and SELinux
   left in `Enforcing`.
 
-Validated paths:
-
-- Windows SDK: `C:\Users\lenovo\AppData\Local\Android\Sdk`
-- WSL SDK mount: `/mnt/c/Users/lenovo/AppData/Local/Android/Sdk`
-- ADB: `/mnt/c/Users/lenovo/AppData/Local/Android/Sdk/platform-tools/adb.exe`
-- Emulator: `/mnt/c/Users/lenovo/AppData/Local/Android/Sdk/emulator/emulator.exe`
-- Platform API: `platforms/android-35/android.jar`
-- Build tools: `build-tools/36.0.0`
+The scripts discover the normal Windows SDK location from `%LOCALAPPDATA%` and
+convert it with `wslpath`. A non-standard SDK location is configured only in the
+ignored `.msap-dynamic-lab.local.env`. The versioned requirements are platform
+API 35 and Build Tools 36.0.0; no personal username or clone path is part of the
+contract.
 
 ## Snapshot Strategy
 
@@ -52,13 +49,12 @@ The accepted steady state is:
 - rooted adbd
 - SELinux `Enforcing`
 - Android global proxy `:0`
-- Frida client/server `17.16.4`
+- Frida client/server `17.16.4` with a locally recorded server SHA-256
 - Android Frida binary `/data/local/tmp/msap-frida-server`
 - mitmproxy `12.2.3` in `~/.local/share/msap-dynamic/venvs/mitmproxy`
-- public CA SHA-256
-  `dec0e1d91937af25da3b84e6350cb12dc0382f1371960351baffcfa91736dc05`
-- staged Android CA `/data/local/tmp/msap-instrumentation/ca/c8750f0d.0`
-- APEX CA baseline count `145`
+- locally pinned public CA SHA-256 and Android certificate filename
+- staged Android CA under `/data/local/tmp/msap-instrumentation/ca/`
+- locally verified APEX CA baseline count for the selected clean image
 - no permanent system CA modification
 - no permanent APEX CA modification
 - zero third-party packages for clean-baseline verification; post-install
@@ -75,9 +71,9 @@ The Frida path has three segments:
 - Windows ADB forward `tcp:27042 -> tcp:27042`
 - Windows-to-WSL bridge on `tcp:27043`
 
-WSL IP addresses change across host restarts. `refresh-frida-bridge.sh` delegates
-to the validated local helper `~/.local/bin/msap-frida-configure-bridge`, which
-updates the scoped Windows bridge. The script prints the detected WSL IP and
+WSL IP addresses change across host restarts. `refresh-frida-bridge.sh` invokes
+the checked-in `configure-frida-bridge.ps1`, which updates only the scoped
+Windows portproxy/firewall rule. The script prints the detected WSL IP and
 Windows gateway IP and does not disable the firewall globally.
 
 ## mitmproxy Environment Architecture

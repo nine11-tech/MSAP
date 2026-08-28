@@ -11,7 +11,7 @@ if ([string]::IsNullOrWhiteSpace($EmulatorPath)) {
     $sdk = if ($env:ANDROID_SDK_WIN -and $env:ANDROID_SDK_WIN -match "^[A-Za-z]:\\") {
         $env:ANDROID_SDK_WIN
     } else {
-        "C:\Users\lenovo\AppData\Local\Android\Sdk"
+        Join-Path $env:LOCALAPPDATA "Android\Sdk"
     }
 
     $EmulatorPath = if ($env:EMULATOR_WIN -and $env:EMULATOR_WIN -match "^[A-Za-z]:\\") {

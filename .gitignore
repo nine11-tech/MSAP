@@ -46,6 +46,7 @@ kubeconfig.*
 # OS
 .DS_Store
 Thumbs.db
+*:Zone.Identifier
 
 # Project runtime data
 uploads/
@@ -64,7 +65,14 @@ samples/*.ipa
 *.key
 *.crt
 *.p12
+*.pfx
 *.jks
+*.kdbx
+id_rsa
+id_ed25519
+*.sqlite
+*.sqlite3
+*.db
 
 # Dynamic Android lab local state
 /.msap-dynamic-lab.local.env

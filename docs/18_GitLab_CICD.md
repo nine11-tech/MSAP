@@ -126,6 +126,13 @@ MinIO credential, personal access token, GitHub token, kubeconfig, APK sample,
 or application report. Registry pushes use only GitLab predefined job
 credentials and never print the password.
 
+Repository validation also rejects common high-confidence credential formats
+and prints only file/line locations, never matched values. The local
+`scripts/security/scan-secrets.sh --history` check additionally covers all
+reachable commits before a release. Pattern scanning complements review and
+credential rotation; it is not a proof that every custom secret format is
+absent.
+
 Jobs are interruptible except container jobs, which avoid interruption during a
 registry publication. Docker-in-Docker is isolated to the two container jobs.
 Those jobs require a runner capable of privileged Docker services; all other
